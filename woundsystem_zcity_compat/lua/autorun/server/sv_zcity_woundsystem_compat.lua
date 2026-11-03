@@ -19,6 +19,9 @@ if WSZC._ServerLoaded then return end
 WSZC._ServerLoaded = true
 
 AddCSLuaFile("autorun/sh_zcity_woundsystem_compat.lua")
+AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_minigames.lua")
+AddCSLuaFile("autorun/client/wszc_cl_bandage.lua")
+AddCSLuaFile("autorun/client/wszc_cl_syringe.lua")
 if not WSZC.PatchIsEnabled then
     include("autorun/sh_zcity_woundsystem_compat.lua")
 end
@@ -602,6 +605,20 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
 end
 
 ---------------------------------------------------------------------------
+-- Helpers shared with the external-minigame module
+---------------------------------------------------------------------------
+
+WSZC.Upvalue = Upvalue
+WSZC.FindUpvalue = FindUpvalue
+WSZC.NormalizeItemId = NormalizeItemId
+WSZC.BandageProfile = BandageProfile
+WSZC.SyringeProfile = SyringeProfile
+WSZC.ApplyItemToBodyImpl = ApplyItemToBodyImpl
+
+-- Registers WSZC.InstallMinigameAPI() and the namespaced net protocol.
+include("autorun/server/sv_zcity_woundsystem_compat_minigames.lua")
+
+---------------------------------------------------------------------------
 -- One-time setup
 ---------------------------------------------------------------------------
 
@@ -614,9 +631,13 @@ function WSZC.Setup()
         return false
     end
 
-    -- A future C:U build may already provide the full bridge API.
+    WSZC.H = H
+
+    -- A future C:U build may already provide the full bridge API.  Even then,
+    -- install our external-minigame implementation: the supplied C:U build has
+    -- none, and the ZCity bridge needs it for non-instant medical items.
     if type(H.HandleDamage) == "function" and type(H.ApplyItemToBody) == "function" then
-        WSZC.H = H
+        if WSZC.InstallMinigameAPI then WSZC.InstallMinigameAPI(H) end
         WSZC.SetupDone = true
         return true
     end
@@ -651,6 +672,9 @@ function WSZC.Setup()
     refs.ApplyBandageProfile = FindUpvalue("ApplyBandageProfile")
     refs.GetSyringeProfile = FindUpvalue("GetSyringeProfile")
     refs.ApplySyringeProfile = FindUpvalue("ApplySyringeProfile")
+    refs.CUSessions = FindUpvalue("Sessions")
+    refs.CUCloseBandageSession = FindUpvalue("CloseBandageSession")
+    refs.CUCloseSyringeSession = FindUpvalue("CloseSyringeSession")
 
     WSZC.H = H
     WSZC.OriginalFn = WSZC.OriginalFn or refs.Fn
@@ -662,11 +686,15 @@ function WSZC.Setup()
     WSZC.GetSyringeProfile = refs.GetSyringeProfile
     WSZC.ApplySyringeProfile = refs.ApplySyringeProfile
     WSZC.CUTryRagdoll = refs.TryCreateUnconsciousRagdoll
+    WSZC.CUSessions = refs.CUSessions
+    WSZC.CUCloseBandageSession = refs.CUCloseBandageSession
+    WSZC.CUCloseSyringeSession = refs.CUCloseSyringeSession
 
-    WSZC.Debug("refs: Fn=%s Const=%s Bandage=%s Syringe=%s Ctx=%s TryRagdoll=%s",
+    WSZC.Debug("refs: Fn=%s Const=%s Bandage=%s Syringe=%s Ctx=%s TryRagdoll=%s Sessions=%s",
         tostring(refs.Fn ~= nil), tostring(refs.Const ~= nil),
         tostring(refs.ApplyBandageProfile ~= nil), tostring(refs.GetSyringeProfile ~= nil),
-        tostring(refs.BuildMedicalItemContext ~= nil), tostring(refs.TryCreateUnconsciousRagdoll ~= nil))
+        tostring(refs.BuildMedicalItemContext ~= nil), tostring(refs.TryCreateUnconsciousRagdoll ~= nil),
+        tostring(refs.CUSessions ~= nil))
 
     -- Expose the state tables the ZCity bridge reads directly.
     H.BodyState = H.BodyState or refs.BodyState or {}
@@ -708,12 +736,10 @@ function WSZC.Setup()
     H.Const.BodyEffectClamps = H.Const.BodyEffectClamps or FALLBACK_BODY_CLAMPS
     H.Const.DrugEffectAliases = H.Const.DrugEffectAliases or FALLBACK_DRUG_ALIASES
 
-    -- Minigame API: absent in this C:U build.  Returning false makes ZCity's
-    -- StartMinigame() fall through to its instant-application path, so healing
-    -- still works without duplicating the C:U client minigame protocol.
-    H.HasExternalMinigame = H.HasExternalMinigame or function(ply) return false end
-    H.StopExternalMinigame = H.StopExternalMinigame or function(ply, reason) end
-    H.StartExternalMinigame = H.StartExternalMinigame or function(ply, data) return false end
+    -- External-minigame API for ZCity's non-instant medical SWEPs.  The
+    -- implementation lives in sv_zcity_woundsystem_compat_minigames.lua and
+    -- uses namespaced copies of C:U's bandage/syringe client minigames.
+    if WSZC.InstallMinigameAPI then WSZC.InstallMinigameAPI(H) end
 
     -- Export HandleDamage and wrap the native C:U damage hook.
     if CUDamage then

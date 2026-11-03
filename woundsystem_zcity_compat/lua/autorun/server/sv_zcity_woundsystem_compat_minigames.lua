@@ -1,0 +1,569 @@
+-- ZCity <-> Casualties: Unknown external minigames (server part)
+--
+-- ZCity's WB.StartMinigame() calls WoundSystem.Health.StartExternalMinigame()
+-- only for specs that carry `spec.mg`.  Those are exactly the ZCity items that
+-- are NOT supposed to be applied instantly: bandages, syringe drugs, body drugs
+-- and the SALINE-vehicle injections.  Instant specs (tourniquet, painkillers,
+-- medkit tourniquet mode, blood bag, ...) never reach this API and keep the
+-- original immediate WB.SwepHeal path.
+--
+-- The supplied C:U build has no external-minigame API, so this file implements
+-- it on top of namespaced copies of C:U's own bandage/syringe client minigames.
+-- The native C:U inventory protocol is left completely untouched.
+
+WSZC = WSZC or {}
+
+if not SERVER then return end
+if WSZC._MinigameServerLoaded then return end
+WSZC._MinigameServerLoaded = true
+
+WSZC.MinigameSessions = WSZC.MinigameSessions or {}
+WSZC.NextMinigameId = WSZC.NextMinigameId or 1
+
+local MINIGAME_SLOT = 6 -- outside C:U's InventorySlots = 5, fits net.WriteUInt(..., 3)
+local ACK_BANDAGE = 1
+local ACK_SYRINGE = 2
+local SESSION_TIMEOUT = 300
+
+local NET_STRINGS = {
+    "WSZC_MinigameOpen",
+    "WSZC_MinigameSlot",
+    "WSZC_MinigameClose",
+    "WSZC_MinigameAck",
+    "WSZC_BandageStart",
+    "WSZC_BandageOpen",
+    "WSZC_BandageClose",
+    "WSZC_BandageInput",
+    "WSZC_SyringeStart",
+    "WSZC_SyringeOpen",
+    "WSZC_SyringeState",
+    "WSZC_SyringeClose",
+    "WSZC_SyringeInput",
+}
+
+if util and util.AddNetworkString then
+    for _, name in ipairs(NET_STRINGS) do util.AddNetworkString(name) end
+end
+
+local cvOwnMinigames = CreateConVar and CreateConVar(
+    "zc_woundsystem_compat_minigames", "1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Enable the ZCity/C:U compatibility bandage and syringe minigames"
+) or nil
+
+local function Debug(fmt, ...)
+    if WSZC.Debug then WSZC.Debug("[minigame] " .. fmt, ...) end
+end
+
+local function Warn(msg)
+    if WSZC.Warn then WSZC.Warn("[minigame] " .. tostring(msg)) end
+end
+
+local function OwnMinigamesEnabled()
+    if cvOwnMinigames and not cvOwnMinigames:GetBool() then return false end
+    local cv = GetConVar and GetConVar("zc_woundsystem_minigames") or nil
+    if cv and not cv:GetBool() then return false end
+    return true
+end
+
+local function HealthEnabled()
+    if type(WoundSystemHealthEnabled) ~= "function" then return true end
+    local ok, enabled = pcall(WoundSystemHealthEnabled)
+    return not ok or enabled ~= false
+end
+
+local function BridgeEnabled()
+    if WSZC.BridgeEnabled then return WSZC.BridgeEnabled() end
+    return false
+end
+
+local function Bridged(ply)
+    if WSZC.Bridged then return WSZC.Bridged(ply) end
+    return false
+end
+
+local function Upvalue(fn, wanted)
+    if WSZC.Upvalue then return WSZC.Upvalue(fn, wanted) end
+    if type(fn) ~= "function" or not debug or not debug.getupvalue then return nil end
+    local i = 1
+    while true do
+        local ok, name, value = pcall(debug.getupvalue, fn, i)
+        if not ok or not name then break end
+        if name == wanted then return value end
+        i = i + 1
+    end
+    return nil
+end
+
+local function ClosureValue(data, name)
+    local value = Upvalue(data.onProgress, name)
+    if value ~= nil then return value end
+    return Upvalue(data.onClose, name)
+end
+
+local function NormalizeItemId(itemId)
+    if WSZC.NormalizeItemId then return WSZC.NormalizeItemId(itemId) end
+    return string.upper(tostring(itemId or ""))
+end
+
+local function Constants()
+    return (WoundSystem and WoundSystem.Health and WoundSystem.Health.Constants) or {}
+end
+
+local function BandageProfile(itemId, item)
+    if WSZC.BandageProfile then return WSZC.BandageProfile(itemId, item) end
+
+    local use = item and item.use or {}
+    local bandage = type(use.bandage) == "table" and use.bandage or {}
+    local const = Constants()
+    return {
+        mode = bandage.mode or use.bandageMode or "gauze",
+        durabilityPerWrap = tonumber(bandage.durabilityPerWrap or use.durabilityPerWrap)
+            or const.BandageDurabilityPerWrap or 2,
+    }
+end
+
+local function SyringeProfile(itemId, item)
+    if WSZC.SyringeProfile then return WSZC.SyringeProfile(itemId, item) end
+
+    local use = item and item.use or {}
+    local syringe = type(use.syringe) == "table" and use.syringe or {}
+    local const = Constants()
+    return {
+        durabilityPerSecond = tonumber(syringe.durabilityPerSecond or use.syringeDurabilityPerSecond)
+            or const.SyringeDurabilityPerSecond or 18,
+    }
+end
+
+local function ReadOptionalUInt(bits, fallback)
+    if not net.BytesLeft then return fallback end
+    local bytesLeft, bitsLeft = net.BytesLeft()
+    if (bitsLeft or 0) >= bits or (bytesLeft or 0) * 8 >= bits then
+        return net.ReadUInt(bits)
+    end
+    return fallback
+end
+
+local function Send(name, ply, writer)
+    if not IsValid(ply) or not net or not net.Start then return end
+    net.Start(name)
+    writer()
+    if net.Send then net.Send(ply) end
+end
+
+local function SendOpenSlot(ply, session)
+    Send("WSZC_MinigameOpen", ply, function()
+        net.WriteUInt(session.slotIdx, 3)
+        net.WriteString(session.itemId)
+        net.WriteFloat(session.startAmount)
+        net.WriteFloat(session.maxDur)
+    end)
+end
+
+local function SendSlot(ply, session)
+    Send("WSZC_MinigameSlot", ply, function()
+        net.WriteUInt(session.slotIdx, 3)
+        net.WriteFloat(math.max(session.startAmount - session.deferredUsed, 0))
+        net.WriteFloat(session.maxDur)
+    end)
+end
+
+local function SendAck(ply, session, gameId, ackSeq)
+    Send("WSZC_MinigameAck", ply, function()
+        net.WriteUInt(gameId, 3)
+        net.WriteUInt(session.id, 24)
+        net.WriteUInt(ackSeq or session.lastAckSeq or 0, 24)
+    end)
+end
+
+local function SendSyringeState(ply, session, ackSeq)
+    local condition = math.Clamp(
+        math.max(session.startAmount - session.deferredUsed, 0) / math.max(session.maxDur, 0.0001),
+        0, 1
+    )
+    Send("WSZC_SyringeState", ply, function()
+        net.WriteUInt(session.id, 24)
+        net.WriteFloat(condition)
+        net.WriteUInt(ackSeq or session.lastAckSeq or 0, 24)
+    end)
+end
+
+local function SendClose(ply, session, reason)
+    local closeName = session.kind == "bandage" and "WSZC_BandageClose" or "WSZC_SyringeClose"
+
+    Send(closeName, ply, function()
+        net.WriteUInt(session.id, 24)
+        net.WriteString(reason or "closed")
+    end)
+
+    Send("WSZC_MinigameClose", ply, function()
+        net.WriteUInt(session.slotIdx, 3)
+    end)
+end
+
+local function CUSessionActive(ply)
+    local sessions = WSZC.CUSessions
+    if type(sessions) ~= "table" then return false end
+    if sessions.Bandage and sessions.Bandage[ply] then return true end
+    if sessions.Syringe and sessions.Syringe[ply] then return true end
+    return false
+end
+
+local function StopCUSessions(ply)
+    local sessions = WSZC.CUSessions
+    if type(sessions) ~= "table" then return end
+
+    if sessions.Bandage and sessions.Bandage[ply] and WSZC.CUCloseBandageSession then
+        pcall(WSZC.CUCloseBandageSession, ply, "disabled")
+    end
+    if sessions.Syringe and sessions.Syringe[ply] and WSZC.CUCloseSyringeSession then
+        pcall(WSZC.CUCloseSyringeSession, ply, "disabled")
+    end
+end
+
+local function ValidSession(ply)
+    local session = WSZC.MinigameSessions[ply]
+    if not session then return nil end
+
+    if not IsValid(ply) or not ply:IsPlayer() then
+        WSZC.MinigameSessions[ply] = nil
+        return nil
+    end
+    return session
+end
+
+local function StopMinigame(ply, reason)
+    local session = WSZC.MinigameSessions[ply]
+    if not session then return false end
+
+    -- Remove first: bridge onClose/onProgress may call Stop() reentrantly.
+    WSZC.MinigameSessions[ply] = nil
+    session.closed = true
+    reason = tostring(reason or "client_close")
+
+    if type(session.onClose) == "function" then
+        local ok, err = pcall(session.onClose, ply, session, reason)
+        if not ok then Warn("onClose failed: " .. tostring(err)) end
+    end
+
+    if IsValid(ply) then SendClose(ply, session, reason) end
+    Debug("closed %s session %s reason=%s used=%.2f/%.2f",
+        session.kind, tostring(session.id), reason,
+        session.deferredUsed or 0, session.startAmount or 0)
+    return true
+end
+
+local function HasMinigame(ply)
+    if not OwnMinigamesEnabled() then return false end
+    if WSZC.MinigameSessions[ply] then return true end
+    return CUSessionActive(ply)
+end
+
+local function StartMinigame(ply, data)
+    if not (WSZC.Ready and BridgeEnabled() and OwnMinigamesEnabled() and HealthEnabled()) then return false end
+    if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
+    if HasMinigame(ply) then return true end
+    if type(data) ~= "table" then return false end
+
+    local kind = data.kind
+    if kind ~= "bandage" and kind ~= "syringe" then return false end
+    if type(data.onProgress) ~= "function" or type(data.onClose) ~= "function" then return false end
+
+    -- `spec` is an upvalue of the bridge closures.  `spec.mg` is ZCity's own
+    -- marker for a non-instant item; without it we must NOT open a minigame.
+    local spec = ClosureValue(data, "spec")
+    if type(spec) ~= "table" or type(spec.mg) ~= "table" or spec.mg.kind ~= kind then
+        return false
+    end
+
+    local H = WSZC.H
+    if type(H) ~= "table" or type(H.ApplyItemToBody) ~= "function" then return false end
+
+    local target = ClosureValue(data, "target")
+    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then return false end
+    if not Bridged(target) then return false end
+
+    local limbId = data.limbId
+    if type(limbId) ~= "string" or limbId == "" then return false end
+    if H.InitPlayer and H.GetLimbs and not H.GetLimbs(target) then pcall(H.InitPlayer, target) end
+    if limbId ~= "body" and H.GetLimbState and not H.GetLimbState(target, limbId) then return false end
+
+    local Items = WoundSystem and WoundSystem.Items
+    local itemId = NormalizeItemId(data.itemId)
+    local item = Items and Items.Get and Items.Get(itemId)
+    if not item then return false end
+
+    local maxDur = tonumber(ClosureValue(data, "maxDur"))
+    if not maxDur or maxDur <= 0 then
+        maxDur = (Items.GetMax and Items.GetMax(itemId)) or item.max or 100
+    end
+    maxDur = math.max(tonumber(maxDur) or 100, 0.0001)
+
+    local startAmount = tonumber(data.amount)
+    if not startAmount or startAmount <= 0 then startAmount = maxDur end
+    startAmount = math.Clamp(startAmount, 0.0001, maxDur)
+
+    local live = ClosureValue(data, "live")
+    if live == nil then live = (kind == "bandage") end
+    local oneDose = ClosureValue(data, "oneDose")
+    if oneDose == nil then oneDose = false end
+
+    local id = WSZC.NextMinigameId or 1
+    WSZC.NextMinigameId = id + 1
+    if WSZC.NextMinigameId > 16000000 then WSZC.NextMinigameId = 1 end
+
+    local now = CurTime and CurTime() or 0
+    local session = {
+        id = id,
+        kind = kind,
+        itemId = itemId,
+        item = item,
+        limbId = limbId,
+        slotIdx = MINIGAME_SLOT,
+        owner = ply,
+        target = target,
+        spec = spec,
+        live = live == true,
+        oneDose = oneDose == true,
+        maxDur = maxDur,
+        amount = startAmount,
+        startAmount = startAmount,
+        deferredUsed = 0,
+        onProgress = data.onProgress,
+        onClose = data.onClose,
+        data = data,
+        startedAt = now,
+        lastInputAt = now,
+        lastAckSeq = 0,
+        closed = false,
+    }
+
+    WSZC.MinigameSessions[ply] = session
+
+    SendOpenSlot(ply, session)
+
+    if kind == "bandage" then
+        local profile = BandageProfile(itemId, item)
+        Send("WSZC_BandageOpen", ply, function()
+            net.WriteUInt(session.id, 24)
+            net.WriteString(session.limbId)
+            net.WriteString(profile.mode or "gauze")
+            net.WriteUInt(session.slotIdx, 3)
+        end)
+    else
+        Send("WSZC_SyringeOpen", ply, function()
+            net.WriteUInt(session.id, 24)
+            net.WriteString(session.limbId)
+            net.WriteUInt(session.slotIdx, 3)
+            net.WriteString(session.itemId)
+            net.WriteFloat(math.Clamp(session.startAmount / session.maxDur, 0, 1))
+        end)
+    end
+
+    Debug("opened %s session %s owner=%s target=%s item=%s limb=%s amount=%.2f live=%s oneDose=%s",
+        kind, tostring(id), tostring(ply), tostring(target), itemId, limbId,
+        startAmount, tostring(session.live), tostring(session.oneDose))
+    return true
+end
+
+local function StopExternal(ply, reason)
+    local had = StopMinigame(ply, reason)
+    StopCUSessions(ply)
+    return had
+end
+
+WSZC.HasExternalMinigameImpl = HasMinigame
+WSZC.StartExternalMinigameImpl = StartMinigame
+WSZC.StopExternalMinigameImpl = StopExternal
+WSZC.StopMinigame = StopMinigame
+
+function WSZC.InstallMinigameAPI(H)
+    if type(H) ~= "table" then return false end
+
+    H.HasExternalMinigame = HasMinigame
+    H.StopExternalMinigame = StopExternal
+    H.StartExternalMinigame = StartMinigame
+    WSZC.H = H
+    return true
+end
+
+local function ProcessBandageInput(_, ply)
+    local session = ValidSession(ply)
+    if not session or session.kind ~= "bandage" then return end
+
+    local sessionId = net.ReadUInt(24)
+    local degrees = net.ReadFloat()
+    local inputSeq = ReadOptionalUInt(24, 0)
+    if sessionId ~= session.id then return end
+
+    if not IsValid(ply) or not ply:Alive() then
+        StopMinigame(ply, "dead")
+        return
+    end
+    if not IsValid(session.target) or not session.target:Alive() or not Bridged(session.target) then
+        StopMinigame(ply, "target_gone")
+        return
+    end
+
+    degrees = math.Clamp(tonumber(degrees) or 0, 0, 360)
+    if degrees <= 0 then return end
+
+    session.lastAckSeq = inputSeq
+    local profile = BandageProfile(session.itemId, session.item)
+    local perWrap = math.max(
+        tonumber(profile.durabilityPerWrap) or Constants().BandageDurabilityPerWrap or 2,
+        0.0001
+    )
+    local durCost = degrees / 360 * perWrap
+    durCost = math.min(durCost, math.max(session.startAmount - session.deferredUsed, 0))
+    if durCost <= 0 then
+        SendAck(ply, session, ACK_BANDAGE, inputSeq)
+        return
+    end
+
+    session.deferredUsed = math.min(session.startAmount, session.deferredUsed + durCost)
+
+    if session.live and type(session.onProgress) == "function" then
+        local ok, err = pcall(session.onProgress, ply, session, durCost)
+        if not ok then Warn("bandage onProgress failed: " .. tostring(err)) end
+        if WSZC.MinigameSessions[ply] ~= session then return end
+    end
+
+    SendSlot(ply, session)
+    SendAck(ply, session, ACK_BANDAGE, inputSeq)
+
+    if session.startAmount - session.deferredUsed <= 0.001 then
+        StopMinigame(ply, "empty")
+    end
+end
+
+local function ProcessSyringeInput(_, ply)
+    local session = ValidSession(ply)
+    if not session or session.kind ~= "syringe" then return end
+
+    local sessionId = net.ReadUInt(24)
+    local depth = net.ReadFloat()
+    local brokeNeedle = net.ReadBool()
+    local inputSeq = ReadOptionalUInt(24, 0)
+    if sessionId ~= session.id then return end
+
+    if not IsValid(ply) or not ply:Alive() then
+        StopMinigame(ply, "dead")
+        return
+    end
+    if not IsValid(session.target) or not session.target:Alive() or not Bridged(session.target) then
+        StopMinigame(ply, "target_gone")
+        return
+    end
+
+    if brokeNeedle then
+        session.lastAckSeq = inputSeq
+        StopMinigame(ply, "needle_break")
+        return
+    end
+
+    depth = math.Clamp(tonumber(depth) or 0, 0, 1)
+    local now = CurTime and CurTime() or 0
+    local elapsed = math.Clamp(now - (session.lastInputAt or now), 0, 0.2)
+    local hz = math.max(tonumber(Constants().SyringeInputHz) or 20, 1)
+    if elapsed < (1 / hz) then return end
+
+    session.lastInputAt = now
+    session.lastAckSeq = inputSeq
+
+    if depth <= 0 then
+        SendAck(ply, session, ACK_SYRINGE, inputSeq)
+        SendSyringeState(ply, session, inputSeq)
+        return
+    end
+
+    local profile = SyringeProfile(session.itemId, session.item)
+    local rate = math.max(
+        tonumber(profile.durabilityPerSecond) or Constants().SyringeDurabilityPerSecond or 18,
+        0.0001
+    )
+    local durCost = math.min(
+        depth * elapsed * rate,
+        math.max(session.startAmount - session.deferredUsed, 0)
+    )
+    if durCost <= 0 then
+        SendAck(ply, session, ACK_SYRINGE, inputSeq)
+        SendSyringeState(ply, session, inputSeq)
+        return
+    end
+
+    session.deferredUsed = math.min(session.startAmount, session.deferredUsed + durCost)
+
+    if session.live and type(session.onProgress) == "function" then
+        local ok, err = pcall(session.onProgress, ply, session, durCost)
+        if not ok then Warn("syringe onProgress failed: " .. tostring(err)) end
+        if WSZC.MinigameSessions[ply] ~= session then return end
+    end
+
+    SendSlot(ply, session)
+    SendAck(ply, session, ACK_SYRINGE, inputSeq)
+    SendSyringeState(ply, session, inputSeq)
+
+    if session.startAmount - session.deferredUsed <= 0.001 then
+        StopMinigame(ply, "empty")
+    end
+end
+
+local function ProcessClose(name, kind)
+    return function(_, ply)
+        local session = ValidSession(ply)
+        if not session or session.kind ~= kind then return end
+
+        local sessionId = net.ReadUInt(24)
+        local reason = net.ReadString()
+        if sessionId ~= session.id then return end
+        StopMinigame(ply, reason ~= "" and reason or "client_close")
+    end
+end
+
+net.Receive("WSZC_BandageInput", ProcessBandageInput)
+net.Receive("WSZC_SyringeInput", ProcessSyringeInput)
+net.Receive("WSZC_BandageClose", ProcessClose("WSZC_BandageClose", "bandage"))
+net.Receive("WSZC_SyringeClose", ProcessClose("WSZC_SyringeClose", "syringe"))
+
+-- The copies keep MG.RequestStart(); it is not used by ZCity, but the strings
+-- must still be accepted so a stray call cannot produce an unpooled-message error.
+net.Receive("WSZC_BandageStart", function() end)
+net.Receive("WSZC_SyringeStart", function() end)
+
+hook.Add("PlayerDeath", "WSZC_MinigameDeath", function(ply)
+    if WSZC.MinigameSessions[ply] then StopMinigame(ply, "dead") end
+end)
+
+hook.Add("PlayerSpawn", "WSZC_MinigameSpawn", function(ply)
+    if WSZC.MinigameSessions[ply] then StopMinigame(ply, "respawn") end
+end)
+
+hook.Add("PlayerDisconnected", "WSZC_MinigameDisconnect", function(ply)
+    if WSZC.MinigameSessions[ply] then StopMinigame(ply, "disabled") end
+end)
+
+hook.Add("Think", "WSZC_MinigameWatch", function()
+    WSZC.NextMinigameWatch = WSZC.NextMinigameWatch or 0
+    local now = CurTime and CurTime() or 0
+    if now < WSZC.NextMinigameWatch then return end
+    WSZC.NextMinigameWatch = now + 0.25
+
+    if not (WSZC.Ready and BridgeEnabled() and OwnMinigamesEnabled() and HealthEnabled()) then
+        for ply in pairs(WSZC.MinigameSessions) do StopMinigame(ply, "disabled") end
+        return
+    end
+
+    for ply, session in pairs(WSZC.MinigameSessions) do
+        if not IsValid(ply) or not ply:Alive() then
+            StopMinigame(ply, "dead")
+        elseif not IsValid(session.target) or not session.target:Alive() or not Bridged(session.target) then
+            StopMinigame(ply, "target_gone")
+        elseif session.limbId ~= "body" and WSZC.H and WSZC.H.GetLimbState
+            and not WSZC.H.GetLimbState(session.target, session.limbId) then
+            StopMinigame(ply, "invalid_limb")
+        elseif (now - (session.startedAt or now)) > SESSION_TIMEOUT then
+            StopMinigame(ply, "disabled")
+        end
+    end
+end)
