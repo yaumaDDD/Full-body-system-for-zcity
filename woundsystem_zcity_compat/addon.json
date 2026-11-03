@@ -1,0 +1,9 @@
+{
+  "title": "ZCity ↔ Casualties: Unknown compatibility",
+  "type": "ServerContent",
+  "tags": ["roleplay", "fun"],
+  "ignore": [
+    "*.md",
+    "*.txt"
+  ]
+}
