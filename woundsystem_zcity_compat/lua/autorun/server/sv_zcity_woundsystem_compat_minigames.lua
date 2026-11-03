@@ -1,11 +1,15 @@
 -- ZCity <-> Casualties: Unknown external minigames (server part)
 --
 -- ZCity's WB.StartMinigame() calls WoundSystem.Health.StartExternalMinigame()
--- only for specs that carry `spec.mg`.  Those are exactly the ZCity items that
--- are NOT supposed to be applied instantly: bandages, syringe drugs, body drugs
--- and the SALINE-vehicle injections.  Instant specs (tourniquet, painkillers,
--- medkit tourniquet mode, blood bag, ...) never reach this API and keep the
--- original immediate WB.SwepHeal path.
+-- only for specs that carry `spec.mg`.  After the project owner's correction,
+-- a minigame is opened ONLY for bandages and continuous syringe drugs.
+-- One-dose specs are applied instantly by the original WB.SwepHeal fallback,
+-- even though ZCity declares `spec.mg` for them:
+--   weapon_naloxone, weapon_needle, weapon_adrenaline, weapon_betablock,
+--   weapon_mannitol, weapon_thiamine, medkit modes 2/3/5.
+-- The general rule is `oneDose`: spec.oneshot, mg.vehicle, kind=apply/body.
+-- Instant specs without `mg` (tourniquet, painkillers, medkit mode 4, blood
+-- bag, ...) never reach this API at all.
 --
 -- The supplied C:U build has no external-minigame API, so this file implements
 -- it on top of namespaced copies of C:U's own bandage/syringe client minigames.
@@ -99,6 +103,36 @@ local function ClosureValue(data, name)
     local value = Upvalue(data.onProgress, name)
     if value ~= nil then return value end
     return Upvalue(data.onClose, name)
+end
+
+-- The project owner explicitly asked for these ZCity items to stay instant.
+local INSTANT_SWEP_CLASSES = {
+    weapon_naloxone = true,
+    weapon_needle = true,
+    weapon_adrenaline = true,
+    weapon_betablock = true,
+    weapon_mannitol = true,
+    weapon_thiamine = true,
+}
+-- Same one-dose logic applies to the corresponding medkit modes.
+local INSTANT_MEDKIT_MODES = { [2] = true, [3] = true, [5] = true }
+
+local function ShouldBeInstant(data, spec, swep, idx)
+    if IsValid(swep) and swep.GetClass then
+        local ok, class = pcall(swep.GetClass, swep)
+        if ok and INSTANT_SWEP_CLASSES[class] then return true end
+        if ok and class == "weapon_medkit_sh"
+            and INSTANT_MEDKIT_MODES[tonumber(idx) or 0] then return true end
+    end
+
+    -- ZCity's own `oneDose` rule: oneshot, SALINE vehicle, apply/body.
+    if ClosureValue(data, "oneDose") == true then return true end
+    if type(spec) == "table" then
+        if spec.oneshot == true then return true end
+        if type(spec.mg) == "table" and spec.mg.vehicle then return true end
+        if spec.kind == "apply" or spec.kind == "body" then return true end
+    end
+    return false
 end
 
 local function NormalizeItemId(itemId)
@@ -269,10 +303,25 @@ local function StartMinigame(ply, data)
     if kind ~= "bandage" and kind ~= "syringe" then return false end
     if type(data.onProgress) ~= "function" or type(data.onClose) ~= "function" then return false end
 
-    -- `spec` is an upvalue of the bridge closures.  `spec.mg` is ZCity's own
-    -- marker for a non-instant item; without it we must NOT open a minigame.
+    -- `spec` is an upvalue of the bridge closures.  `spec.mg` is ZCity's
+    -- minigame-capable marker, but after the owner's correction it is not
+    -- sufficient by itself: one-dose specs still stay instant.
     local spec = ClosureValue(data, "spec")
     if type(spec) ~= "table" or type(spec.mg) ~= "table" or spec.mg.kind ~= kind then
+        return false
+    end
+
+    -- The owner explicitly wants one-dose / vehicle / body items to stay
+    -- instant.  Returning false sends WB.StartMinigame() to its instant path.
+    local swep = ClosureValue(data, "swep")
+    local idx = ClosureValue(data, "idx")
+    if ShouldBeInstant(data, spec, swep, idx) then
+        local className = spec.item or kind
+        if IsValid(swep) and swep.GetClass then
+            local ok, class = pcall(swep.GetClass, swep)
+            if ok then className = class end
+        end
+        Debug("instant fallback for %s (one-dose ZCity item)", tostring(className))
         return false
     end
 

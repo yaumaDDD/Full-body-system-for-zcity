@@ -27,10 +27,10 @@
    и `Fn.PickRandomDamageLimb` в upvalue нативного хука.
 5. Пропускает медицину ZCity через определения предметов C:U
    (`WoundSystem.Items.*`, bandage/syringe profiles, `WoundSystem.UseMedicalItem`).
-6. **Открывает настоящие bandage/syringe мини-игры C:U, но только для тех
-   ZCity-предметов, у которых есть `spec.mg`** — то есть для предметов, которые
-   по логике ZCity не должны применяться мгновенно. Мгновенные предметы
-   остаются мгновенными.
+6. **Открывает настоящие bandage/syringe мини-игры C:U только для бинтов и
+   непрерывных шприцевых препаратов.** One-dose предметы с `spec.mg`
+   (`weapon_naloxone`, `weapon_needle`, body-препараты, медкит режимы `2/3/5`)
+   и все спецы без `mg` остаются мгновенными, как явно уточнил владелец проекта.
 7. Не даёт C:U создать второй ragdoll: перехватывает его внутренний
    `ents.Create("prop_ragdoll")`, создаёт ZCity `hg.Fake`, зеркалит
    `body.unconsciousRagdoll` и защищает ZCity-ragdoll от удаления при wake.
@@ -61,29 +61,33 @@
 
 ## Мини-игры: где они включаются
 
-ZCity сам решает, что предмет не мгновенный: в `WB.SwepSpecs` и
-`WB.MedkitModes` у таких спецов стоит поле `mg`, и только тогда
-`WB.StartMinigame()` вызывает `WoundSystem.Health.StartExternalMinigame()`.
-Наш адаптер дополнительно проверяет `spec.mg` через upvalue bridge-замыканий,
-поэтому даже прямой вызов API не откроет мини-игру для мгновенного предмета.
+ZCity вызывает `WoundSystem.Health.StartExternalMinigame()` только для спецов с
+`spec.mg`. По уточнению владельца проекта мини-игру получают **не все** такие
+спецы, а только бинты и непрерывные шприцевые препараты. One-dose предметы
+(`spec.oneshot`, `mg.vehicle`, `kind=apply/body`) остаются мгновенными: адаптер
+возвращает `false`, и `WB.StartMinigame()` уходит в старую instant-ветку
+`WB.SwepHeal`. Дополнительно проверяется `spec.mg` через upvalue замыканий,
+поэтому предметы без `mg` тоже не открывают UI.
 
-| ZCity-предмет / режим | Мини-игра | Что происходит |
-| --- | --- | --- |
-| `weapon_bandage_sh`, `weapon_bigbandage_sh` | bandage (`GAUZE` / `STERILIZEDBANDAGE`) | эффект и расход ZCity-предмета идут по мере намотки |
-| `weapon_medkit_sh`, режим `1` | bandage (`GAUZE`) | то же |
-| `weapon_morphine`, `weapon_fentanyl`, `weapon_naloxone` | syringe | доза и расход идут по мере нажатия поршня |
-| `weapon_medkit_sh`, режим `2` | syringe (`MORPHINE`, oneshot) | мини-игра, доза применяется порциями |
-| `weapon_needle`, `weapon_medkit_sh`, режим `5` | syringe (`SALINE` → `INJECTION`) | не делится: применяется при закрытии, chest drain требует ≥90% введения |
-| `weapon_medkit_sh`, режим `3` | syringe (`SALINE` → `BLOODCOAGULANT`) | применяется при закрытии, доза масштабируется `session.deferredUsed / startAmount` |
-| `weapon_adrenaline`, `weapon_betablock`, `weapon_mannitol`, `weapon_thiamine` | syringe (`SALINE`, body-эффект) | body-эффект масштабируется введённой дозой |
-| `weapon_tourniquet`, `weapon_painkillers`, `weapon_medkit_sh` режим `4`, blood bag и прочие спецы без `mg` | **нет** | старая мгновенная ветка `WB.SwepHeal`, без открытия UI |
+| ZCity-предмет / режим | Поведение |
+| --- | --- |
+| `weapon_bandage_sh`, `weapon_bigbandage_sh`, `weapon_medkit_sh` режим `1` | **bandage мини-игра**: эффект и расход ZCity-предмета идут по мере намотки |
+| `weapon_morphine`, `weapon_fentanyl` | **syringe мини-игра**: доза и расход идут по мере нажатия поршня |
+| `weapon_naloxone` | **мгновенно**, хотя в ZCity есть `spec.mg` (oneshot) |
+| `weapon_needle`, `weapon_medkit_sh` режим `5` | **мгновенно** (`INJECTION` / SALINE, apply) |
+| `weapon_medkit_sh` режим `2` | **мгновенно** (MORPHINE oneshot) |
+| `weapon_medkit_sh` режим `3` | **мгновенно** (BLOODCOAGULANT / SALINE vehicle) |
+| `weapon_adrenaline`, `weapon_betablock`, `weapon_mannitol`, `weapon_thiamine` | **мгновенно** (body-эффект / SALINE vehicle) |
+| `weapon_tourniquet`, `weapon_painkillers`, `weapon_medkit_sh` режим `4`, blood bag и прочие спецы без `mg` | **мгновенно** (старая ветка `WB.SwepHeal`) |
 
 Для «живых» предметов (`live`) `onProgress` вызывается на каждом wrap / толчке
 поршня: C:U применяет часть эффекта к **цели**, а ZCity списывает часть своего
-SWEP. Для неделимых предметов работа копится в `session.deferredUsed`, а
-`onClose` применяет масштабированную дозу. Смерть, респавн, отключение моста,
-сломанная игла, потеря цели/сегмента и замена сессии считаются прерыванием —
-ничего не применяется и не списывается.
+SWEP. Поддержка `session.deferredUsed` и масштабированной дозы в `onClose`
+оставлена в коде для совместимости с контрактом `WB.StartMinigame()`, но в
+текущей конфигурации все неделимые one-dose ZCity-спецы отсекаются до открытия
+сессии и лечатся мгновенно. Смерть, респавн, отключение моста, сломанная игла,
+потеря цели/сегмента и замена сессии считаются прерыванием — ничего не
+применяется и не списывается.
 
 ### Как это реализовано без правки C:U
 
@@ -99,7 +103,8 @@ SWEP. Для неделимых предметов работа копится �
 - `session.startAmount`, `session.deferredUsed`, `onProgress`, `onClose` и
   причины закрытия (`dead`, `respawn`, `disabled`, `needle_break`,
   `invalid_limb`, `replaced`, `target_gone`, `empty`, `user_cancel`) совпадают
-  с контрактом `WB.StartMinigame()`.
+  с контрактом `WB.StartMinigame()`. В текущей конфигурации мини-игры идут
+  через `onProgress` (live); `deferredUsed` сохранён за контрактом.
 - Родные C:U сессии bandage/syringe тоже учитываются в `HasExternalMinigame`
   и закрываются при `StopExternalMinigame`, чтобы две мини-игры не открылись
   поверх друг друга.
@@ -113,15 +118,17 @@ SWEP. Для неделимых предметов работа копится �
 | `zc_woundsystem_bridge` | ZCity | `1` — мост включён; `0` — полностью legacy `organism`, наш `EntityTakeDamage`-guard пропускает нативный C:U хук. |
 | `zc_wound_damage_scale` | ZCity | Множитель урона, передаваемого в C:U. |
 | `zcity_wounds_collision_scale` | ZCity | Множитель collision/impact force. |
-| `zc_woundsystem_minigames` | ZCity | `1` — ZCity вызывает external-minigame API для не-мгновенных предметов; `0` — все предметы снова применяются мгновенно, активные сессии закрываются. |
+| `zc_woundsystem_minigames` | ZCity | `1` — ZCity вызывает external-minigame API для спецов с `spec.mg`; адаптер всё равно оставляет one-dose предметы мгновенными; `0` — все предметы применяются мгновенно, активные сессии закрываются. |
 | `zc_woundsystem_compat_minigames` | этот аддон | `1` — наша реализация мини-игр активна; `0` — `StartExternalMinigame` возвращает `false`, т.е. прежнее instant-поведение без правки ZIP. |
 | `zc_woundsystem_compat_debug` | этот аддон | `1` — диагностика найденных C:U upvalue и открытия/закрытия сессий. |
 | `woundsys_enabled` | C:U | Если `0`, `WB.IsEnabled()` снова `false`. |
 
 ## Ограничения
 
-- Мини-игры открываются **только** для ZCity-спецов с `spec.mg`; мгновенные
-  предметы намеренно не переведены в мини-игры.
+- Мини-игры открываются **только** для ZCity-спецов с `spec.mg`, которые не
+  являются one-dose (`spec.oneshot`, `mg.vehicle`, `kind=apply/body`). Явно
+  мгновенными оставлены `weapon_naloxone`, `weapon_needle`, body-препараты и
+  медкит режимы `2/3/5`; спецы без `mg` не открывают UI вовсе.
 - C:U-инвентарь не интегрируется с ZCity SWEP'ами: мост лечит цель напрямую,
   используя виртуальный слот и namespaced-протокол. Родной инвентарь C:U
   продолжает работать как раньше.
@@ -174,7 +181,10 @@ woundsystem_zcity_compat/
 3. Убедиться, что клиент докачал `cl_zcity_woundsystem_compat_minigames.lua`,
    `wszc_cl_bandage.lua`, `wszc_cl_syringe.lua` (в консоли не должно быть
    `minigame client load failed`).
-4. `zc_woundsystem_compat_debug 1` — в логах будут строки `opened bandage/syringe session`.
+4. `zc_woundsystem_compat_debug 1` — в логах будут строки `opened bandage/syringe session`
+   или `instant fallback ... (one-dose ZCity item)`.
+5. Помнить, что `weapon_naloxone`, `weapon_needle`, body-препараты и медкит
+   режимы `2/3/5` намеренно не открывают мини-игру.
 
 Сообщение `Could not intercept C:U unconscious ragdoll creation` означает, что
 не удалось найти внутреннюю функцию C:U через `debug`: урон и лечение при этом
