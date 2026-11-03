@@ -20,6 +20,7 @@ WSZC._ServerLoaded = true
 
 AddCSLuaFile("autorun/sh_zcity_woundsystem_compat.lua")
 AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_minigames.lua")
+AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_inspect.lua")
 AddCSLuaFile("autorun/client/wszc_cl_bandage.lua")
 AddCSLuaFile("autorun/client/wszc_cl_syringe.lua")
 if not WSZC.PatchIsEnabled then

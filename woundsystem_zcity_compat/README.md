@@ -37,6 +37,8 @@
 8. Оставляет `ply.organism` теневой проекцией: броня/пенетрация, hitgroup/кость,
    ragdoll/fake, blood FX, силы и регистрация попадания остаются за ZCity;
    раны/лечение/физиология — за C:U.
+9. Добавляет в круговой селектор ZCity кнопку «Проверить травмы», которая
+   открывает готовую панель осмотра C:U, а не новый самописный интерфейс.
 
 ## Установка
 
@@ -111,6 +113,31 @@ SWEP. Поддержка `session.deferredUsed` и масштабированн�
 - AED / shrapnel / dislocation мини-игры не используются: у ZCity для них нет
   `spec.mg`, они остаются доступны только через родной C:U инвентарь.
 
+## Кнопка проверки травм в круговом селекторе
+
+В `zcity.zip` уже есть хук `ZCity_WoundBridge_Inspect`, который добавляет в
+круговое меню пункт `Examine Body` и вызывает `WB.OpenWoundView()`. Аддон **не
+рисует свой UI**: он перехватывает `WB.OpenWoundView`, переименовывает и
+переподчиняет этот пункт на «Проверить травмы» и вызывает
+`WoundSystem.OpenHealthHUD()` из C:U. Если штатный хук отсутствует, пункт
+добавляется нашим хуком `ZCity_WoundBridge_Inspect_WSZC`; его идентификатор
+сортируется после штатного в `SortedPairs()`, поэтому двух кнопок не бывает.
+
+- Открывается именно родная панель здоровья/ран C:U, со своим HUD, инвентарём и
+  мини-играми. Второго меню, HUD и инвентаря не создаётся.
+- Кнопка видна только живому `LocalPlayer()` при активном мосте: `WSZC_Ready`,
+  `zc_woundsystem_bridge 1`, `woundsys_enabled 1`,
+  `zc_woundsystem_compat_inspect_button 1`. Панель C:U рассчитана на
+  `LocalPlayer()`, поэтому кнопка проверяет **себя**; осмотр другого игрока
+  через неё невозможен.
+- Перед открытием выдерживается `0.12 c`, чтобы круговое меню ZCity успело
+  закрыться и не перехватить курсор.
+- Команда `wszc_open_wounds` открывает ту же панель (для биндов и диагностики).
+- `zc_woundsystem_compat_inspect_button 0` убирает и наш пункт, и штатный
+  `Examine Body`; перехват `WB.OpenWoundView` остаётся, но кнопки в меню нет.
+- При закрытии мини-игры курсор не снимается, если панель C:U ещё открыта
+  (`WoundSystemHealthHUDOpen`), чтобы не сломать родной HUD C:U.
+
 ## Конвары
 
 | Конвар | Откуда | Назначение |
@@ -121,7 +148,8 @@ SWEP. Поддержка `session.deferredUsed` и масштабированн�
 | `zc_woundsystem_minigames` | ZCity | `1` — ZCity вызывает external-minigame API для спецов с `spec.mg`; адаптер всё равно оставляет one-dose предметы мгновенными; `0` — все предметы применяются мгновенно, активные сессии закрываются. |
 | `zc_woundsystem_compat_minigames` | этот аддон | `1` — наша реализация мини-игр активна; `0` — `StartExternalMinigame` возвращает `false`, т.е. прежнее instant-поведение без правки ZIP. |
 | `zc_woundsystem_compat_debug` | этот аддон | `1` — диагностика найденных C:U upvalue и открытия/закрытия сессий. |
-| `woundsys_enabled` | C:U | Если `0`, `WB.IsEnabled()` снова `false`. |
+| `zc_woundsystem_compat_inspect_button` | этот аддон (client) | `1` — показывать «Проверить травмы» в круговом меню; `0` — скрыть кнопку и штатный `Examine Body`. |
+| `woundsys_enabled` | C:U | Если `0`, `WB.IsEnabled()` снова `false` и на сервере, и на клиенте. |
 
 ## Ограничения
 
@@ -132,6 +160,9 @@ SWEP. Поддержка `session.deferredUsed` и масштабированн�
 - C:U-инвентарь не интегрируется с ZCity SWEP'ами: мост лечит цель напрямую,
   используя виртуальный слот и namespaced-протокол. Родной инвентарь C:U
   продолжает работать как раньше.
+- Кнопка «Проверить травмы» открывает панель C:U только для себя: приложенная
+  версия C:U не имеет UI осмотра другого игрока, поэтому самописный экран
+  диагностики цели не добавлялся.
 - Рагдолл/камера/визуальные эффекты unconscious остаются на стороне ZCity
   (`hg.Fake` / `hg.FakeUp`). C:U не помечает ZCity-ragdoll как свой NW-прокси,
   чтобы не было двойного `EntityTakeDamage` по ragdoll.
@@ -154,9 +185,10 @@ woundsystem_zcity_compat/
 ├── addon.json
 ├── README.md
 └── lua/autorun/
-    ├── sh_zcity_woundsystem_compat.lua        # общий патч WB.IsEnabled + WSZC_Ready
+    ├── sh_zcity_woundsystem_compat.lua        # общий патч WB.IsEnabled + WSZC_Ready + woundsys_enabled
     ├── client/
     │   ├── cl_zcity_woundsystem_compat_minigames.lua  # виртуальный слот, WSZC_* приём, загрузка копий
+    │   ├── cl_zcity_woundsystem_compat_inspect.lua    # «Проверить травмы» → WoundSystem.OpenHealthHUD()
     │   ├── wszc_cl_bandage.lua               # namespaced-копия C:U bandage UI
     │   └── wszc_cl_syringe.lua               # namespaced-копия C:U syringe UI
     └── server/
@@ -185,6 +217,16 @@ woundsystem_zcity_compat/
    или `instant fallback ... (one-dose ZCity item)`.
 5. Помнить, что `weapon_naloxone`, `weapon_needle`, body-препараты и медкит
    режимы `2/3/5` намеренно не открывают мини-игру.
+
+Если в круговом меню нет «Проверить травмы»:
+
+1. `zc_woundsystem_bridge 1`, `woundsys_enabled 1`,
+   `zc_woundsystem_compat_inspect_button 1`.
+2. Убедиться, что в консоли есть `compatibility layer active` — клиент ждёт
+   серверный `WSZC_Ready`.
+3. Проверить, что клиент докачал `cl_zcity_woundsystem_compat_inspect.lua`.
+4. Команда `wszc_open_wounds` должна открыть ту же панель C:U; если она не
+   работает, значит не загрузился `cl_health_gui.lua` C:U.
 
 Сообщение `Could not intercept C:U unconscious ragdoll creation` означает, что
 не удалось найти внутреннюю функцию C:U через `debug`: урон и лечение при этом

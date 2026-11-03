@@ -58,6 +58,11 @@ local function EnableMinigameClicker()
 end
 
 local function DisableMinigameClicker()
+    -- The C:U health/wound panel can be open behind a ZCity minigame (the
+    -- radial "Проверить травмы" button opens it).  Do not release the cursor
+    -- while that panel is still up; C:U releases it when the panel closes.
+    if WoundSystemHealthHUDOpen == true then return end
+
     if WoundSystem and WoundSystem.HealthGUI and WoundSystem.HealthGUI.SetScreenClickerOwned then
         pcall(WoundSystem.HealthGUI.SetScreenClickerOwned, false, "wszc_minigame")
     end

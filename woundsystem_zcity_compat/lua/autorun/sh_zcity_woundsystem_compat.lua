@@ -37,6 +37,11 @@ local function PatchIsEnabled()
             return CUHealthEnabledOnServer()
         end
 
+        -- woundsys_enabled is replicated; keep the client HUD/radial decision in
+        -- sync with the server when C:U is installed but switched off.
+        local cvWounds = GetConVar and GetConVar("woundsys_enabled")
+        if cvWounds and cvWounds.GetBool and not cvWounds:GetBool() then return false end
+
         -- SetGlobalBool is server-authoritative, so the client never guesses.
         return GetGlobalBool("WSZC_Ready", false) == true
     end
