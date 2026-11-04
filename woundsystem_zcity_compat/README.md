@@ -358,7 +358,8 @@ SWEP. В authority-режиме каждая такая доза дополни�
 эффекты опиатов/ломки), `StaminaEffects`, `BlindEffects`,
 `ChromaticAberration`, `SpinNausea*`, `Lobotomy*`, `BrainReverse*`, статик и
 виньетки (`HUDPaintBackground`), moodles, self-talk («My muscles are burning…»),
-death screen, `CalcView`-тряску и unconscious eye view, туман/чёрный скайбокс,
+**визуал** death screen (ввод респавна сохранён!), `CalcView`-тряску и
+unconscious eye view, туман/чёрный скайбокс,
 `BallisticAimKick`, инверсию управления и искажение текста
 (`TextCorruption`). Отключается и звуковой слой C:U: looping medical audio,
 CAS3-музыка, тиннитус, asystole, pain/death/growl-звуки, HEV, искажение чата
@@ -646,12 +647,13 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  движения, источники шрапнели, reset-guard, ragdoll/стекло/осложнения:
  `TEST_OK 11/11`, `TEST_OK 8/8` (full-screen + нативный клип + физика руки),
  `TEST_OK 20/20`, `TEST_OK 11/11`, `TEST_OK 7/7`, `TEST_OK 10/10`
- (кости/лок сессии/смещение), `TEST_OK 14/14` (инвентарь, `DrawOutlinedRect`,
- `hook.Add`, `PreDrawHUD`, viewmodel, нативные сессии) — всего **81 тест**);
- на живом GMod-сервере ассистентом не прогонялось. Пользовательские
- live-скриншоты после `3d7c793` показали, что предыдущие headless-тесты
- `H1/H3/H5/H6` не доказывали скрытие в реальном клиенте; исправления выше
- сделаны по ним, но собственной live-проверки не было.
+ (кости/лок сессии/смещение), `TEST_OK 17/17` (инвентарь, `DrawOutlinedRect`,
+ UV/линии/полигоны, `hook.Add`, `PreDrawHUD`, viewmodel, нативные сессии) и
+ `TEST_OK 11/11` (экран смерти/респавн/dead-context guard/Think-очистка) —
+ всего **95 тестов**); на живом GMod-сервере ассистентом не прогонялось.
+ Пользовательские live-скриншоты после `3d7c793` и `e70bfb5` показали, что
+ предыдущие headless-тесты не доказывали скрытие в реальном клиенте;
+ исправления выше сделаны по ним, но собственной live-проверки не было.
 
 ## Файлы
 
@@ -714,3 +716,70 @@ woundsystem_zcity_compat/
 Сообщение `Could not intercept C:U unconscious ragdoll creation` означает, что
 не удалось найти внутреннюю функцию C:U через `debug`: урон и лечение при этом
 работают, но возможен дублирующийся ragdoll.
+
+
+## Live-скриншоты №5–6: остатки HUD слева и респавн
+
+**Зелёный HUD слева.** После `e70bfb5` фон сканера (`mats.compback`) и его
+текст исчезли, но на экране остались зелёная полоса сверху, две «лёгких»,
+бицепс, ЭКГ и две полосы с пиксельным текстом. Причина: `cl_health_gui.lua`
+рисует их не `surface.DrawTexturedRect` / `draw.SimpleText`, а
+
+* `DrawRectUVInt()` → `surface.DrawTexturedRectUV` (бары, лёгкие, иконки),
+* `surface.DrawLine` (ЭКГ `:4421-4438`, пять проходов толщины + glow),
+* `surface.DrawPoly` (`DrawArcLine`, дуги unconscious-круга),
+* `surface.DrawText` / `draw.SimpleTextOutlined` (резерв для других сборок).
+
+`InstallDrawWrappers()` теперь обёртывает и их: для линии проверяются оба конца
+и середина, для полигона — ограничивающий прямоугольник вершин. `HiddenRegion()`
+по-прежнему не трогает куклу, иконки лимбов, `FIX DISLOCATION` /
+`REMOVE SHRAPNEL` и `action_*` tooltips. Тесты `H15/H16/H17` и `D8`.
+
+**«Кильнулся и не смог зареспавниться».** Корень — в `FX_HOOKS` предыдущих
+релизов: `{ "HUDPaint", "WoundSystem_DeathScreenDisplay" }` удалялся вместе с
+остальными эффектами C:U. Но в `cl_health_gui.lua:5716` внутри этого хука
+находится единственный клиентский обработчик респавна:
+
+```lua
+if input.IsMouseDown(MOUSE_LEFT) then
+    if not DeathScreen.clickDebounce and fadeElapsed >= 1.0 then
+        DeathScreen.clickDebounce = true
+        SetDeathScreenActive(false)
+        WoundSystem.HealthGUI.SetScreenClickerOwned(false, "deathscreen_think_not_dead")
+        net.Start("WoundSystem_PlayerRespawnRequest")
+        net.SendToServer()
+    end
+end
+```
+
+а `sv_deathscreen.lua` в хуке `PlayerDeathThink` / `WoundSystem_BlockRespawn`
+возвращает `false`, пока `ply.WoundSys_CanRespawn` не станет `true` — это делает
+только `net.Receive("WoundSystem_PlayerRespawnRequest")`. Удалённый HUDPaint →
+нет сообщения → респавн заблокирован навсегда, чёрный экран висит.
+
+Исправление:
+
+1. Хук **исключён** из `FX_HOOKS`; `WSZC.WrapCUDeathScreen()` заменяет его
+   через `hook.Add` обёрткой, которая на время вызова ставит
+   `WSZC.CUDeathVisualsHidden = true`. `HiddenRegion()` в этот момент
+   возвращает `true` для ЛЮБОГО примитива (включая полноэкранный чёрный
+   `surface.DrawRect(0,0,ScrW(),ScrH())` из `DrawDeathBackgroundVisuals`),
+   поэтому визуал C:U не рисуется, а `SetDeathScreenActive`, `clickDebounce`,
+   снятие курсора и отправка запроса работают как в ваниле. Флаг
+   восстанавливается через `pcall`, даже если хук упал.
+2. `WSZC_CUDeathRespawnFallback` — независимый Think-обработчик на случай,
+   если C:U переименует хук или загрузится позже: через 1 с после смерти
+   включает курсор и по ЛКМ один раз отправляет тот же net-запрос
+   (через `pcall`), после респавна гасит курсор. Выключен, как только
+   `WSZC.CUDeathScreenWrapped == true`.
+3. Залипшие мини-игры больше не блокируют ввод мёртвого игрока:
+   `WSZC.MinigameContextOK()` проверяет `LocalPlayer():Alive()` и
+   участвует во всех трёх `*.MinigameActive()`; `PlayerDeath` и `PlayerSpawn`
+   вызывают `WSZC.ClearAllMinigameState()` (7 таблиц `MG.active`,
+   `MinigameHUDOpen`, `MinigameFrozenAngles`, `_ViewModelHidden`); серверный
+   `WSZC_MinigameServerLock` сразу выходит для мёртвого `ply`, чтобы
+   `PlayerDeathThink` получил свободный `CUserCmd`.
+4. `ShutDown` возвращает оригинальный хук (`RestoreCUDeathScreen()`).
+
+Практика: после смерти подождать 1 секунду и нажать ЛКМ. Полный возврат
+визуала экрана смерти C:U — `zc_woundsystem_compat_disable_cu_fx 0`.

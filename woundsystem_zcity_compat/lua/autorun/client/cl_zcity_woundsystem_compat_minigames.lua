@@ -22,6 +22,10 @@ WSZC.MinigameOpenAt = 0
 --- the client copy has not painted its first frame yet).  Used for the cursor
 --- owner, the movement lock and C:U's own minigame-active probe.
 function WSZC.MinigameActive()
+    -- A dead player is never "in a minigame": a stuck MG.active used to keep
+    -- the cursor, camera freeze, SetupMove lock and PlayerBindPress block
+    -- alive after death, making respawn impossible.
+    if WSZC.MinigameContextOK and not WSZC.MinigameContextOK() then return false end
     if WSZC.MinigameHUDOpen == true then return true end
     local bandage, syringe = WSZCBandageMinigame, WSZCSyringeMinigame
     if bandage and bandage.IsActive and bandage.IsActive() then return true end
@@ -161,6 +165,50 @@ end)
 -- If ZCity's radial menu is still closing, SetScreenClickerOwned(true) can be
 -- refused by C:U ("external menu open").  Keep re-asserting the cursor while a
 -- WSZC minigame is live; this also defeats the C:U watchdog described above.
+-- Clear every client-side minigame flag on death AND on spawn.  C:U only calls
+-- CloseWoundMinigames() from WoundSystem.HealthGUI.ResetLocalRespawnInput(),
+-- which is tied to its own PlayerSpawn hook; if that hook is missing or a
+-- session object was replaced by a hot reload, MG.active stays true forever.
+local function ClearAllMinigameState()
+    WSZC.MinigameHUDOpen = false
+    WSZC.PendingBandageOpen = nil
+    WSZC.PendingSyringeOpen = nil
+    WSZC.MinigameFrozenAngles = nil
+    WSZC._ViewModelHidden = nil
+    local names = {
+        "WSZCBandageMinigame", "WSZCSyringeMinigame",
+        "WoundSystemDislocationMinigame", "WoundSystemShrapnelMinigame",
+        "WoundSystemAEDMinigame", "WoundSystemBandageMinigame",
+        "WoundSystemSyringeMinigame",
+    }
+    for _, name in ipairs(names) do
+        local mg = _G[name]
+        if type(mg) == "table" then mg.active = false end
+    end
+end
+WSZC.ClearAllMinigameState = ClearAllMinigameState
+
+hook.Add("PlayerDeath", "WSZC_MinigameDeathCleanup", function(ply)
+    if LocalPlayer and ply ~= LocalPlayer() then return end
+    ClearAllMinigameState()
+end)
+hook.Add("PlayerSpawn", "WSZC_MinigameSpawnCleanup", function(ply)
+    if LocalPlayer and ply ~= LocalPlayer() then return end
+    ClearAllMinigameState()
+end)
+
+-- PlayerDeath is not guaranteed to fire in every client realm/build; the
+-- context check is authoritative and runs every frame anyway.
+hook.Add("Think", "WSZC_MinigameDeadCleanup", function()
+    if WSZC.MinigameContextOK and WSZC.MinigameContextOK() then
+        WSZC._MinigameDeadCleaned = false
+        return
+    end
+    if WSZC._MinigameDeadCleaned then return end
+    WSZC._MinigameDeadCleaned = true
+    ClearAllMinigameState()
+end)
+
 -- Native C:U games (dislocation / shrapnel / AED) do not send our WSZC open
 -- packet, so freeze the camera for them too.  The helpers are idempotent.
 hook.Add("Think", "WSZC_MinigameViewWatch", function()

@@ -635,6 +635,13 @@ end)
 -- turn while bandaging/injecting.  Vertical velocity is preserved so falling
 -- is not frozen in mid-air.
 hook.Add("SetupMove", "WSZC_MinigameServerLock", function(ply, mv, cmd)
+    -- Dead / respawning players must never be pinned by a leftover session
+    -- (a C:U Dislocation session can survive death on some builds).  The
+    -- engine needs a free CUserCmd to run PlayerDeathThink / respawn.
+    if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then
+        if ply then ply._WSZCDislocationAngles = nil end
+        return
+    end
     local session = WSZC.MinigameSessions and WSZC.MinigameSessions[ply]
     -- C:U's NATIVE manual bone-reduction minigame (WoundView -> FIX
     -- DISLOCATION) has its own sessions table; it must get the same movement /

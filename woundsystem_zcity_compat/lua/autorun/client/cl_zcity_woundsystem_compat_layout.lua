@@ -52,11 +52,25 @@ function WSZC.StabilizeHandPhysics(hp)
     return hp
 end
 
+--- A dead/unconscious player must never be considered "in a minigame":
+--- otherwise a session left open at death keeps the cursor, movement lock and
+--- bind block alive forever and the player cannot respawn.  Headless tests
+--- return a bare LocalPlayer() table with no Alive(), so default to true.
+function WSZC.MinigameContextOK()
+    local ply = LocalPlayer and LocalPlayer() or nil
+    if type(ply) == "table" and type(ply.Alive) == "function" then
+        local ok, alive = pcall(ply.Alive, ply)
+        if ok and alive == false then return false end
+    end
+    return true
+end
+
 --- Only OUR namespaced WSZC bandage/syringe sessions get the full-screen
 --- clip.  Native C:U games (shrapnel, dislocation, AED) use their own
 --- 760 px clip; stretching it to the whole screen made their bone/hand
 --- sprites ~2x too large and pushed the bone off the top of the screen.
 function WSZC.WSZCMinigameActive()
+    if not WSZC.MinigameContextOK() then return false end
     if WSZC.MinigameHUDOpen == true then return true end
     local bandage, syringe = WSZCBandageMinigame, WSZCSyringeMinigame
     if bandage and bandage.IsActive and bandage.IsActive() then return true end
@@ -65,6 +79,7 @@ function WSZC.WSZCMinigameActive()
 end
 
 function WSZC.NativeMinigameActive()
+    if not WSZC.MinigameContextOK() then return false end
     -- Explicit checks: ipairs() stops at the first nil in a sparse table.
     local list = {
         "WoundSystemDislocationMinigame", "WoundSystemShrapnelMinigame",
@@ -178,10 +193,15 @@ local cvHideUnitPanel = CreateClientConVar("zc_woundsystem_compat_hide_unit_pane
     "1 = hide the UNI-HEALTH / unit scanner panel inside C:U WoundView")
 
 WSZC.CUHudFiltered = false
+-- Set by WrapCUDeathScreen() only while C:U's death-screen HUDPaint hook runs:
+-- every wrapped draw primitive becomes a no-op for that one call, while the
+-- hook's respawn input handling keeps working.
+WSZC.CUDeathVisualsHidden = false
 
 --- Geometry copied from cl_health_gui.lua (WoundDollAndPanel, 1080p base).
 --- Everything is expressed in ScrH()/1080 so it follows the game's own scale.
 local function HiddenRegion(x, y, w, h)
+    if WSZC.CUDeathVisualsHidden == true then return true end
     if not WSZC.CUHudFiltered then return false end
     if type(x) ~= "number" or type(y) ~= "number" then return false end
     w = tonumber(w) or 0
@@ -285,6 +305,67 @@ local function InstallDrawWrappers()
             draw.RoundedBox = function(r, x, y, w, h, ...)
                 if HiddenRegion(x, y, w, h) then return end
                 return origRound(r, x, y, w, h, ...)
+            end
+        end
+
+        -- cl_health_gui.lua draws the green scanner bars / lung icons through
+        -- DrawRectUVInt() -> surface.DrawTexturedRectUV(), the ECG through
+        -- surface.DrawLine() and arcs through surface.DrawPoly().  Those three
+        -- were NOT wrapped in the previous release, which is exactly why the
+        -- green bars, lungs, bicep and ECG stayed on the left of WoundView
+        -- while the panel background and its text disappeared.
+        if type(surface.DrawTexturedRectUV) == "function" then
+            local origUV = surface.DrawTexturedRectUV
+            surface.DrawTexturedRectUV = function(x, y, w, h, ...)
+                if HiddenRegion(x, y, w, h) then return end
+                return origUV(x, y, w, h, ...)
+            end
+        end
+
+        if type(surface.DrawLine) == "function" then
+            local origLine = surface.DrawLine
+            surface.DrawLine = function(x1, y1, x2, y2, ...)
+                x1, y1 = tonumber(x1) or 0, tonumber(y1) or 0
+                x2, y2 = tonumber(x2) or 0, tonumber(y2) or 0
+                if HiddenRegion(x1, y1) or HiddenRegion(x2, y2)
+                    or HiddenRegion((x1 + x2) * 0.5, (y1 + y2) * 0.5) then return end
+                return origLine(x1, y1, x2, y2, ...)
+            end
+        end
+
+        if type(surface.DrawPoly) == "function" then
+            local origPoly = surface.DrawPoly
+            surface.DrawPoly = function(verts, ...)
+                if type(verts) == "table" then
+                    local minX, minY, maxX, maxY
+                    for _, v in pairs(verts) do
+                        if type(v) == "table" and type(v.x) == "number" and type(v.y) == "number" then
+                            minX = (minX == nil) and v.x or math.min(minX, v.x)
+                            minY = (minY == nil) and v.y or math.min(minY, v.y)
+                            maxX = (maxX == nil) and v.x or math.max(maxX, v.x)
+                            maxY = (maxY == nil) and v.y or math.max(maxY, v.y)
+                        end
+                    end
+                    if minX and HiddenRegion(minX, minY, maxX - minX, maxY - minY) then return end
+                end
+                return origPoly(verts, ...)
+            end
+        end
+
+        -- Coordinate-less primitives: only suppressed while the C:U death
+        -- screen hook is running; the ZCity HUD is untouched otherwise.
+        if type(surface.DrawText) == "function" then
+            local origDrawText = surface.DrawText
+            surface.DrawText = function(...)
+                if WSZC.CUDeathVisualsHidden == true then return end
+                return origDrawText(...)
+            end
+        end
+        if type(draw.SimpleTextOutlined) == "function" then
+            local origOutlinedText = draw.SimpleTextOutlined
+            draw.SimpleTextOutlined = function(text, font, x, y, ...)
+                if HiddenRegion(x, y) then return end
+                return origOutlinedText(text, font, x, y, ...)
             end
         end
 

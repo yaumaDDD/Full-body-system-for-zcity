@@ -61,10 +61,14 @@
   у которых `dmgtype` закомментирован в `sh_ammostuff.lua`.
 * **Все экранные эффекты C:U отключены** — остаются только эффекты ZCity:
   сняты `RenderScreenspaceEffects` (шейдеры боли, блюр, туннель, аберрация),
-  статик/виньетки, moodles, self-talk, death screen, `CalcView`-тряска,
-  aim-kick, unconscious eye view, туман, искажение текста и звуковой слой
-  (музыка, тиннитус, HEV, искажение чата). Панель ран,
+  статик/виньетки, moodles, self-talk, **визуал экрана смерти** (не сам ввод),
+  `CalcView`-тряска, aim-kick, unconscious eye view, туман, искажение текста и
+  звуковой слой (музыка, тиннитус, HEV, искажение чата). Панель ран,
   mini-игры и курсор C:U сохранены (`zc_woundsystem_compat_disable_cu_fx 0` — откат).
+  Хук `WoundSystem_DeathScreenDisplay` больше **не удаляется**, а оборачивается:
+  внутри него живёт единственный обработчик ЛКМ, отправляющий
+  `WoundSystem_PlayerRespawnRequest`; без него серверный `WoundSystem_BlockRespawn`
+  навсегда запрещал респавн.
 * **Кровь C:U убрана**: декоративные брызги/лужи/следы, «alien»-кровь на
   моделях и подавление ванильной крови (`woundsys_replace_vanilla_blood`)
   отключены, поэтому снова работает кровь ZCity / Hemogen
@@ -164,6 +168,28 @@
 * **Перед проверкой**: распакуйте именно этот `zcity_full_pack.zip` (или
   `woundsystem_zcity_compat.zip` поверх него) и **перезапустите клиент и
   сервер** — Lua-обёртки хуков не подхватываются «на горячую» сменой ZIP.
+
+* **Остатки зелёного HUD слева убраны**: после предыдущего релиза фон и текст
+  сканера исчезли, но зелёные полосы, лёгкие, бицепс и ЭКГ оставались — C:U
+  рисует их `surface.DrawTexturedRectUV` (`DrawRectUVInt`),
+  `surface.DrawLine` (ЭКГ) и `surface.DrawPoly` (дуги), а фильтр перехватывал
+  только залитые прямоугольники и текст. Теперь обёрнуты и эти три примитива:
+  скрывается всё, что попадает в зону сканера/слотов, а кукла, иконки лимбов и
+  `FIX DISLOCATION` / `REMOVE SHRAPNEL` по-прежнему рисуются.
+* **Респавн после смерти работает**: причина «кильнулся и не смог
+  зареспавниться» — удалённый вместе с C:U-эффектами хук
+  `WoundSystem_DeathScreenDisplay`. В `cl_health_gui.lua:5716` именно он по ЛКМ
+  шлёт `WoundSystem_PlayerRespawnRequest`, а `sv_deathscreen.lua` держит
+  `WoundSys_CanRespawn=false`, пока сообщение не придёт. Теперь хук обёрнут
+  (`WSZC.WrapCUDeathScreen()`): вся его отрисовка гасится флагом
+  `WSZC.CUDeathVisualsHidden`, а логика клика, `clickDebounce`, снятие курсора и
+  отправка запроса остаются. Есть независимый запасной обработчик
+  `WSZC_CUDeathRespawnFallback` (сработает, если C:U переименует хук): через 1 с
+  после смерти ЛКМ отправляет тот же запрос. Дополнительно
+  `WSZC.MinigameContextOK()` запрещает считать мёртвого игрока «в мини-игре»,
+  `PlayerDeath`/`PlayerSpawn` сбрасывают все `MG.active`, а серверный
+  `WSZC_MinigameServerLock` не блокирует `SetupMove` мёртвого игрока — иначе
+  залипшая сессия держала курсор, заморозку камеры и запрет биндов вечно.
 
 Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
 и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.

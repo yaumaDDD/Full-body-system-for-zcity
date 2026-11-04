@@ -26,6 +26,13 @@ local cvDisableBlood = CreateClientConVar("zc_woundsystem_compat_disable_cu_bloo
 --   WoundDollAndPanel / WoundSystem_UIRegistry / WoundSystem_WorldItemDraw
 --   ToggleHUDInput / CacheVitals / WoundSystem_ScreenClickerWatchdog
 --   (the injury panel, its input handling and the cursor owner must survive).
+--
+--   WoundSystem_DeathScreenDisplay is NOT in the list either any more:
+--   besides drawing the death screen it is the ONLY client handler that sends
+--   "WoundSystem_PlayerRespawnRequest" on left click.  The server hook
+--   "WoundSystem_BlockRespawn" blocks ordinary respawn until that message
+--   arrives, so removing the display hook made respawning impossible.  It is
+--   wrapped (draws suppressed, input preserved) by WrapCUDeathScreen() below.
 local FX_HOOKS = {
     -- Full-screen post-processing (pain shader, bloom, sharpen, motion blur,
     -- tunnel vision, chromatic aberration, drug/withdrawal visuals, ...).
@@ -44,7 +51,6 @@ local FX_HOOKS = {
     { "PostDrawHUD", "WoundSystem_MoodlesPaint" },
     { "PostDrawHUD", "zz_WoundSystem_UnconsciousCircleForeground" },
     { "HUDPaint", "WoundSystem_SelfTalkHUDPaint" },
-    { "HUDPaint", "WoundSystem_DeathScreenDisplay" },
     { "HUDPaint", "WoundSystem_DrawMoodIcon" },
     -- Camera / view manipulation.
     { "CalcView", "00_WoundSystem_UnconsciousEyeView" },
@@ -140,6 +146,124 @@ local function ApplyList(list, enabled)
     end
 end
 
+---------------------------------------------------------------------------
+-- C:U death screen: keep the RESPAWN INPUT, drop the VISUALS
+---------------------------------------------------------------------------
+-- cl_health_gui.lua:5716 lives inside WoundSystem_DeathScreenDisplay:
+--   input.IsMouseDown(MOUSE_LEFT) -> net.Start("WoundSystem_PlayerRespawnRequest")
+-- Server-side sv_deathscreen.lua:WoundSystem_BlockRespawn returns false until
+-- that message arrives.  Removing the HUDPaint hook (previous releases) killed
+-- respawn entirely.  We now replace the hook with a wrapper that calls the
+-- original (so SetDeathScreenActive / clickDebounce / the net message / cursor
+-- release all still work) while WSZC.CUDeathVisualsHidden makes every wrapped
+-- draw primitive a no-op for the duration of that one hook call.
+local DEATH_HOOK = "WoundSystem_DeathScreenDisplay"
+local DEATH_KEY = "HUDPaint/" .. DEATH_HOOK
+local deathWrapper, savedDeathFn
+
+local function RestoreCUDeathScreen()
+    WSZC.CUDeathScreenWrapped = false
+    if not savedDeathFn then return end
+    local hooks = hook.GetTable and hook.GetTable() or {}
+    local hud = type(hooks) == "table" and hooks.HUDPaint or nil
+    if type(hud) == "table" and hud[DEATH_HOOK] == deathWrapper and hook.Add then
+        hook.Add("HUDPaint", DEATH_HOOK, savedDeathFn)
+    end
+    savedDeathFn, deathWrapper = nil, nil
+end
+
+local function WrapCUDeathScreen()
+    if not cvDisableFX:GetBool() then
+        RestoreCUDeathScreen()
+        return false
+    end
+    local hooks = hook.GetTable and hook.GetTable() or {}
+    local hud = type(hooks) == "table" and hooks.HUDPaint or nil
+    if type(hud) ~= "table" then
+        WSZC.CUDeathScreenWrapped = false
+        return false
+    end
+    local fn = hud[DEATH_HOOK]
+    -- A previous Apply() run (or an older release hot-reload) may have left
+    -- the hook removed; restore from the saved callback first.
+    if type(fn) ~= "function" and type(WSZC.CUFxSaved[DEATH_KEY]) == "function" then
+        fn = WSZC.CUFxSaved[DEATH_KEY]
+        WSZC.CUFxSaved[DEATH_KEY] = nil
+        if hook.Add then hook.Add("HUDPaint", DEATH_HOOK, fn) end
+    end
+    if type(fn) ~= "function" then
+        WSZC.CUDeathScreenWrapped = false
+        return false
+    end
+    if fn == deathWrapper then
+        WSZC.CUDeathScreenWrapped = true
+        return true
+    end
+
+    savedDeathFn = fn
+    deathWrapper = function(...)
+        if not cvDisableFX:GetBool() then return fn(...) end
+        local prevHidden = WSZC.CUDeathVisualsHidden
+        WSZC.CUDeathVisualsHidden = true
+        local ok, a, b, c = pcall(fn, ...)
+        WSZC.CUDeathVisualsHidden = prevHidden
+        if not ok then error(a, 0) end
+        return a, b, c
+    end
+    -- hook.Add with the same identifier is the supported replacement (writing
+    -- into hook.GetTable() is a no-op on builds that return a defensive copy).
+    hook.Add("HUDPaint", DEATH_HOOK, deathWrapper)
+    WSZC.CUDeathScreenWrapped = true
+    return true
+end
+WSZC.WrapCUDeathScreen = WrapCUDeathScreen
+WSZC.RestoreCUDeathScreen = RestoreCUDeathScreen
+
+-- Safety net for builds where C:U's death-screen hook is missing or renamed:
+-- reproduce ONLY the respawn request, never any C:U death artwork.  Skipped as
+-- soon as the real hook has been wrapped successfully.
+local deathAt, deathSent, deathCursor = nil, false, false
+hook.Add("Think", "WSZC_CUDeathRespawnFallback", function()
+    local ply = LocalPlayer and LocalPlayer() or nil
+    if not (ply and IsValid and IsValid(ply)) then return end
+    local alive = true
+    if type(ply.Alive) == "function" then
+        local ok, isAlive = pcall(ply.Alive, ply)
+        if ok then alive = isAlive ~= false end
+    end
+    if alive then
+        if deathAt then
+            deathAt, deathSent = nil, false
+            if deathCursor then
+                deathCursor = false
+                if gui and gui.EnableScreenClicker then gui.EnableScreenClicker(false) end
+                if WoundSystem and WoundSystem.HealthGUI
+                    and WoundSystem.HealthGUI.SetScreenClickerOwned then
+                    pcall(WoundSystem.HealthGUI.SetScreenClickerOwned, false, "wszc_respawn")
+                end
+            end
+        end
+        return
+    end
+    if WSZC.CUDeathScreenWrapped == true then return end
+    local now = CurTime and CurTime() or 0
+    if not deathAt then deathAt, deathSent = now, false end
+    if gui and gui.EnableScreenClicker then gui.EnableScreenClicker(true) end
+    deathCursor = true
+    if now - deathAt < 1.0 then return end
+    local down = input and input.IsMouseDown
+        and input.IsMouseDown(MOUSE_LEFT or 107) or false
+    if down and not deathSent and net and net.Start and net.SendToServer then
+        deathSent = true
+        -- pcall: on a build where the net string is not pooled, one failed
+        -- request must never throw inside a Think hook.
+        pcall(function()
+            net.Start("WoundSystem_PlayerRespawnRequest")
+            net.SendToServer()
+        end)
+    end
+end)
+
 -- cl_text_corruption.lua corrupts every C:U UI string through two exported
 -- functions.  They are not hooks, so neutralise them explicitly.
 local savedCorrupt, savedShouldCorrupt
@@ -177,6 +301,7 @@ local function Apply()
     ApplyList(FX_HOOKS, cvDisableFX:GetBool())
     ApplyList(BLOOD_HOOKS, cvDisableBlood:GetBool())
     ApplyTextCorruption(cvDisableFX:GetBool())
+    WrapCUDeathScreen()
     ApplyCvars()
 end
 WSZC.ApplyCUFxFilter = Apply
@@ -193,6 +318,7 @@ hook.Add("InitPostEntity", "WSZC_CUFxFilterInit", Apply)
 
 -- Do not leave C:U hooks removed when the addon is hot-reloaded / map changes.
 hook.Add("ShutDown", "WSZC_CUFxFilterRestore", function()
+    RestoreCUDeathScreen()
     ApplyList(FX_HOOKS, false)
     ApplyList(BLOOD_HOOKS, false)
     ApplyTextCorruption(false)
