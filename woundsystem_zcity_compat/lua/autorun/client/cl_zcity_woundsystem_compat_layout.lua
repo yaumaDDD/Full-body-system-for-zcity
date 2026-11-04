@@ -229,6 +229,8 @@ local cvHideInventory = CreateClientConVar("zc_woundsystem_compat_hide_cu_invent
     "1 = hide C:U's 5 inventory slots in WoundView (ZCity SWEPs own the slots); virtual slot 6 stays")
 local cvHideUnitPanel = CreateClientConVar("zc_woundsystem_compat_hide_unit_panel", "1", true, false,
     "1 = hide the UNI-HEALTH / unit scanner panel inside C:U WoundView")
+local cvHideWoundBackdrop = CreateClientConVar("zc_woundsystem_compat_hide_woundview_backdrop", "1", true, false,
+    "1 = remove C:U's dark full-screen WoundView backdrop; 0 = keep it")
 
 WSZC.CUHudFiltered = false
 -- Set by WrapCUDeathScreen() only while C:U's death-screen HUDPaint hook runs:
@@ -259,6 +261,14 @@ local function IsDollDrawMaterial(name)
 end
 WSZC.IsDollDrawMaterial = IsDollDrawMaterial
 
+--- Only the 15 limb sprites need the white tint.  Status icons and the
+--- action-point textures keep C:U's own colours.
+local function IsDollLimbMaterial(name)
+    if type(name) ~= "string" then return false end
+    return name:lower():gsub("\\", "/"):find("wszc/unitmenu/limbs/", 1, true) ~= nil
+end
+WSZC.IsDollLimbMaterial = IsDollLimbMaterial
+
 local function MaterialName(mat)
     if not mat or not mat.GetName then return nil end
     local ok, name = pcall(mat.GetName, mat)
@@ -285,9 +295,15 @@ local function HiddenRegionRaw(x, y, w, h)
     local s = (sh / 1080) * uiScale
     if sh <= 600 then s = s * 0.72 elseif sh <= 768 then s = s * 0.86 end
 
-    -- A genuinely full-screen quad is the shared dark WoundView backdrop, not
-    -- the scanner.  Keep it so the doll stays readable over the world.
-    if w >= sw * 0.9 and h >= sh * 0.9 then return false end
+    -- A genuinely full-screen quad is C:U's shared dark WoundView backdrop
+    -- (mats.woundbg / DrawConsciousnessBlackout / unconscious vignette), not
+    -- the scanner.  The live screenshots showed an almost black screen behind
+    -- the doll; the owner asked for the world to stay visible.  Only suppress
+    -- it while WoundView is really open - the unconscious blackout must keep
+    -- working when the HUD is closed.
+    if w >= sw * 0.9 and h >= sh * 0.9 then
+        return cvHideWoundBackdrop:GetBool() and WoundSystemHealthHUDOpen == true
+    end
 
     local function Overlap(bx, by, bw, bh)
         return x <= bx + bw and x + w >= bx and y <= by + bh and y + h >= by
@@ -646,6 +662,10 @@ local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_scree
     "Cap the minigame hand width at this fraction of ScrW (0.1 .. 1)", 0.1, 1)
 local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "1", true, false,
     "1 = hide the OS cursor while any C:U / WSZC minigame is open")
+local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "1", true, false,
+    "1 = put the archive hand on the REAL cursor, bypassing C:U hand inertia/pain shake")
+local cvDollTint = CreateClientConVar("zc_woundsystem_compat_unitmenu_tint", "1", true, false,
+    "1 = draw the slate limbs with a white tint so they do not render pure black")
 
 WSZC.UnitmenuHandSrcW = 960
 WSZC.UnitmenuHandSrcH = 540
@@ -855,7 +875,7 @@ WSZC.ApplyUnitmenuIcons = ApplyUnitmenuIcons
 ---------------------------------------------------------------------------
 local nativeHandInstalled, handSwap = false, false
 local materialTrackerInstalled = false
-local origSetMaterial, origRectRotated, origTexturedRect
+local origSetMaterial, origRectRotated, origTexturedRect, origSetDrawColor
 
 --- Installed unconditionally (not only when handanim is enabled): the HUD
 --- filter needs the current material to decide whether a draw call belongs to
@@ -878,6 +898,21 @@ function WSZC.InstallMaterialTracker()
             end
         end
         return origSetMaterial(mat)
+    end
+
+    -- C:U multiplies the doll's middle sprite by `finalMiddle`, which is
+    -- normally pure black (muscle=100) and turns red only for damage.  A slate
+    -- PNG multiplied by black would still be pure black, so force a white tint
+    -- for limb materials only.  The alpha C:U supplies (fade-in, hover,
+    -- dismembered state) is preserved.
+    if type(surface.SetDrawColor) == "function" then
+        origSetDrawColor = surface.SetDrawColor
+        surface.SetDrawColor = function(r, g, b, a)
+            if cvDollTint:GetBool() and IsDollLimbMaterial(WSZC._DrawMaterialName) then
+                return origSetDrawColor(255, 255, 255, a or 255)
+            end
+            return origSetDrawColor(r, g, b, a)
+        end
     end
     materialTrackerInstalled = true
     return true
@@ -941,9 +976,43 @@ function WSZC.InstallNativeHandOverride()
     end
     WSZC.HandPivot = HandPivot
 
-    --- C:U passes the CENTER of the rotated rect, which is the cursor.
-    --- Return the rect that puts the sprite's grip point exactly there.
+    local NATIVE_HAND_MG = {
+        "WoundSystemDislocationMinigame", "WoundSystemShrapnelMinigame",
+        "WoundSystemAEDMinigame", "WoundSystemBandageMinigame",
+        "WoundSystemSyringeMinigame",
+    }
+
+    --- C:U's HandPhysics eases handScreenX/Y toward the mouse and adds a pain
+    --- shake, so the drawn hand always lagged behind the real cursor.  Read
+    --- the actual cursor and push it into the MINIGAME STATE too, otherwise
+    --- the grab hitboxes would disagree with the picture.
+    function WSZC.NativeHandCursorPos()
+        if type(gui) ~= "table" or type(gui.MousePos) ~= "function" then return nil, nil end
+        local ok, mx, my = pcall(gui.MousePos)
+        if not ok or type(mx) ~= "number" or type(my) ~= "number" then return nil, nil end
+        if mx <= 0 and my <= 0 then return nil, nil end
+        return mx, my
+    end
+
+    function WSZC.PinNativeHandToCursor()
+        if not cvHandPinCursor:GetBool() then return nil, nil end
+        local mx, my = WSZC.NativeHandCursorPos()
+        if not mx then return nil, nil end
+        for _, name in ipairs(NATIVE_HAND_MG) do
+            local mg = _G[name]
+            if type(mg) == "table" and mg.active == true then
+                mg.handScreenX, mg.handScreenY = mx, my
+            end
+        end
+        return mx, my
+    end
+
+    --- C:U passes the CENTER of the rotated rect, which is its (lagging) hand
+    --- position.  Return the rect that puts the sprite's grip point exactly on
+    --- the real cursor.
     function WSZC.HandRectForCursor(cx, cy, w, h)
+        local mx, my = WSZC.PinNativeHandToCursor()
+        if mx then cx, cy = mx, my end
         local nw, nh = HandDrawSize(w, h)
         local px, py = HandPivot()
         return cx + (0.5 - px) * nw, cy + (0.5 - py) * nh, nw, nh

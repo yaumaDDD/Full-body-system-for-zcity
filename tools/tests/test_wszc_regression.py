@@ -84,12 +84,27 @@ check('S11 reset keeps only the down structure and clears sprint penalties',
 check('S12 hemogen blood is explicitly untouched',
       'advancedblood/' not in ''.join(
           p.read_text(encoding='utf-8') for p in CONN.rglob('*.lua')))
-check('S13 generator builds one union silhouette, not 15 separate rings',
-      'ImageChops.lighter' in generator_s
-      and 'MaxFilter(15)' in generator_s and 'MinFilter(15)' in generator_s
-      and 'outline.crop(box)' in generator_s)
+check('S13 generator emits slate fills and transparent outlines, no white ring',
+      'DOLL_RGB' in generator_s and 'MinFilter(JOINT_ERODE)' in generator_s
+      and 'transparent sprite' in generator_s
+      and 'MaxFilter(15)' not in generator_s)
 check('S14 docs describe the seamless doll, hand pivot and hidden cursor',
       'белых шв' in readme_s or 'белыми швами' in readme_s)
+check('S23 WoundView dark backdrop is suppressed only while the HUD is open',
+      'zc_woundsystem_compat_hide_woundview_backdrop' in layout_s
+      and 'WoundSystemHealthHUDOpen == true' in layout_s)
+check('S24 limb sprites get a white tint so slate does not render black',
+      'zc_woundsystem_compat_unitmenu_tint' in layout_s
+      and 'origSetDrawColor(255, 255, 255, a or 255)' in layout_s
+      and 'IsDollLimbMaterial' in layout_s)
+check('S25 archive hand is pinned to the real cursor (state + draw)',
+      'zc_woundsystem_compat_hand_pin_cursor' in layout_s
+      and 'PinNativeHandToCursor' in layout_s
+      and 'mg.handScreenX, mg.handScreenY = mx, my' in layout_s)
+check('S26 archive hand stays default; status icons/texts are left alone',
+      '"zc_woundsystem_compat_handanim", "1"' in layout_s
+      and 'HGNotificationsThink' not in layout_s
+      and 'SetCursor, panel, "blank"' in layout_s)
 
 # Lua syntax (luaparser is optional).
 try:
@@ -139,13 +154,21 @@ try:
         body = ImageChops.lighter(body, flayer)
         edges = ImageChops.lighter(edges, elayer)
     mask = body.point(lambda p: 255 if p > 127 else 0)
-    outer = ImageChops.subtract(mask.filter(ImageFilter.MaxFilter(7)), mask)
-    interior = mask.filter(ImageFilter.MinFilter(11))
-    seams = ImageChops.multiply(edges, interior)
-    check('S17 doll has NO internal white seams', seams.getbbox() is None)
-    check('S18 doll has a complete outer outline', outer.getbbox() is not None and edges.getbbox() is not None)
-    check('S19 every outline pixel belongs to the outer contour',
-          ImageChops.multiply(edges, ImageChops.invert(outer.filter(ImageFilter.MaxFilter(5)))).getbbox() is None)
+    check('S17 NO white outline: every _edge.png is fully transparent',
+          edges.getbbox() is None)
+    thorax = Image.open(limb_dir / 'thorax_fill.png').convert('RGBA')
+    r, g, b, a = thorax.getpixel((thorax.width // 2, thorax.height // 2))
+    check('S18 limbs are dark slate, not pure black',
+          a > 200 and (r, g, b) == (42, 56, 60))
+    # Thin transparent joint lines: a transparent pixel with opaque silhouette
+    # 8 px above AND below it is a seam, not the outer background.
+    px = mask.load()
+    seam_pixels = 0
+    for y in range(170, 1470, 2):
+        for x in range(130, 1340, 2):
+            if px[x, y] == 0 and y > 8 and y < 1492 and px[x, y - 8] > 127 and px[x, y + 8] > 127:
+                seam_pixels += 1
+    check('S19 thin joint lines are present (%d px)' % seam_pixels, seam_pixels > 20)
     mats = [p for p in (CONN / 'materials').rglob('*') if p.is_file()]
     check('S20 connector ships 647 UI materials', len(mats) == 647)
     checksums = (CONN / 'MATERIALS.sha256').read_text(encoding='utf-8').splitlines()
@@ -193,7 +216,7 @@ except ImportError:
     LuaRuntime = None
 
 if LuaRuntime is None:
-    print('SKIP R01-R16 lupa unavailable')
+    print('SKIP runtime checks (lupa unavailable)')
 else:
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(r'''
@@ -230,9 +253,11 @@ worldPanel = { SetCursor = function(_, v) cursorValue = v end,
                GetCursor = function() return cursorValue end }
 vgui = { GetWorldPanel = function() return worldPanel end,
          CursorVisible = function() return true end }
+mouseX, mouseY = 500, 400
 gui = { EnableScreenClicker = function(on) clickerOn = on end,
-        MousePos = function() return 500, 400 end }
+        MousePos = function() return mouseX, mouseY end }
 clickerOn = false
+WoundSystemHealthHUDOpen = false
 input = { IsMouseDown = function() return false end, IsKeyDown = function() return false end }
 net = { Receive = function() end, Start = function() end, SendToServer = function() end }
 MOUSE_LEFT, MOUSE_RIGHT, KEY_ESCAPE = 107, 108, 70
@@ -250,7 +275,8 @@ Color = function(r, g, b, a) return { r = r, g = g, b = b, a = a } end
 surfaceCalls = {}
 surface = {
     SetMaterial = function(m) table.insert(surfaceCalls, { kind = "mat", m = m }) end,
-    SetDrawColor = function() end,
+    SetDrawColor = function(r, g, b, a)
+        table.insert(surfaceCalls, { kind = "color", r = r, g = g, b = b, a = a }) end,
     DrawTexturedRect = function(x, y, w, h)
         table.insert(surfaceCalls, { kind = "rect", x = x, y = y, w = w, h = h }) end,
     DrawTexturedRectUV = function(x, y, w, h)
@@ -463,6 +489,87 @@ end)()
     local n = 0
     for _ in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do n = n + 1 end
     return n == 15 and WSZC_UNITMENU_LIMB_GEOMETRY.head.w > 0
+end)()
+''')
+
+    rt('R17 WoundView backdrop hidden, unconscious blackout preserved', '''
+(function()
+    WSZC.CUHudFiltered = true; WSZC.CUDeathVisualsHidden = false
+    convars["zc_woundsystem_compat_hide_woundview_backdrop"]._v = "1"
+    WoundSystemHealthHUDOpen = true
+    local hid = WSZC.CUHudHiddenRegionRaw(0, 0, 1000, 1000) == true
+    WoundSystemHealthHUDOpen = false
+    local kept = WSZC.CUHudHiddenRegionRaw(0, 0, 1000, 1000) == false
+    convars["zc_woundsystem_compat_hide_woundview_backdrop"]._v = "0"
+    WoundSystemHealthHUDOpen = true
+    local off = WSZC.CUHudHiddenRegionRaw(0, 0, 1000, 1000) == false
+    WoundSystemHealthHUDOpen = false
+    convars["zc_woundsystem_compat_hide_woundview_backdrop"]._v = "1"
+    WSZC.CUHudFiltered = false
+    return hid and kept and off
+end)()
+''')
+
+    rt('R18 limb draw colour forced white, other materials untouched', '''
+(function()
+    WSZC.InstallMaterialTracker()
+    surfaceCalls = {}
+    surface.SetMaterial(Material("wszc/unitmenu/limbs/head_fill.png"))
+    surface.SetDrawColor(0, 0, 0, 255)
+    surface.SetMaterial(Material("casunknown-images/icons/fracturedbone.png"))
+    surface.SetDrawColor(12, 34, 56, 255)
+    local first, second
+    for _, c in ipairs(surfaceCalls) do
+        if c.kind == "color" then
+            if not first then first = c else second = c end
+        end
+    end
+    return first ~= nil and second ~= nil
+       and first.r == 255 and first.g == 255 and first.b == 255 and first.a == 255
+       and second.r == 12 and second.g == 34 and second.b == 56
+end)()
+''')
+
+    rt('R19 hand pinned to the REAL cursor, C:U state kept in sync', '''
+(function()
+    mouseX, mouseY = 700, 300
+    WoundSystemShrapnelMinigame = { active = true, handScreenX = 100, handScreenY = 100 }
+    surfaceCalls = {}
+    surface.SetMaterial(Material("casunknown-images/shrapnelminigame/handGraspIdle1.png"))
+    surface.DrawTexturedRectRotated(200, 150, 512, 1260, 0)
+    local c = surfaceCalls[#surfaceCalls]
+    local px, py = WSZC.HandPivot()
+    local state = WoundSystemShrapnelMinigame
+    WoundSystemShrapnelMinigame = { active = false }
+    mouseX, mouseY = 500, 400
+    return c.kind == "rot"
+       and math.abs((c.x + (px - 0.5) * c.w) - 700) < 0.001
+       and math.abs((c.y + (py - 0.5) * c.h) - 300) < 0.001
+       and state.handScreenX == 700 and state.handScreenY == 300
+end)()
+''')
+
+
+    rt('R20 hand_pin_cursor 0 restores C:U\'s own hand position', '''
+(function()
+    convars["zc_woundsystem_compat_hand_pin_cursor"]._v = "0"
+    mouseX, mouseY = 700, 300
+    local x, y, w, h = WSZC.HandRectForCursor(200, 150, 512, 1260)
+    local px, py = WSZC.HandPivot()
+    convars["zc_woundsystem_compat_hand_pin_cursor"]._v = "1"
+    mouseX, mouseY = 500, 400
+    return math.abs((x + (px - 0.5) * w) - 200) < 0.001
+       and math.abs((y + (py - 0.5) * h) - 150) < 0.001
+end)()
+''')
+
+    rt('R21 new defaults: archive hand, pinned, hidden backdrop, slate tint', '''
+(function()
+    return convars["zc_woundsystem_compat_handanim"]._v == "1"
+       and convars["zc_woundsystem_compat_hand_pin_cursor"]._v == "1"
+       and convars["zc_woundsystem_compat_hide_woundview_backdrop"]._v == "1"
+       and convars["zc_woundsystem_compat_unitmenu_tint"]._v == "1"
+       and convars["zc_woundsystem_compat_hide_minigame_cursor"]._v == "1"
 end)()
 ''')
 

@@ -68,7 +68,9 @@
 | Все мини-игры раскрываются на весь экран | `zc_woundsystem_compat_fullscreen_minigame 1`, `zc_woundsystem_compat_fullscreen_native 1` (нативные shrapnel/dislocation/AED тоже; `Clip.Scale()` масштабируется согласованно) |
 | Нет белых пустых слотов и чёрной подложки поверх куклы | `HiddenRegionRaw()` для `DrawOutlinedRect`/`DrawRect`/`RoundedBox`/`DrawLine`/`DrawPoly`; whitelist только для текстур и текста |
 | После «Reset organism» снова можно быстро бегать | `RESET_KEEP` больше не несёт `canmove/stun/consciousness/brain`; `WSZC.ClearMovementPenalties()` снимает штрафы движения во всех трёх путях ресета |
-| Кукла единым силуэтом, без белых швов | `tools/build_unitmenu_materials.py`: морфологическое замыкание union 15 слоёв + единый внешний контур; 30 PNG пересобраны |
+| Кукла как на эталонном скрине | `tools/build_unitmenu_materials.py`: тёмно-шиферный `(42,56,60)` `_fill` с эрозией 3 px (тонкие линии суставов) + полностью прозрачный `_edge` (без белой обводки); `zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` для лимбов |
+| Рука мини-игры без инерции | `zc_woundsystem_compat_hand_pin_cursor 1` → реальный `gui.MousePos()` и синхронизация `MG.handScreenX/Y`; поворот `0`, курсор скрыт |
+| Светлый фон WoundView | `zc_woundsystem_compat_hide_woundview_backdrop 1` гасит полноэкранный `woundbg`/blackout только пока `WoundSystemHealthHUDOpen == true` |
 | Рука в мини-игре ровно на курсоре | `zc_woundsystem_compat_hand_pivot_x 0.16`, `zc_woundsystem_compat_hand_pivot_y 0.45`, поворот `0`, лимит `zc_woundsystem_compat_hand_max_screen 0.34` |
 | Системный курсор в мини-игре не виден | `zc_woundsystem_compat_hide_minigame_cursor 1` → VGUI-курсор `"blank"`, мышь работает; `0` — вернуть стрелку |
 | После смерти не «залипают» мини-игры/курсор/лок движения | включается вместе с `zc_woundsystem_compat_minigames 1` |
