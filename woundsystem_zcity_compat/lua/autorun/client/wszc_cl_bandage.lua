@@ -109,7 +109,21 @@ local SRC_HAND_W = 512
 local SRC_HAND_H = 1260
 
 local function GetScale()
-    return (WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Scale) and WoundSystem.MinigameClip.Scale() or (ScrH() / 1080)
+    return (WSZC and WSZC.MinigameScale) and WSZC.MinigameScale()
+        or ((WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Scale)
+            and WoundSystem.MinigameClip.Scale() or (ScrH() / 1080))
+end
+
+local function Fullscreen() return WSZC and WSZC.MinigameFullscreen and WSZC.MinigameFullscreen() end
+
+-- The bandage circle used to sit inside the 760 px C:U clip square.  Once the
+-- clip covers the whole viewport, grow the artwork so it actually fills it.
+local function ScaleMultiplier()
+    return CFG.ScaleMultiplier * (Fullscreen() and 1.2 or 1)
+end
+
+local function BaseScale()
+    return GetScale() * ScaleMultiplier()
 end
 
 local HAND_CURSOR_PIVOT_X = 0.4
@@ -204,11 +218,13 @@ local function LocalReset()
     MG.condition = 1.0
     MG._hp_acc = 0
     
-    local baseScale = (ScrH() / 1080) * CFG.ScaleMultiplier
+    local baseScale = BaseScale()
     MG.handPos = { x = 0, y = 0 }
     MG.handVelocity = { x = 0, y = 0 }
     MG.handScreenX = ScrW() * 0.5
-    MG.handScreenY = ScrH() * 0.5 + ((DevMinigameCfg.bandageHandOffsetY or 500) * baseScale)
+    MG.handScreenY = math.min(
+        ScrH() * 0.5 + ((DevMinigameCfg.bandageHandOffsetY or 500) * baseScale),
+        ScrH() * 0.92)
     MG.handScreenVelX = 0
     MG.handScreenVelY = 0
     MG.lastSampleAt = 0
@@ -375,6 +391,7 @@ end
 
 local function EnsureOverlay()
     DestroyOverlay()
+    if WSZC and WSZC.ApplyFullscreenClip then WSZC.ApplyFullscreenClip() end
 
     MG.overlay = vgui.Create("DPanel")
     MG.overlay:SetSize(ScrW(), ScrH())
@@ -399,7 +416,7 @@ local function EnsureOverlay()
 
         local clipActive = WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Begin()
         
-        local baseScale = GetScale() * CFG.ScaleMultiplier
+        local baseScale = BaseScale()
         
         local innerSize = CFG.InnerBaseSize * baseScale
         local stickSize = CFG.StickSize * baseScale
@@ -473,7 +490,7 @@ local function EnsureOverlay()
         if not MG.active then return end
 
         local cx, cy = ScrW() / 2, ScrH() / 2
-        local baseScale = GetScale() * CFG.ScaleMultiplier
+        local baseScale = BaseScale()
         
         local screenX = cx + (MG.handPos.x * baseScale)
         local screenY = cy - (MG.handPos.y * baseScale)
@@ -550,7 +567,7 @@ function MG.OpenFromServer(payload)
     if mx <= 0 and my <= 0 then
         mx, my = cx, cy
     end
-    local baseScale = GetScale() * CFG.ScaleMultiplier
+    local baseScale = BaseScale()
     
     MG.handPos.x = (mx - cx) / baseScale
     MG.handPos.y = -(my - cy) / baseScale
@@ -607,7 +624,7 @@ hook.Add("Think", "WSZC_BandageInput", function()
     
     local cx, cy = ScrW() / 2, ScrH() / 2
     local mx, my = gui.MousePos()
-    local baseScale = GetScale() * CFG.ScaleMultiplier
+    local baseScale = BaseScale()
 
     local state = WoundSystemClientState and WoundSystemClientState.PlayerLimbs and WoundSystemClientState.PlayerLimbs[MG.limbId]
     local painFactor = 0

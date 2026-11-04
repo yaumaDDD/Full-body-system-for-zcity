@@ -224,8 +224,26 @@ local function EndPixelFilter(active)
     end
 end
 
+local function MiniScale()
+    return (WSZC and WSZC.MinigameScale) and WSZC.MinigameScale() or (ScrH() / 1080)
+end
+
+-- In full-screen mode the board IS the screen, so the hard-coded -670/600 px
+-- offsets (which compensated for the old 1382x1384 centered board) must be
+-- expressed as fractions of the viewport instead.  Sim coordinates are
+-- unchanged, so the injection physics stay identical.
+local function Fullscreen() return WSZC and WSZC.MinigameFullscreen and WSZC.MinigameFullscreen() end
+
+local function SyringeOffsetPx(scale)
+    if Fullscreen() then
+        local startY = MiniNumber({ "syringeStartY", "startY" }, DEFAULT_MINIGAME.syringeStartY)
+        return (ScrH() * 0.648) - (ScrH() * 0.5) + (startY * MG.scale)
+    end
+    return MiniNumber({ "syringeDrawOffsetY", "drawOffsetY" }, DEFAULT_MINIGAME.syringeDrawOffsetY) * scale
+end
+
 local function UpdateHandDrawPosition()
-    local scale = (WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Scale) and WoundSystem.MinigameClip.Scale() or (ScrH() / 1080)
+    local scale = MiniScale()
     local handPivotX = MiniNumber("handPivotX", DEFAULT_MINIGAME.handPivotX)
     local handPivotY = MiniNumber("handPivotY", DEFAULT_MINIGAME.handPivotY)
     local handOffsetX = MiniNumber("handOffsetX", DEFAULT_MINIGAME.handOffsetX) * scale
@@ -247,11 +265,17 @@ local function UpdateHandDrawPosition()
 end
 
 local function RebuildBoardMetrics()
-    local scale = (WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Scale) and WoundSystem.MinigameClip.Scale() or (ScrH() / 1080)
-    
+    local scale = MiniScale()
+
+    MG.fullscreen = Fullscreen() == true
     MG.scale = scale * 1.537
-    MG.boardW = 1382 * scale
-    MG.boardH = 1384 * scale
+    if MG.fullscreen then
+        MG.boardW = ScrW()
+        MG.boardH = ScrH()
+    else
+        MG.boardW = 1382 * scale
+        MG.boardH = 1384 * scale
+    end
 
     MG.handDrawW = SRC_HAND_W * MG.scale * MiniNumber("handScale", DEFAULT_MINIGAME.handScale)
     MG.handDrawH = SRC_HAND_H * MG.scale * MiniNumber("handScale", DEFAULT_MINIGAME.handScale)
@@ -260,18 +284,18 @@ end
 
 local function ScreenToSim(x, y)
     if not IsValid(MG.board) then return 0, 0 end
-    local scale = (WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Scale) and WoundSystem.MinigameClip.Scale() or (ScrH() / 1080)
+    local offset = SyringeOffsetPx(MiniScale())
     local lx, ly = MG.board:ScreenToLocal(x, y)
     local sx = (lx - MG.board:GetWide() * 0.5) / MG.scale
-    local sy = -((ly - MG.board:GetTall() * 0.5 - (MiniNumber({"syringeDrawOffsetY", "drawOffsetY"}, DEFAULT_MINIGAME.syringeDrawOffsetY) * scale)) / MG.scale)
+    local sy = -((ly - MG.board:GetTall() * 0.5 - offset) / MG.scale)
     return sx, sy
 end
 
 local function SimToScreen(x, y)
     if not IsValid(MG.board) then return ScrW() * 0.5, ScrH() * 0.5 end
-    local scale = (WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Scale) and WoundSystem.MinigameClip.Scale() or (ScrH() / 1080)
+    local offset = SyringeOffsetPx(MiniScale())
     local lx = MG.board:GetWide() * 0.5 + (x * MG.scale)
-    local ly = MG.board:GetTall() * 0.5 - (y * MG.scale) + (MiniNumber({"syringeDrawOffsetY", "drawOffsetY"}, DEFAULT_MINIGAME.syringeDrawOffsetY) * scale)
+    local ly = MG.board:GetTall() * 0.5 - (y * MG.scale) + offset
     return MG.board:LocalToScreen(lx, ly)
 end
 
@@ -508,6 +532,7 @@ end
 
 local function EnsureOverlay()
     DestroyOverlay()
+    if WSZC and WSZC.ApplyFullscreenClip then WSZC.ApplyFullscreenClip() end
     RebuildBoardMetrics()
 
     MG.overlay = vgui.Create("DPanel")
@@ -538,10 +563,14 @@ local function EnsureOverlay()
         local bx, by = MG.board:GetPos()
         local filtered = BeginPixelFilter()
         local clipActive = WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Begin()
-        local scale = (WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Scale) and WoundSystem.MinigameClip.Scale() or (ScrH() / 1080)
+        -- The "front layer" (skin / table) used to start at by+300*scale.  With
+        -- the board pinned to 0,0 that would push it off-screen, so in
+        -- full-screen mode it starts at the same 69% of the viewport height.
+        local frontY = MG.fullscreen and (ScrH() * 0.692) or
+            (by + (MiniNumber("frontLayerY", DEFAULT_MINIGAME.frontLayerY) * MiniScale()))
         surface.SetMaterial(matBackground)
         surface.SetDrawColor(255, 255, 255, MiniNumber("frontLayerAlpha", DEFAULT_MINIGAME.frontLayerAlpha))
-        DrawRectInt(bx, by + (MiniNumber("frontLayerY", DEFAULT_MINIGAME.frontLayerY) * scale), MG.boardW, MG.boardH)
+        DrawRectInt(bx, frontY, MG.boardW, MG.boardH)
         if WoundSystem and WoundSystem.MinigameClip then
             WoundSystem.MinigameClip.End(clipActive)
         end
@@ -557,11 +586,12 @@ local function EnsureOverlay()
 
     MG.board = vgui.Create("DPanel", MG.overlay)
     MG.board:SetSize(MG.boardW, MG.boardH)
-    MG.board:Center()
-    do
-        local scale = (WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Scale) and WoundSystem.MinigameClip.Scale() or (ScrH() / 1080)
+    if MG.fullscreen then
+        MG.board:SetPos(0, 0)
+    else
+        MG.board:Center()
         local bx, by = MG.board:GetPos()
-        MG.board:SetPos(bx, by + (MiniNumber("boardOffsetY", DEFAULT_MINIGAME.boardOffsetY) * scale))
+        MG.board:SetPos(bx, by + (MiniNumber("boardOffsetY", DEFAULT_MINIGAME.boardOffsetY) * MiniScale()))
     end
     MG.board:SetMouseInputEnabled(false)
     MG.board:SetKeyboardInputEnabled(false)

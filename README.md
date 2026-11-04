@@ -42,8 +42,26 @@
   Gore V2, WIP-текстуры интерфейса) и коннектором, плюс `garrysmod/cfg/zcity_binds.cfg`,
   `README_INSTALL.md`, `WORKSHOP_IDS.txt`, `ZCity_binds.md`, `MANIFEST.txt`.
 * **`woundsystem_zcity_compat.zip`** — только аддон-коннектор **с исходным Lua-кодом**
-  (8 файлов), `addon.json`, `README.md` и `SOURCE_INDEX.md`. Копируется одной
+  (9 файлов), `addon.json`, `README.md` и `SOURCE_INDEX.md`. Копируется одной
   папкой в `garrysmod/addons/`.
+
+## Исправления этой сборки
+
+* Мини-игры бинтования и шприца теперь **на весь экран**: runtime-патч
+  `WoundSystem.MinigameClip.GetRect()` + пересчёт board/оффсетов
+  (`zc_woundsystem_compat_fullscreen_minigame 0` — откат).
+* Убрана надпись «Not completed - nothing was applied» при закрытии мини-игры
+  без дозы (`zc_woundsystem_compat_hide_empty_notice 0` — вернуть).
+* Исправлен «адреналиновый» FOV-взрыв: C:U `0..100` → ZCity `0..2`,
+  `painkiller` → `0..1`, плюс клиентский кламп.
+* Кровотечение больше не размазывается по всем 15 лимбам: берутся реальные
+  `org.wounds` / `org.arterialwounds` по костям.
+* Шрапнель от дробовика снова появляется: учитываются `took=false` (ZCity
+  пересылает хит в `FakeRagdoll`) и `DMG_GENERIC` у патронов `12/70 gauge`,
+  у которых `dmgtype` закомментирован в `sh_ammostuff.lua`.
+
+Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
+и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.
 
 Все клавиши и команды ZCity: [`ZCity_binds.md`](ZCity_binds.md) и
 [`zcity_binds.cfg`](zcity_binds.cfg).

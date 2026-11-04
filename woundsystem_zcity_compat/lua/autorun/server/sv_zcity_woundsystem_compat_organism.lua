@@ -54,6 +54,12 @@ local cvRegen = CreateConVar("zc_woundsystem_compat_shrapnel_regen_block", "1",
 local cvShadow = CreateConVar("zc_woundsystem_compat_shadow", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Mirror ZCity injuries into the C:U injury HUD (BodyState / PlayerLimbs)", 0, 1)
+local cvLimbBleed = CreateConVar("zc_woundsystem_compat_limb_bleed", "1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Use ZCity's per-bone wounds for limb bleeding instead of painting all 15 C:U limbs", 0, 1)
+local cvOnBlocked = CreateConVar("zc_woundsystem_compat_shrapnel_on_blocked", "1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Count a hit whose EntityTakeDamage hook returned true (ZCity redirects it to the fake ragdoll)", 0, 1)
 local cvDebug = CreateConVar("zc_woundsystem_compat_organism_debug", "0",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Print organism-authority diagnostics", 0, 1)
@@ -157,6 +163,109 @@ end
 local function HitgroupLimb(hitgroup)
     return HITGROUP_LIMB[hitgroup]
 end
+
+---------------------------------------------------------------------------
+-- Per-bone wound -> C:U limb id
+---------------------------------------------------------------------------
+-- ZCity stores `org.wounds[n] = {severity, localPos, localAng, boneName, time}`
+-- and `org.arterialwounds[n][7] = "<limb>artery"`.  The old shadow copied the
+-- single global `org.bleed` into EVERY C:U limb, which is why one shotgun hit
+-- in the leg made the whole body drip blood in the C:U HUD.
+
+local LIMB_ALIAS = {
+    head = "head", skull = "head", neck = "head",
+    chest = "thorax", thorax = "thorax", spine2 = "thorax", spine3 = "thorax",
+    spine4 = "thorax", rib = "thorax", sternum = "thorax",
+    stomach = "abdomen", abdomen = "abdomen", pelvis = "abdomen",
+    spine = "abdomen", spine1 = "abdomen", hips = "abdomen", hip = "abdomen",
+    larm = "forearm_L", rarm = "forearm_R",
+    lleg = "thigh_L", rleg = "thigh_R",
+}
+
+local ARTERY_LIMB = {
+    larmartery = "forearm_L", rarmartery = "forearm_R",
+    llegartery = "thigh_L", rlegartery = "thigh_R",
+    spineartery = "abdomen", neckartery = "head", headartery = "head",
+}
+
+local function NormalizeLimb(limbId)
+    if type(limbId) ~= "string" then return nil end
+    if LIMB_ORG[limbId] then return limbId end
+    return LIMB_ALIAS[string.lower(limbId)]
+end
+
+local function BoneNameOf(ply, bone)
+    if type(bone) == "string" then return bone end
+    if isnumber and isnumber(bone) and IsValid(ply) and ply.GetBoneName then
+        local ok, name = pcall(ply.GetBoneName, ply, bone)
+        if ok and type(name) == "string" then return name end
+    end
+    if isnumber and isnumber(bone) and IsValid(ply) and IsValid(ply.FakeRagdoll)
+        and ply.FakeRagdoll.GetBoneName then
+        local ok, name = pcall(ply.FakeRagdoll.GetBoneName, ply.FakeRagdoll, bone)
+        if ok and type(name) == "string" then return name end
+    end
+    return nil
+end
+
+local function LimbFromBoneName(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    local lower = string.lower(name)
+
+    -- 1) C:U's own ragdoll table, when that build exports it.
+    local c = Constants()
+    if c and type(c.RagdollDamageBones) == "table" then
+        for _, candidate in ipairs(c.RagdollDamageBones) do
+            if LIMB_ORG[candidate.limb] then
+                for _, pattern in ipairs(candidate.patterns or {}) do
+                    if string.find(lower, string.lower(pattern), 1, true) then
+                        return candidate.limb
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2) ZCity / ValveBiped bone names ("ValveBiped.Bip01_L_Calf", ...).
+    local limb = BoneLimb(name)
+    if limb then return limb end
+
+    -- 3) Body-level names without a side.
+    if string.find(lower, "head") or string.find(lower, "skull") then return "head" end
+    if string.find(lower, "spine2") or string.find(lower, "spine3")
+        or string.find(lower, "chest") or string.find(lower, "rib") then return "thorax" end
+    if string.find(lower, "pelvis") or string.find(lower, "spine")
+        or string.find(lower, "hip") then return "abdomen" end
+    return NormalizeLimb(lower)
+end
+
+--- Build { limbId = bleeding 0..100 } from the actual ZCity wound tables.
+local function LimbBleedMap(ply, org)
+    local map = {}
+    local function add(limbId, amount)
+        limbId = NormalizeLimb(limbId)
+        if not limbId or amount <= 0 then return end
+        map[limbId] = (map[limbId] or 0) + amount
+    end
+
+    for _, w in ipairs(org.wounds or {}) do
+        if type(w) == "table" then
+            local severity = math.max(tonumber(w[1]) or 0, 0)
+            add(LimbFromBoneName(BoneNameOf(ply, w[4])), severity * 2.0)
+        end
+    end
+    for _, w in ipairs(org.arterialwounds or {}) do
+        if type(w) == "table" then
+            local severity = math.max(tonumber(w[1]) or 0, 0)
+            local artery = type(w[7]) == "string" and string.lower(w[7]) or nil
+            local limb = (artery and (ARTERY_LIMB[artery] or NormalizeLimb((string.gsub(artery, "artery", "")))))
+                or LimbFromBoneName(BoneNameOf(ply, w[4]))
+            add(limb, severity * 3.0)
+        end
+    end
+    return map
+end
+WSZC.LimbBleedMap = LimbBleedMap -- exported for diagnostics / headless tests
 
 -- Resolve the player who owns a damaged player or fake ragdoll.
 local function OwnerOf(ent)
@@ -287,6 +396,16 @@ local BONE_HITGROUPS = {
     ["ValveBiped.Bip01_R_Hand"] = HITGROUP_RIGHTARM,
     ["ValveBiped.Bip01_L_Foot"] = HITGROUP_LEFTLEG,
     ["ValveBiped.Bip01_R_Foot"] = HITGROUP_RIGHTLEG,
+    -- The original table only had hands/feet for limbs, so a thigh or calf hit
+    -- resolved to whichever foot bone happened to be nearest.
+    ["ValveBiped.Bip01_L_Thigh"] = HITGROUP_LEFTLEG,
+    ["ValveBiped.Bip01_R_Thigh"] = HITGROUP_RIGHTLEG,
+    ["ValveBiped.Bip01_L_Calf"] = HITGROUP_LEFTLEG,
+    ["ValveBiped.Bip01_R_Calf"] = HITGROUP_RIGHTLEG,
+    ["ValveBiped.Bip01_L_UpperArm"] = HITGROUP_LEFTARM,
+    ["ValveBiped.Bip01_R_UpperArm"] = HITGROUP_RIGHTARM,
+    ["ValveBiped.Bip01_L_Forearm"] = HITGROUP_LEFTARM,
+    ["ValveBiped.Bip01_R_Forearm"] = HITGROUP_RIGHTARM,
 }
 
 -- ZCity traces the ragdoll for a bone, but the C:U hook only sees a damage
@@ -314,27 +433,85 @@ end
 
 local function DamageLimb(ply, ent, dmginfo, hitgroup)
     if not hitgroup then hitgroup = GuessHitgroup(ent, dmginfo) end
+    -- ZCity's own bridge map is authoritative for hitgroups, so shrapnel lands
+    -- on the same limb the C:U HUD highlights for that hitgroup.
+    local wb = WB()
+    if wb and wb.HitgroupToWS and hitgroup then
+        local limb = wb.HitgroupToWS[hitgroup]
+        if LIMB_ORG[limb] then return limb end
+    end
     local limb = HitgroupLimb(hitgroup)
     if limb then return limb end
-    local wb = WB()
-    if wb and wb.HitgroupToWS and hitgroup then return wb.HitgroupToWS[hitgroup] end
     return "thorax"
 end
 
+--- ZCity's custom bullet engine (sh_luabullets.lua) calls
+--- `info:SetDamageType(tAmmoData.dmgtype)`, but the 12/70 gauge / slug ammo
+--- definitions in sh_ammostuff.lua have `dmgtype` COMMENTED OUT.  Shotgun
+--- pellets therefore arrive as DMG_GENERIC (0), and a check for only
+--- DMG_BULLET / DMG_BUCKSHOT never sees them.  `info:SetAmmoType(iAmmoType)`
+--- IS always set, so the ammo name is the reliable identifier.
+local SHOTGUN_AMMO = {
+    ["12/70gauge"] = true, ["12/70slug"] = true, ["12/70rip"] = true,
+    ["20/70gauge"] = true, ["20/70slug"] = true,
+}
+
+local function IsBallisticHit(dmginfo, dmgtype)
+    local bullet = DMG_BULLET or 0
+    local buckshot = DMG_BUCKSHOT or 0
+    if bullet ~= 0 and bit.band(dmgtype, bullet) ~= 0 then return true end
+    if buckshot ~= 0 and bit.band(dmgtype, buckshot) ~= 0 then return true end
+
+    if dmginfo.GetAmmoType and game and game.GetAmmoName then
+        local ok, ammoId = pcall(dmginfo.GetAmmoType, dmginfo)
+        if ok and type(ammoId) == "number" and ammoId >= 0 then
+            local ok2, name = pcall(game.GetAmmoName, ammoId)
+            if ok2 and type(name) == "string" then
+                -- game.GetAmmoName() returns the display name, e.g.
+                -- "12/70 gauge" or "9x19 mm Parabellum", while the ammo table
+                -- keys are compact ("12/70gauge").  Check both forms.
+                local lower = string.lower(name)
+                local compact = (string.gsub(lower, "%s+", ""))
+                if SHOTGUN_AMMO[lower] or SHOTGUN_AMMO[compact] then return true end
+                if string.find(lower, "gauge", 1, true)
+                    or string.find(lower, "buckshot", 1, true)
+                    or (string.find(lower, "mm", 1, true) and string.find(lower, "x", 1, true)) then
+                    return true
+                end
+            end
+        end
+    end
+
+    local inf = dmginfo.GetInflictor and dmginfo:GetInflictor()
+    if IsValid(inf) and (tonumber(inf.NumBullet) or 0) > 1 then return true end
+    return false
+end
+
+-- A single CTakeDamageInfo may reach PostEntityTakeDamage twice: once for the
+-- player (ZCity returns true and redirects to the fake ragdoll) and once for
+-- that ragdoll.  Weak keys avoid leaking and avoid a second fragment.
+WSZC.ShrapnelHandled = WSZC.ShrapnelHandled or setmetatable({}, { __mode = "k" })
+
 --- Unified damage injector.  No `source` field, no per-source session.
-function WSZC.InjectDamageShrapnel(ent, dmginfo, hitgroup)
+function WSZC.InjectDamageShrapnel(ent, dmginfo, hitgroup, rawOverride)
     if not Authority() then return end
     if not (cvShrapnel and cvShrapnel:GetBool()) then return end
     if not (IsValid(ent) and dmginfo) then return end
+    if WSZC.ShrapnelHandled[dmginfo] then return end
+    WSZC.ShrapnelHandled[dmginfo] = true
 
     local ply = OwnerOf(ent)
     if not ply then return end
 
     local dmgtype = dmginfo.GetDamageType and dmginfo:GetDamageType() or 0
-    local raw = WSZC.RawDamage[dmginfo]
-    if raw == nil then
-        raw = dmginfo.GetDamage and dmginfo:GetDamage() or 0
-    end
+    -- Dissolve / godmode hits are not wounds.
+    if (DMG_DISSOLVE or 0) ~= 0 and bit.band(dmgtype, DMG_DISSOLVE) ~= 0 then return end
+    local org = ply.organism
+    if type(org) == "table" and org.godmode then return end
+
+    local raw = rawOverride
+    if raw == nil then raw = WSZC.RawDamage[dmginfo] end
+    if raw == nil then raw = dmginfo.GetDamage and dmginfo:GetDamage() or 0 end
     raw = tonumber(raw) or 0
 
     local limbId = DamageLimb(ply, ent, dmginfo, hitgroup)
@@ -342,12 +519,8 @@ function WSZC.InjectDamageShrapnel(ent, dmginfo, hitgroup)
 
     -- C:U's Fn.AddGunshotShrapnel(): one fragment per bullet/buckshot hit,
     -- blocked by HEV, capped at ShrapnelPieceCount.
-    local bullet = DMG_BULLET or 0
-    local buckshot = DMG_BUCKSHOT or 0
     local blast = DMG_BLAST or 0
-    local isShot = (bullet ~= 0 and bit.band(dmgtype, bullet) ~= 0)
-        or (buckshot ~= 0 and bit.band(dmgtype, buckshot) ~= 0)
-    if isShot and not HevBlocks(ply) then
+    if IsBallisticHit(dmginfo, dmgtype) and not HevBlocks(ply) then
         added = added + 1
     end
 
@@ -438,18 +611,20 @@ end
 -- Standing player / ragdoll punching a breakable glass brush.  ZCity's own
 -- hook for this is commented out (sv_input.lua:441-446) and GlassShards
 -- (sv_util.lua:1354) only spawns a world item, so this is the missing piece.
--- ONE post-damage hook for all shrapnel production.  `WSZC.RawDamage` is
--- filled by our wrapper of the ZCity `homigrad-damage` hook BEFORE ZCity calls
--- ScaleDamage(0.15), so blast thresholds keep C:U's original values.
+-- Post-damage fallback for all shrapnel production.  `took == false` is NORMAL
+-- in ZCity: homigrad-damage returns true for a player hit and forwards it to
+-- ply.FakeRagdoll, so GMod reports the damage as blocked even though the wound
+-- was applied.  Dropping those hits used to lose every shotgun fragment.
+-- The primary injection happens in CaptureRawDamage (before that return);
+-- ShrapnelHandled de-duplicates the two paths.
 hook.Add("PostEntityTakeDamage", "WSZC_AuthorityDamagePost", function(ent, dmginfo, took)
     if not (Authority() and IsValid(ent) and dmginfo) then return end
-    -- GMod passes `took` (did damage actually land).  Only count real hits;
-    -- a nil value is treated as "unknown", i.e. still counted.
-    if took == false then
+    local raw = WSZC.RawDamage[dmginfo]
+    if took == false and not (cvOnBlocked and cvOnBlocked:GetBool()) then
         WSZC.RawDamage[dmginfo] = nil
         return
     end
-    WSZC.InjectDamageShrapnel(ent, dmginfo)
+    WSZC.InjectDamageShrapnel(ent, dmginfo, nil, raw)
     WSZC.RawDamage[dmginfo] = nil
 end)
 
@@ -572,7 +747,14 @@ local function PushShadow(ply, org)
             math.max(tonumber(org.stamina.max) or 180, 1) * 100, 0, 100))
     end
 
+    -- C:U body.adrenaline / painkiller are 0..100; ZCity organism uses 0..2
+    -- and 0..1.  Keeping them in sync stops ApplyMedicalDelta() from applying
+    -- a bogus delta, and keeps the C:U status HUD truthful.
+    bodySet("adrenaline", math.Clamp((tonumber(org.adrenaline) or 0) * 20, 0, 100))
+    bodySet("painkiller", math.Clamp((tonumber(org.painkiller) or 0) * 100, 0, 100))
+
     local pain, bleed = math.max(tonumber(org.pain) or 0, 0), math.max(tonumber(org.bleed) or 0, 0)
+    local woundMap = (cvLimbBleed and cvLimbBleed:GetBool()) and LimbBleedMap(ply, org) or nil
     for limbId, state in pairs(limbs) do
         if type(state) == "table" then
             local map = LIMB_ORG[limbId]
@@ -582,8 +764,25 @@ local function PushShadow(ply, org)
             end
             -- `shrapnel`, `isBandaged`, `hasInjection` and customStatuses are
             -- owned by the C:U minigames: never overwrite them here.
-            limbSet("pain", math.Clamp(pain * 0.25, 0, 100))
-            limbSet("bleed", math.Clamp(bleed * 0.2, 0, 100))
+            local limbBleed
+            if woundMap then
+                local fromWounds = woundMap[limbId] or 0
+                local dmg = math.Clamp(tonumber(map and org[map.dmg]) or 0, 0, 1)
+                if fromWounds > 0 then
+                    limbBleed = math.Clamp(fromWounds, 0, 100)
+                elseif dmg > 0.001 then
+                    -- Only limbs the organism actually damaged bleed.  Internal
+                    -- bleeding stays in body.internalBleeding and never paints
+                    -- all 15 limbs red.
+                    limbBleed = math.Clamp(math.min(bleed * 0.2, dmg * 20), 0, 100)
+                else
+                    limbBleed = 0
+                end
+            else
+                limbBleed = math.Clamp(bleed * 0.2, 0, 100)
+            end
+            limbSet("bleed", limbBleed)
+            limbSet("pain", math.Clamp(pain * 0.12 + limbBleed * 0.35, 0, 100))
             if map and map.dmg then
                 local dmg = math.Clamp(tonumber(org[map.dmg]) or 0, 0, 1)
                 limbSet("muscle", math.Clamp((1 - dmg) * 100, 0, 100))
@@ -657,8 +856,11 @@ function WSZC.ApplyMedicalDelta(ply, limbId, before)
     add("bleed", (after.limbBleed - before.limbBleed) * 0.2, 0)
     add("pain", (after.limbPain - before.limbPain) * 0.25, 0)
     add("internalBleed", after.internalBleeding - before.internalBleeding, 0)
-    add("painkiller", after.painkiller - before.painkiller, 0)
-    add("adrenaline", after.adrenaline - before.adrenaline, 0)
+    -- C:U uses 0..100 for both of these.  ZCity's organism expects 0..1 for
+    -- painkiller and 0..2 for adrenaline; pushing +100 straight through made
+    -- cl_camera.lua compute a -500 FOV offset (the "adrenaline" screen warp).
+    add("painkiller", (after.painkiller - before.painkiller) * 0.01, 0, 1)
+    add("adrenaline", (after.adrenaline - before.adrenaline) * 0.02, 0, 2)
     if type(org.stamina) == "table" then
         local max = math.max(tonumber(org.stamina.max) or 180, 1)
         org.stamina[1] = math.Clamp((tonumber(org.stamina[1]) or 0) +
@@ -733,6 +935,12 @@ local function CaptureRawDamage(ent, dmginfo)
     if not (IsValid(ent) and dmginfo and dmginfo.GetDamage) then return end
     local ok, raw = pcall(dmginfo.GetDamage, dmginfo)
     if ok then WSZC.RawDamage[dmginfo] = raw end
+    -- Inject BEFORE ZCity's hook can return true / scale damage / rewrite the
+    -- damage type.  This is the reliable path for 12/70 pellets, which arrive
+    -- as DMG_GENERIC and are then forwarded to the fake ragdoll.
+    if Authority() then
+        WSZC.InjectDamageShrapnel(ent, dmginfo, nil, ok and raw or nil)
+    end
 end
 
 -- Plain no-op replacements for the ZCity bridge entry points.  With these in

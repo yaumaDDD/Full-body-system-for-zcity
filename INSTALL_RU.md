@@ -22,6 +22,22 @@
 Дополнительно в корне архива: `ZCity_binds.md`, `WORKSHOP_IDS.txt`,
 `MANIFEST.txt`; в `garrysmod/cfg/` — `zcity_binds.cfg`.
 
+> В сборке `z_city/` убрана одна строка `sv_woundbridge.lua` — надпись
+> «Not completed - nothing was applied». В коннекторе есть такой же
+> рантайм-фильтр, поэтому при установке аддона на стоковый ZCity правка
+> исходника не требуется (`zc_woundsystem_compat_hide_empty_notice 0` вернёт
+> надпись).
+
+### Что исправлено по скриншотам
+
+| Что | Конвар по умолчанию |
+|---|---|
+| Мини-игры бинта/шприца на весь экран | `zc_woundsystem_compat_fullscreen_minigame 1`, размер — `zc_woundsystem_compat_minigame_zoom 1.0` |
+| Нет надписи «Not completed - nothing was applied» | `zc_woundsystem_compat_hide_empty_notice 1` |
+| Нет «адреналинового» FOV-взрыва и радиальных полос | `zc_woundsystem_compat_clamp_adrenaline 1` |
+| Кровотечение только на раненых лимбах | `zc_woundsystem_compat_limb_bleed 1` |
+| Шрапнель от дробовика/взрыва | `zc_woundsystem_compat_shrapnel 1`, `zc_woundsystem_compat_shrapnel_on_blocked 1` |
+
 ## Установка
 
 1. Распаковать `zcity_full_pack.zip` во временную папку.

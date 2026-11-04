@@ -260,6 +260,12 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_glass_shrapnel` | этот аддон | `1` — осколки от стекла руками/ногами и ragdoll-коллизий. |
 | `zc_woundsystem_compat_shrapnel_regen_block` | этот аддон | `1` — застрявший осколок блокирует регенерацию лимба ZCity до извлечения. |
 | `zc_woundsystem_compat_shadow` | этот аддон | `1` — зеркалить травмы ZCity в HUD C:U (`BodyState`/`PlayerLimbs`). |
+| `zc_woundsystem_compat_limb_bleed` | этот аддон | `1` — кровотечение по реальным ранам ZCity (per-bone); `0` — старое поведение «глобальный bleed на все лимбы». |
+| `zc_woundsystem_compat_shrapnel_on_blocked` | этот аддон | `1` — считать попадание, чей `EntityTakeDamage` вернул `true` (ZCity пересылает его в `FakeRagdoll`, GMod отдаёт `took=false`). |
+| `zc_woundsystem_compat_hide_empty_notice` | этот аддон | `1` — убрать надпись «Not completed - nothing was applied»; `0` — вернуть. |
+| `zc_woundsystem_compat_fullscreen_minigame` | этот аддон (client) | `1` — мини-игры бинта/шприца на весь экран; `0` — исходный квадрат ~760 px C:U. |
+| `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `1.0` — базовый размер мини-игры; диапазон `0.7..1.8`. |
+| `zc_woundsystem_compat_clamp_adrenaline` | этот аддон (client) | `1` — клампить `org.adrenaline` ≤2 и `org.painkiller` ≤1, чтобы камера ZCity не давала FOV-взрыв. |
 | `zc_woundsystem_compat_organism_debug` | этот аддон | `1` — диагностика обёрток, шрапнели и медицинских дельт. |
 | `zc_woundsystem_bridge` | ZCity | `1` — мост включён; `0` — полностью legacy `organism`. |
 | `zc_wound_damage_scale` | ZCity | Множитель урона, передаваемого в C:U (только режим `authority 0`). |
@@ -269,6 +275,59 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_debug` | этот аддон | `1` — диагностика найденных C:U upvalue и открытия/закрытия сессий. |
 | `zc_woundsystem_compat_inspect_button` | этот аддон (client) | `1` — показывать «Проверить травмы»; `0` — скрыть кнопку и штатный `Examine Body`. |
 | `woundsys_enabled` | C:U | Должен быть `1` в обоих режимах. `0` отключает HUD, серверные обработчики мини-игр и протокол шрапнели. |
+
+## Исправления по скриншотам (полный экран, надпись, адреналин, дробовик)
+
+1. **Мини-игры на весь экран.** C:U рисует мини-игру в квадрате
+   `760 * Clip.Scale()` через `WoundSystem.MinigameClip.GetRect()`: эта функция
+   задаёт и тёмный фон, и stencil/scissor, и позицию заголовка. Наш
+   `cl_zcity_woundsystem_compat_layout.lua` подменяет **только** `GetRect()` на
+   `0, 0, ScrW(), ScrH(), 0` (радиус 0 → `Clip.Begin` включает полноэкранный
+   scissor). `wszc_cl_syringe.lua` теперь ставит `board` в `0,0` размером с
+   экран и выражает оффсеты шприца/«переднего слоя» в долях высоты, а
+   `wszc_cl_bandage.lua` увеличивает artwork в 1.2 раза. Симуляционные
+   координаты и физика (`ScreenToSim`/`SimToScreen`) не менялись — только
+   проекция на экран. Откат: `zc_woundsystem_compat_fullscreen_minigame 0`.
+
+2. **«Not completed - nothing was applied».** Сообщение приходит из локального
+   `Nothing()` внутри `onClose` в `sv_woundbridge.lua` (ZCity), когда игрок
+   закрыл мини-игру до набора дозы. Коннектор фильтрует ровно этот
+   `HUD_PRINTCENTER` текст через обёртку `Player.PrintMessage`, не трогая ZIP.
+   В пересобранном `zcity_full_pack.zip` та же строка дополнительно убрана из
+   `sv_woundbridge.lua`. Откат: `zc_woundsystem_compat_hide_empty_notice 0`.
+
+3. **Эффект адреналина (радиальные полосы, тряска, дикий FOV).** C:U хранит
+   `body.adrenaline` в шкале `0..100` и ставит `100` при огнестрельном ранении;
+   ZCity использует `org.adrenaline` `0..2`, и `cl_camera.lua` умножает его на
+   5 при расчёте FOV. Раньше медицинская дельта переливала `+100` напрямую →
+   FOV уходил на сотни градусов. Теперь дельта масштабируется `*0.02` с
+   клампом `2` (`painkiller` — `*0.01` с клампом `1`), `body.adrenaline` и
+   `body.painkiller` зеркалятся из organism, плюс клиентский кламп лечит уже
+   сохранённые «испорченные» организмы.
+
+4. **Дробовик в ногу: кровь на всех лимбах.** `PushShadow` писал один
+   глобальный `org.bleed` в каждый из 15 C:U limb'ов — поэтому HUD показывал
+   капли и на голове, и на руках. Теперь `WSZC.LimbBleedMap()` разбирает
+   `org.wounds[n][4]` (имя кости, например `ValveBiped.Bip01_R_Calf`) и
+   `org.arterialwounds[n][7]` (`rlegartery`, `larmartery`, …), мапит их в
+   limb id C:U и пишет `state.bleed` только туда. Внутреннее кровотечение
+   остаётся в `body.internalBleeding` и больше не заливает весь силуэт.
+   Откат: `zc_woundsystem_compat_limb_bleed 0`.
+
+5. **Дробовик в ногу: нет шрапнели.** Две независимые причины:
+   * `homigrad-damage` (`sv_input.lua`) возвращает `true` и пересылает хит в
+     `ply.FakeRagdoll`, поэтому GMod вызывает `PostEntityTakeDamage` с
+     `took=false`; старый код такие хиты отбрасывал. Теперь инжекция идёт в
+     `CaptureRawDamage` **до** этого `return`, а пост-хук остаётся fallback'ом;
+     weak-key `WSZC.ShrapnelHandled` убирает двойной счёт.
+   * В `sh_ammostuff.lua` у `12/70 gauge`/`slug` строка `dmgtype` закомментирована,
+     поэтому `sh_luabullets.lua` шлёт пули как `DMG_GENERIC`, а проверялись
+     только `DMG_BULLET`/`DMG_BUCKSHOT`. `IsBallisticHit()` теперь additionally
+     читает `dmginfo:GetAmmoType()` → `game.GetAmmoName()` и `inf.NumBullet > 1`.
+     `BONE_HITGROUPS` дополнен бедром/голенью/предплечьем, чтобы осколок ложился
+     в ту ногу, а не в «ближайшую стопу».
+   * Проверить: `zc_woundsystem_compat_organism_debug 1` → в логах
+     `shrapnel +N on thigh_R (damage)`; `zc_woundsystem_compat_shrapnel 1`.
 
 ## Ограничения
 
@@ -294,8 +353,10 @@ SWEP. В authority-режиме каждая такая доза дополни�
 - Хуки сторонних аддонов (`PreHomigradDamage`, `HomigradDamage`,
  `PostEntityTakeDamage`, `simple eye gore`, `zcitygore`, `project hemogen blood`)
  не переопределяются.
-- Проверено синтаксически (`luaparser`) и на заглушечном Lua-рантайме
- (authority-режим, inspect, мини-игры); на живом GMod-сервере не прогонялось.
+- Проверено синтаксически (`luaparser`, 9 файлов) и на заглушечном Lua-рантайме
+ (authority-режим, inspect, мини-игры, шрапнель/`took=false`, адреналин,
+ per-limb bleeding, full-screen clip: `TEST_OK 9/9` и `TEST_OK 6/6`);
+ на живом GMod-сервере не прогонялось.
 
 ## Файлы
 
@@ -306,10 +367,11 @@ woundsystem_zcity_compat/
 └── lua/autorun/
     ├── sh_zcity_woundsystem_compat.lua        # общий патч, authority, vanilla context, WSZC_Ready
     ├── client/
+    │   ├── cl_zcity_woundsystem_compat_layout.lua     # full-screen GetRect(), единый scale, кламп адреналина
     │   ├── cl_zcity_woundsystem_compat_minigames.lua  # виртуальный слот, WSZC_* приём, загрузка копий
     │   ├── cl_zcity_woundsystem_compat_inspect.lua    # «Проверить травмы» → WoundSystem.OpenHealthHUD()
-    │   ├── wszc_cl_bandage.lua               # namespaced-копия C:U bandage UI
-    │   └── wszc_cl_syringe.lua               # namespaced-копия C:U syringe UI
+    │   ├── wszc_cl_bandage.lua               # namespaced-копия C:U bandage UI, full-screen
+    │   └── wszc_cl_syringe.lua               # namespaced-копия C:U syringe UI, full-screen
     └── server/
         ├── sv_zcity_woundsystem_compat.lua           # экспорты, guard урона, лечение, ragdoll
         ├── sv_zcity_woundsystem_compat_minigames.lua # external API, сессии, прогресс, закрытие

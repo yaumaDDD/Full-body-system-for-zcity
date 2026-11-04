@@ -55,6 +55,36 @@ local cvOwnMinigames = CreateConVar and CreateConVar(
     "Enable the ZCity/C:U compatibility bandage and syringe minigames"
 ) or nil
 
+-- ZCity's WB.StartMinigame() defines a LOCAL Nothing() closure in onClose
+-- (sv_woundbridge.lua) which prints "Not completed - nothing was applied" to
+-- HUD_PRINTCENTER when a minigame is closed before a dose landed.  The owner
+-- asked for that notice to be removed.  Filtering this ONE exact message at
+-- runtime is safer than editing the ZIP addon and covers both WSZC sessions
+-- and any native C:U external minigame.  zc_woundsystem_compat_hide_empty_notice 0
+-- restores it.
+local cvHideEmptyNotice = CreateConVar and CreateConVar(
+    "zc_woundsystem_compat_hide_empty_notice", "1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Suppress the 'Not completed - nothing was applied' centre-screen notice", 0, 1
+) or nil
+
+do
+    local PLAYER = FindMetaTable and FindMetaTable("Player")
+    if PLAYER and type(PLAYER.PrintMessage) == "function" and not WSZC._PrintMessagePatched then
+        WSZC._PrintMessagePatched = true
+        local originalPrintMessage = PLAYER.PrintMessage
+        PLAYER.PrintMessage = function(self, kind, msg, ...)
+            if cvHideEmptyNotice and cvHideEmptyNotice:GetBool()
+                and kind == HUD_PRINTCENTER and type(msg) == "string"
+                and (string.find(msg, "Not completed", 1, true)
+                    or string.find(msg, "nothing was applied", 1, true)) then
+                return
+            end
+            return originalPrintMessage(self, kind, msg, ...)
+        end
+    end
+end
+
 local function Debug(fmt, ...)
     if WSZC.Debug then WSZC.Debug("[minigame] " .. fmt, ...) end
 end
