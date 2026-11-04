@@ -57,10 +57,19 @@
 | Нативная мини-игра вправления меньше исходного квадрата C:U | `zc_woundsystem_compat_native_minigame_zoom 0.75` (диапазон `0.4..1.2`) |
 | Кость вправления рядом с суставом и на экране | `zc_woundsystem_compat_dislocation_start 35` (диапазон `10..100`) |
 | Рука не трясётся и уменьшена | `zc_woundsystem_compat_hand_cursor_scale 0.45` (диапазон `0.2..1`) |
+| Кукла WoundView собрана из 15 слоёв `unitmenu/limbs` архива + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, размер `zc_woundsystem_compat_unitmenu_scale 0.28` (диапазон `0.1..0.8`) |
+| Рука в мини-играх — кадры `homigrad/handanim` из архива (ладонь/кулак) | `zc_woundsystem_compat_handanim 1`, размер `zc_woundsystem_compat_handanim_scale 0.55` (диапазон `0.2..1.5`) |
 | Зелёные полосы/лёгкие/ЭКГ сканера слева скрыты | `zc_woundsystem_compat_hide_unit_panel 1` (глушатся `DrawTexturedRectUV`, `DrawLine`, `DrawPoly`) |
 | Экран смерти C:U не рисуется, но ЛКМ респавнит | включается вместе с `zc_woundsystem_compat_disable_cu_fx 1`; хук обёрнут, а не удалён |
 | После смерти не «залипают» мини-игры/курсор/лок движения | включается вместе с `zc_woundsystem_compat_minigames 1` |
 | Если респавн не сработал | подождите 1 с после смерти и нажмите ЛКМ; откат визуала C:U — `zc_woundsystem_compat_disable_cu_fx 0` |
+
+Ассеты для куклы и руки берутся из архива `для переделывания интерфейса.zip`
+(`origin/main`). Нарезанные PNG уже лежат в `woundsystem_zcity_compat/materials/wszc/unitmenu/`,
+поэтому кукла работает даже без WIP-аддона; кадры руки читаются из
+`human_hands_for_z_city_casualties_medical_system_heavy_wip`, который уже есть в full pack.
+Скрипт пересборки — `tools/build_unitmenu_materials.py`. Ни один файл внутри
+исходных ZIP-аддонов не изменён.
 
 Панель травм, HUD и протокол шрапнели C:U при этом остаются — отключаются только
 визуальные эффекты, декоративная кровь, инвентарь C:U и левый сканер

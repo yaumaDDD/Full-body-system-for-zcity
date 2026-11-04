@@ -246,8 +246,11 @@ end
 
 local function UpdateHandDrawPosition()
     local scale = MiniScale()
-    local handPivotX = MiniNumber("handPivotX", DEFAULT_MINIGAME.handPivotX)
-    local handPivotY = MiniNumber("handPivotY", DEFAULT_MINIGAME.handPivotY)
+    -- The archive hand is horizontal: C:U's 290 degree idle rotation would
+    -- stand it on its head, and its (0.4, 0.1) pivot belongs to a tall sprite.
+    local unitmenuHand = WSZC and WSZC.UnitmenuHandActive and WSZC.UnitmenuHandActive()
+    local handPivotX = MG._unitmenuPivotX or MiniNumber("handPivotX", DEFAULT_MINIGAME.handPivotX)
+    local handPivotY = MG._unitmenuPivotY or MiniNumber("handPivotY", DEFAULT_MINIGAME.handPivotY)
     local handOffsetX = MiniNumber("handOffsetX", DEFAULT_MINIGAME.handOffsetX) * scale
     local handOffsetY = MiniNumber("handOffsetY", DEFAULT_MINIGAME.handOffsetY) * scale
 
@@ -257,12 +260,15 @@ local function UpdateHandDrawPosition()
     MG.handDrawY = MG.handPivotScreenY - (MG.handDrawH * handPivotY)
     MG.handDrawPivotX = handPivotX
     MG.handDrawPivotY = handPivotY
-    local idleAngle = MiniNumber({"handIdleAngle", "handAngle"}, DEFAULT_MINIGAME.handIdleAngle)
-    local holdAngle = MiniNumber({"handHoldAngle", "handAngle"}, idleAngle)
+    local idleAngle = unitmenuHand and 0 or MiniNumber({"handIdleAngle", "handAngle"}, DEFAULT_MINIGAME.handIdleAngle)
+    local holdAngle = unitmenuHand and 0 or MiniNumber({"handHoldAngle", "handAngle"}, idleAngle)
     if HandPhysics then
         MG.handDrawAngle = HandPhysics.Rotation(MG, MG.holdingSyringe and holdAngle or idleAngle)
     else
         MG.handDrawAngle = MG.holdingSyringe and holdAngle or idleAngle
+    end
+    if WSZC and WSZC.UnitmenuHandAngle then
+        MG.handDrawAngle = WSZC.UnitmenuHandAngle(MG.handDrawAngle)
     end
 end
 
@@ -281,8 +287,13 @@ local function RebuildBoardMetrics()
 
     local handScale = MiniNumber("handScale", DEFAULT_MINIGAME.handScale)
         * ((WSZC and WSZC.HandCursorScale and WSZC.HandCursorScale()) or 1)
-    MG.handDrawW = SRC_HAND_W * MG.scale * handScale
-    MG.handDrawH = SRC_HAND_H * MG.scale * handScale
+    if WSZC and WSZC.UnitmenuHandGeometry then
+        MG.handDrawW, MG.handDrawH, MG._unitmenuPivotX, MG._unitmenuPivotY =
+            WSZC.UnitmenuHandGeometry(SRC_HAND_W, SRC_HAND_H, MG.scale * handScale)
+    else
+        MG.handDrawW, MG.handDrawH = SRC_HAND_W * MG.scale * handScale, SRC_HAND_H * MG.scale * handScale
+        MG._unitmenuPivotX, MG._unitmenuPivotY = nil, nil
+    end
     UpdateHandDrawPosition()
 end
 
@@ -517,7 +528,8 @@ local function DrawSyringe()
 end
 
 local function DrawHand()
-    local handMat = MG.holdingSyringe and matHandClick or matHandIdle
+    local handMat = (WSZC and WSZC.UnitmenuHandMat and WSZC.UnitmenuHandMat(MG.holdingSyringe == true))
+        or (MG.holdingSyringe and matHandClick or matHandIdle)
     local pivotX = MG.handPivotScreenX or MG.handScreenX
     local pivotY = MG.handPivotScreenY or MG.handScreenY
     local localX = (0.5 - (MG.handDrawPivotX or DEFAULT_MINIGAME.handPivotX)) * MG.handDrawW
@@ -526,7 +538,9 @@ local function DrawHand()
     local filtered = BeginPixelFilter()
     local clipActive = WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Begin()
     surface.SetMaterial(handMat)
-    surface.SetDrawColor(255, 255, 255, MiniNumber("handAlpha", DEFAULT_MINIGAME.handAlpha))
+    surface.SetDrawColor(255, 255, 255,
+        (WSZC and WSZC.UnitmenuHandAlpha and WSZC.UnitmenuHandAlpha(
+            MiniNumber("handAlpha", DEFAULT_MINIGAME.handAlpha))) or MiniNumber("handAlpha", DEFAULT_MINIGAME.handAlpha))
     DrawPivotedRect(pivotX, pivotY, localX, localY, MG.handDrawW, MG.handDrawH, MG.handDrawAngle or 0)
     if WoundSystem and WoundSystem.MinigameClip then
         WoundSystem.MinigameClip.End(clipActive)

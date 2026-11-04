@@ -191,6 +191,29 @@
   `WSZC_MinigameServerLock` не блокирует `SetupMove` мёртвого игрока — иначе
   залипшая сессия держала курсор, заморозку камеры и запрет биндов вечно.
 
+* **Кукла персонажа и рука переделаны по архиву из репозитория**: в
+  `origin/main:для переделывания интерфейса.zip` лежат 15 прозрачных слоёв
+  `zcity_delta/unitmenu/limbs/*.png` (уже спозиционированный силуэт), три
+  иконки `status/{bleeding,dislocation,fracture}.png` и 9 кадров руки
+  `homigrad/handanim/*.png`. Раньше ни один Lua-файл их не использовал. Теперь
+  `tools/build_unitmenu_materials.py` нарезает слои в
+  `materials/wszc/unitmenu/`, а компат в рантайме находит приватную таблицу
+  `Limbs` хука `WoundDollAndPanel` через `debug.getupvalue` и меняет ТОЛЬКО
+  визуал: чёрный силуэт + белый контур, свои `ox/oy/size/sourceW/sourceH`.
+  Hitbox'ы лимбов, выбор мышью, иконки статусов, `FIX DISLOCATION` и
+  `REMOVE SHRAPNEL` остаются родными C:U; иконки перелома/вывиха/крови берутся
+  из архива. Рука в бинте/шприце и в нативных мини-играх C:U —
+  `handanim/hand.png` (ладонь) и `3_3.png` (кулак) вместо спрайта 512×1260,
+  с pivot у кончиков пальцев и без поворота на 290°. Конвары:
+  `zc_woundsystem_compat_unitmenu_doll 1`,
+  `zc_woundsystem_compat_unitmenu_scale 0.28`,
+  `zc_woundsystem_compat_handanim 1`,
+  `zc_woundsystem_compat_handanim_scale 0.55`. Исходные ZIP-аддоны не
+  правятся; если WIP-аддон с `homigrad/handanim` отсутствует, рука остаётся
+  родной C:U (кукла при этом работает — её PNG лежат в компате). Если сборка
+  GMod закрывает `debug.getupvalue`, остаётся родная кукла C:U: логика
+  WoundView, мини-игр и респавна в любом случае не меняется.
+
 Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
 и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.
 

@@ -499,17 +499,23 @@ local function EnsureOverlay()
         local screenY = cy - (MG.handPos.y * baseScale)
         
         -- 512x1260 source images at baseScale 2.04 were taller than the
-        -- screen.  The client convar lets the user dial the hand down without
-        -- shrinking the bandage board itself.
+        -- screen.  The repository handanim frames are horizontal 960x540, so
+        -- WSZC.UnitmenuHandGeometry returns their own size and fingertip pivot.
+        -- If the WIP addon is absent, fall back to the original C:U sprites.
         local handScale = CFG.HandCursorScale * ((WSZC and WSZC.HandCursorScale and WSZC.HandCursorScale()) or 1)
-        local handDrawW = SRC_HAND_W * baseScale * handScale
-        local handDrawH = SRC_HAND_H * baseScale * handScale
-        local handPivotX = 0.4
-        local handPivotY = 0.1
+        local handDrawW, handDrawH, handPivotX, handPivotY
+        if WSZC and WSZC.UnitmenuHandGeometry then
+            handDrawW, handDrawH, handPivotX, handPivotY =
+                WSZC.UnitmenuHandGeometry(SRC_HAND_W, SRC_HAND_H, baseScale * handScale)
+        else
+            handDrawW, handDrawH = SRC_HAND_W * baseScale * handScale, SRC_HAND_H * baseScale * handScale
+            handPivotX, handPivotY = 0.4, 0.1
+        end
         local handX = screenX - (handDrawW * handPivotX) + ((DevMinigameCfg.bandageHandOffsetX or 0) * baseScale)
         local handY = screenY - (handDrawH * handPivotY) + ((DevMinigameCfg.bandageHandOffsetY or 0) * baseScale)
 
-        local handMat = MG.holdingBandage and matHandClick or matHandIdle
+        local handMat = (WSZC and WSZC.UnitmenuHandMat and WSZC.UnitmenuHandMat(MG.holdingBandage == true))
+            or (MG.holdingBandage and matHandClick or matHandIdle)
         local filtered = BeginPixelFilter()
         local clipActive = WoundSystem and WoundSystem.MinigameClip and WoundSystem.MinigameClip.Begin()
         surface.SetMaterial(handMat)
@@ -521,11 +527,13 @@ local function EnsureOverlay()
             gb = 255 * (1 - painFactor)
         end
         
-        surface.SetDrawColor(255, gb, gb, 153)
+        surface.SetDrawColor(255, gb, gb,
+            (WSZC and WSZC.UnitmenuHandAlpha and WSZC.UnitmenuHandAlpha(153)) or 153)
         
         local cx_hand = handX + (handDrawW * handPivotX)
         local cy_hand = handY + (handDrawH * handPivotY)
         local angle = HandPhysics.Rotation(MG, (MG.handPos and MG.handPos.x) and (MG.handPos.x * 0.02) or 0)
+        if WSZC and WSZC.UnitmenuHandAngle then angle = WSZC.UnitmenuHandAngle(angle) end
         surface.DrawTexturedRectRotated(cx_hand, cy_hand, handDrawW, handDrawH, angle)
         if WoundSystem and WoundSystem.MinigameClip then
             WoundSystem.MinigameClip.End(clipActive)

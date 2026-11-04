@@ -69,6 +69,13 @@
 умолчанию `35`), чтобы кость была на экране и нажималась. Размер спрайта руки
 в мини-играх бинта/шприца — `zc_woundsystem_compat_hand_cursor_scale`.
 
+Внешний вид куклы WoundView и руки мини-игр теперь берётся из архива
+`для переделывания интерфейса.zip`: 15 слоёв `zcity_delta/unitmenu/limbs`,
+иконки `status/*` и кадры `homigrad/handanim`. Управление: 
+`zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.28),
+`zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_handanim_scale` (0.55).
+Клавиши, хитбоксы лимбов и логика мини-игр не меняются.
+
 **После смерти:** LMB по экрану отправляет `WoundSystem_PlayerRespawnRequest`
 (обработчик живёт в хуке `WoundSystem_DeathScreenDisplay` из C:U; компат гасит
 только его отрисовку, но не ввод). Запрос обрабатывается серверным

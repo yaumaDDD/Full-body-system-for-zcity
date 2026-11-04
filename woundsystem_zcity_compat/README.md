@@ -278,6 +278,10 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `1.0` — базовый размер мини-игры; диапазон `0.7..1.8`. |
 | `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | `0.75` — размер НАТИВНЫХ мини-игр C:U (вправление, осколки, AED) относительно квадрата 760 px; диапазон `0.4..1.2`. Full-screen сюда не применяется. |
 | `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | `0.45` — множитель спрайта руки 512×1260 в мини-играх бинта/шприца; диапазон `0.2..1`. |
+| `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 слоёв `unitmenu/limbs` архива; `0` — родные спрайты C:U. |
+| `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.28` — размер куклы относительно `dollScale` C:U; диапазон `0.1..0.8`. |
+| `zc_woundsystem_compat_handanim` | этот аддон (client) | `1` — кадры `homigrad/handanim/hand.png` и `3_3.png` вместо руки 512×1260; `0` — родная рука C:U. |
+| `zc_woundsystem_compat_handanim_scale` | этот аддон (client) | `0.55` — размер реалистичной руки; диапазон `0.2..1.5`. |
 | `zc_woundsystem_compat_dislocation_start` | этот аддон (server) | `35` — стартовое смещение кости в мини-игре вправления (было 100); диапазон `10..100`. Меньше = кость на экране и меньше ударов. |
 | `zc_woundsystem_compat_hide_cu_inventory` | этот аддон (client) | `1` — скрыть 5 слотов C:U, их рамки, drag&drop и подбор мировых предметов; виртуальный слот `6` остаётся. |
 | `zc_woundsystem_compat_hide_unit_panel` | этот аддон (client) | `1` — скрыть левый сканер `UNI-HEALTH v2.03` внутри WoundView. |
@@ -649,8 +653,9 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  `TEST_OK 20/20`, `TEST_OK 11/11`, `TEST_OK 7/7`, `TEST_OK 10/10`
  (кости/лок сессии/смещение), `TEST_OK 17/17` (инвентарь, `DrawOutlinedRect`,
  UV/линии/полигоны, `hook.Add`, `PreDrawHUD`, viewmodel, нативные сессии) и
- `TEST_OK 11/11` (экран смерти/респавн/dead-context guard/Think-очистка) —
- всего **95 тестов**); на живом GMod-сервере ассистентом не прогонялось.
+ `TEST_OK 11/11` (экран смерти/респавн/dead-context guard/Think-очистка) и
+ `TEST_OK 21/21` (кукла из архива, `Limbs` upvalue, иконки статусов, кадры руки,
+ нативный оверрайд, PNG/геометрия) — всего **116 тестов**); на живом GMod-сервере ассистентом не прогонялось.
  Пользовательские live-скриншоты после `3d7c793` и `e70bfb5` показали, что
  предыдущие headless-тесты не доказывали скрытие в реальном клиенте;
  исправления выше сделаны по ним, но собственной live-проверки не было.
