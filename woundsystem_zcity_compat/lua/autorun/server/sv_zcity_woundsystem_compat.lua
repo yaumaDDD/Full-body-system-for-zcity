@@ -28,6 +28,9 @@ if not WSZC.PatchIsEnabled then
 end
 
 local TAG = "[ZCity/CU compat] "
+-- Shared with sv_zcity_woundsystem_compat_organism.lua.  Weak keys because
+-- CTakeDamageInfo objects are transient and must not be retained.
+WSZC.RawDamage = WSZC.RawDamage or setmetatable({}, { __mode = "k" })
 local cvDebug = CreateConVar("zc_woundsystem_compat_debug", "0", { FCVAR_ARCHIVE, FCVAR_NOTIFY }, "Print diagnostics for the ZCity <-> WoundSystem compatibility addon")
 
 function WSZC.Debug(fmt, ...)
@@ -556,6 +559,15 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
 
     local use = item.use or {}
     local minigame = use.minigame
+    -- In organism-authority mode C:U's state is only a shadow of ply.organism.
+    -- Capture it before the medicine acts, then mirror the produced delta back
+    -- into the real ZCity organism (WSZC.ApplyMedicalDelta is a no-op in bridge
+    -- mode, where C:U owns health).
+    local medicalBefore
+    if WSZC.SnapshotMedical then
+        local snapOk, snap = pcall(WSZC.SnapshotMedical, ply, limbId)
+        if snapOk then medicalBefore = snap end
+    end
     local ok = false
 
     if minigame == "bandage" then
@@ -600,6 +612,11 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
 
     if not ok then return false, 0 end
 
+    -- When called from inside WB.SwepHeal() the outer wrapper already measured
+    -- the whole body delta; applying ours too would double the medicine.
+    if medicalBefore and WSZC.ApplyMedicalDelta and (WSZC.SwepHealDepth or 0) == 0 then
+        pcall(WSZC.ApplyMedicalDelta, ply, limbId, medicalBefore)
+    end
     if H.SendLimbUpdate and limbId ~= "body" then H.SendLimbUpdate(ply, limbId, true) end
     if H.SendCardioUpdate then H.SendCardioUpdate(ply) end
     return true, used
@@ -618,6 +635,7 @@ WSZC.ApplyItemToBodyImpl = ApplyItemToBodyImpl
 
 -- Registers WSZC.InstallMinigameAPI() and the namespaced net protocol.
 include("autorun/server/sv_zcity_woundsystem_compat_minigames.lua")
+include("autorun/server/sv_zcity_woundsystem_compat_organism.lua")
 
 ---------------------------------------------------------------------------
 -- One-time setup
@@ -815,6 +833,21 @@ function WSZC.Setup()
         end
 
         local function DamageWrapper(ent, dmginfo)
+            -- In organism-authority mode C:U must NOT simulate this hit at all:
+            -- its handler ends with dmginfo:SetDamage(0), which would erase the
+            -- ZCity hit.  WSZC_AuthorityDamagePost (PostEntityTakeDamage) records
+            -- the shrapnel instead, using the unscaled damage saved below.
+            if WSZC.OrganismAuthority() then
+                -- Only fill the raw-damage cache if our homigrad-damage wrapper
+                -- has not done it yet (hook order is not guaranteed, and that
+                -- wrapper sees the value before ZCity's ScaleDamage(0.15)).
+                if WSZC.RawDamage[dmginfo] == nil and IsValid(ent) and ent:IsPlayer()
+                    and dmginfo and dmginfo.GetDamage then
+                    local okRaw, raw = pcall(dmginfo.GetDamage, dmginfo)
+                    if okRaw then WSZC.RawDamage[dmginfo] = raw end
+                end
+                return
+            end
             if WSZC.Ready and BridgeEnabled() and IsValid(ent) and ent:IsPlayer() and Bridged(ent) then
                 return -- ZCity already forwarded this hit through WB.ApplyDamage
             end
@@ -995,8 +1028,16 @@ local function Attempt()
 
     WSZC.Ready = true
     SetGlobalBool("WSZC_Ready", true)
+    SetGlobalBool("WSZC_OrganismAuthority", WSZC.OrganismAuthority())
     if WSZC.PatchIsEnabled then WSZC.PatchIsEnabled() end
-    WSZC.Log("compatibility layer active (C:U owns wounds, ZCity owns hits)")
+    if WSZC.PatchIsBridged then WSZC.PatchIsBridged() end
+    if WSZC.InstallOrganismMode then WSZC.InstallOrganismMode() end
+
+    if WSZC.OrganismAuthority() then
+        WSZC.Log("compatibility layer active (ply.organism owns health; C:U = HUD, minigames, shrapnel)")
+    else
+        WSZC.Log("compatibility layer active (C:U owns wounds, ZCity owns hits)")
+    end
     return true
 end
 

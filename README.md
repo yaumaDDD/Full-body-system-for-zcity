@@ -2,16 +2,20 @@
 
 ## Compatibility addon
 
-`woundsystem_zcity_compat/` — отдельный GMod-аддон, который включает существующий
-мост из `zcity.zip` с приложенной версией `casualites unknown.zip` без правки
-исходных ZIP-архивов.
+`woundsystem_zcity_compat/` — отдельный GMod-аддон, который соединяет стандартную
+систему здоровья ZCity (`ply.organism`) с приложенной версией
+`casualites unknown.zip` без правки исходных ZIP-архивов.
 
-Аддон поднимает настоящие bandage/syringe мини-игры C:U только для бинтов и непрерывных
-шприцевых препаратов (`weapon_bandage_sh`, `weapon_bigbandage_sh`, `weapon_morphine`,
-`weapon_fentanyl`, режим `1` медкита). One-dose предметы остаются мгновенными, даже если у них
-есть `spec.mg`: `weapon_naloxone`, `weapon_needle`, `weapon_adrenaline`, `weapon_betablock`,
-`weapon_mannitol`, `weapon_thiamine`, режимы `2/3/5` медкита. Жгут, обезболивающее,
-режим `4` медкита, blood bag и прочие спецы без `mg` тоже остаются мгновенными.
+**По умолчанию `ply.organism` авторитетен** (`zc_woundsystem_compat_authority 1`):
+здоровье, Organs+, боль/шок/кровотечение, броня, ragdoll и смерть считает ZCity,
+а C:U остаётся UI, мини-играми, показателями-«тенью» и протоколом шрапнели.
+`zc_woundsystem_compat_authority 0` возвращает прежний мост, где C:U полностью
+владела ранами.
+
+Шрапнель — единое поле `state.shrapnel` без признака источника и без второй
+мини-игры: пули, взрывы и **стекло** (руки/ноги, ragdoll-коллизии) пишут один
+счётчик, а родная кнопка `REMOVE SHRAPNEL` в панели C:U открывает тот же
+`BuildShrapnelSession()`.
 
 В круговом селекторе ZCity добавлена кнопка «Проверить травмы»: она открывает
 родную панель осмотра C:U (`WoundSystem.OpenHealthHUD`), а не новый интерфейс.
@@ -19,4 +23,13 @@
 нет. Панель C:U показывает состояние `LocalPlayer()`, поэтому кнопка проверяет
 себя; осмотр другого игрока в этой панели не предусмотрен.
 
-Подробности установки, таблица предметов, конвары и ограничения: [`woundsystem_zcity_compat/README.md`](woundsystem_zcity_compat/README.md).
+Настоящие bandage/syringe мини-игры C:U поднимаются только для бинтов и
+непрерывных шприцевых препаратов (`weapon_bandage_sh`, `weapon_bigbandage_sh`,
+`weapon_morphine`, `weapon_fentanyl`, режим `1` медкита). One-dose предметы
+остаются мгновенными, даже если у них есть `spec.mg`: `weapon_naloxone`,
+`weapon_needle`, `weapon_adrenaline`, `weapon_betablock`, `weapon_mannitol`,
+`weapon_thiamine`, режимы `2/3/5` медкита. Жгут, обезболивающее, режим `4`
+медкита, blood bag и прочие спецы без `mg` тоже остаются мгновенными.
+
+Подробности установки, таблица источников шрапнели, таблица предметов, конвары
+и ограничения: [`woundsystem_zcity_compat/README.md`](woundsystem_zcity_compat/README.md).

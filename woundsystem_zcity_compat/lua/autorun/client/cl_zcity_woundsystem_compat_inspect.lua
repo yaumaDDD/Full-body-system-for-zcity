@@ -43,10 +43,13 @@ local function CompatInspectEnabled()
     if not (WoundSystem and WoundSystem.Health) then return false end
     if not (WoundSystem.OpenHealthHUD or WoundSystem.ToggleHealthHUD) then return false end
 
+    -- Do NOT gate this on WB.IsEnabled(): in organism-authority mode the client
+    -- deliberately reports the bridge as off so ZCity keeps its stock HUD, yet
+    -- the C:U panel is still the requested injury-inspection surface.  The
+    -- networked WSZC_Ready flag above is the authoritative readiness check.
     local WB = hg and hg.WoundBridge
-    if not (WB and WB.IsEnabled) then return false end
-    local ok, enabled = pcall(WB.IsEnabled)
-    return ok and enabled == true
+    if not WB then return false end
+    return true
 end
 
 local function OpenCUHealthPanel()
