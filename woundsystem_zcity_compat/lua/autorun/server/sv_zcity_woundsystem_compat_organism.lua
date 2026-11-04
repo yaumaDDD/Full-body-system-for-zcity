@@ -60,6 +60,9 @@ local cvLimbBleed = CreateConVar("zc_woundsystem_compat_limb_bleed", "1",
 local cvOnBlocked = CreateConVar("zc_woundsystem_compat_shrapnel_on_blocked", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Count a hit whose EntityTakeDamage hook returned true (ZCity redirects it to the fake ragdoll)", 0, 1)
+local cvCUBlood = CreateConVar("zc_woundsystem_compat_disable_cu_blood", "1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Stop C:U from hiding vanilla/ZCity blood (woundsys_replace_vanilla_blood)", 0, 1)
 local cvDebug = CreateConVar("zc_woundsystem_compat_organism_debug", "0",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Print organism-authority diagnostics", 0, 1)
@@ -1012,6 +1015,35 @@ local function DisableCUPhysiology()
     hook.Remove("EntityTakeDamage", "WoundSystem_TalkerHitByCreature")
 end
 
+--- C:U's server config sets DONT_BLEED on every player while
+--- `woundsys_replace_vanilla_blood 1` (its default), which SILENCES ZCity's /
+--- Hemogen's own blood.  The owner wants only ZCity effects, so restore the
+--- vanilla blood colour and keep C:U's blood purely as data (no decals).
+--- Patching the function (instead of just setting the convar) also covers
+--- C:U re-applying it on spawn / convar change.
+function WSZC.DisableCUBloodReplacement()
+    local cfg = WoundSystem and WoundSystem.Health and WoundSystem.Health.Config
+    if not (cvCUBlood and cvCUBlood:GetBool()) then
+        if WSZC._CUBloodOriginal and cfg then
+            cfg.ApplyVanillaBloodMode = WSZC._CUBloodOriginal
+        end
+        WSZC._CUBloodOriginal = nil
+        return false
+    end
+    if not (cfg and type(cfg.ApplyVanillaBloodMode) == "function") then return false end
+    if not WSZC._CUBloodOriginal then
+        WSZC._CUBloodOriginal = cfg.ApplyVanillaBloodMode
+        cfg.ApplyVanillaBloodMode = function(ent)
+            if not (IsValid(ent) and ent.SetBloodColor) then return end
+            if ent:IsPlayer() then ent:SetBloodColor(BLOOD_COLOR_RED or 0) end
+        end
+    end
+    if player and player.GetAll then
+        for _, ply in ipairs(player.GetAll()) do pcall(cfg.ApplyVanillaBloodMode, ply) end
+    end
+    return true
+end
+
 local function InstallVanillaHooks()
     -- Org Think "Main": without this wrapper the hook returns early through
     -- WB.Think() and every vanilla ZCity organ module (and Organs+) is skipped.
@@ -1088,6 +1120,7 @@ function WSZC.InstallOrganismMode()
     InstallShadowBridge()
     InstallMedicalBridge()
     DisableCUPhysiology()
+    WSZC.DisableCUBloodReplacement()
 
     -- Org Think runs at 10 Hz in ZCity.  Our own hook keeps the C:U HUD and the
     -- shrapnel shadow in sync, and holds the regeneration block.
@@ -1168,10 +1201,19 @@ end
 -- until WSZC.Ready is set (the main layer already uses this retry pattern).
 local retries = 0
 local function TryInstall()
-    if WSZC.InstallOrganismMode() then return end
+    -- Keep re-asserting vanilla blood even if InstallOrganismMode() already
+    -- succeeded: C:U may create its Config table after our first attempt.
+    WSZC.DisableCUBloodReplacement()
+    if WSZC.InstallOrganismMode() and (not cvCUBlood:GetBool() or WSZC._CUBloodOriginal) then return end
     retries = retries + 1
     if retries < 60 then timer.Simple(0.5, TryInstall) end
 end
 timer.Simple(0, TryInstall)
-hook.Add("InitPostEntity", "WSZC_OrganismInit", function() WSZC.InstallOrganismMode() end)
-hook.Add("HomigradRun", "WSZC_OrganismInit", function() WSZC.InstallOrganismMode() end)
+hook.Add("InitPostEntity", "WSZC_OrganismInit", function()
+    WSZC.InstallOrganismMode()
+    WSZC.DisableCUBloodReplacement()
+end)
+hook.Add("HomigradRun", "WSZC_OrganismInit", function()
+    WSZC.InstallOrganismMode()
+    WSZC.DisableCUBloodReplacement()
+end)

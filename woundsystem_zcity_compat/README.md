@@ -263,6 +263,8 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_limb_bleed` | этот аддон | `1` — кровотечение по реальным ранам ZCity (per-bone); `0` — старое поведение «глобальный bleed на все лимбы». |
 | `zc_woundsystem_compat_shrapnel_on_blocked` | этот аддон | `1` — считать попадание, чей `EntityTakeDamage` вернул `true` (ZCity пересылает его в `FakeRagdoll`, GMod отдаёт `took=false`). |
 | `zc_woundsystem_compat_hide_empty_notice` | этот аддон | `1` — убрать надпись «Not completed - nothing was applied»; `0` — вернуть. |
+| `zc_woundsystem_compat_disable_cu_fx` | этот аддон (client) | `1` — снять ВСЕ экранные/камерные/UI-эффекты C:U, оставить только эффекты ZCity; `0` — вернуть хуки C:U. |
+| `zc_woundsystem_compat_disable_cu_blood` | этот аддон (client + server) | `1` — убрать декоративную кровь C:U и вернуть ванильную кровь ZCity/Hemogen; `0` — вернуть как было. |
 | `zc_woundsystem_compat_fullscreen_minigame` | этот аддон (client) | `1` — мини-игры бинта/шприца на весь экран; `0` — исходный квадрат ~760 px C:U. |
 | `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `1.0` — базовый размер мини-игры; диапазон `0.7..1.8`. |
 | `zc_woundsystem_compat_clamp_adrenaline` | этот аддон (client) | `1` — клампить `org.adrenaline` ≤2 и `org.painkiller` ≤1, чтобы камера ZCity не давала FOV-взрыв. |
@@ -329,6 +331,51 @@ SWEP. В authority-режиме каждая такая доза дополни�
    * Проверить: `zc_woundsystem_compat_organism_debug 1` → в логах
      `shrapnel +N on thigh_R (damage)`; `zc_woundsystem_compat_shrapnel 1`.
 
+## Только эффекты ZCity, кровь ZCity, курсор и неподвижность в мини-игре
+
+**Эффекты.** По умолчанию коннектор снимает все визуальные эффекты C:U:
+`WoundSystem_PostProcess` (шейдер боли, bloom, sharpen, motion blur, туннель,
+эффекты опиатов/ломки), `StaminaEffects`, `BlindEffects`,
+`ChromaticAberration`, `SpinNausea*`, `Lobotomy*`, `BrainReverse*`, статик и
+виньетки (`HUDPaintBackground`), moodles, self-talk («My muscles are burning…»),
+death screen, `CalcView`-тряску и unconscious eye view, туман/чёрный скайбокс,
+`BallisticAimKick`, инверсию управления и искажение текста
+(`TextCorruption`). Отключается и звуковой слой C:U: looping medical audio,
+CAS3-музыка, тиннитус, asystole, pain/death/growl-звуки, HEV, искажение чата
+и «gunshot hearing» (`woundsys_audio_master 0`, `woundsys_music_enabled 0`,
+`woundsys_tinnitus_volume 0`, …). **Сохраняются** панель ран `WoundDollAndPanel`,
+`WoundSystem_UIRegistry`, обработка ввода панели и владелец курсора — C:U
+продолжает работать как UI, мини-игры и протокол шрапнели. Оригиналы хуков
+лежат в `WSZC.CUFxSaved`, поэтому `zc_woundsystem_compat_disable_cu_fx 0`
+полностью возвращает эффекты. Фильтр повторяется каждую секунду, потому что
+C:U пересоздаёт `EYEVIEW_CalcView` из своего `Think`.
+
+**Кровь.** `cl_blood_effects.lua` рисует жёлтую «alien» кровь, лужи, следы и
+потоки на телах, а `woundsys_fur_blood_models` — оверлей на моделях. Все эти
+хуки снимаются, клиентские конвары крови выставляются в `0`. Важнее серверная
+часть: `woundsys_replace_vanilla_blood 1` (дефолт C:U) вызывает
+`Health.Config.ApplyVanillaBloodMode`, который ставит игрокам `DONT_BLEED` и
+**глушит родную кровь ZCity / Hemogen**. `WSZC.DisableCUBloodReplacement()`
+патчит эту функцию, возвращая `BLOOD_COLOR_RED`. Откат обоих пунктов —
+`zc_woundsystem_compat_disable_cu_blood 0` **в консоли клиента и в консоли
+сервера** (это два независимых конвара с одинаковым именем: клиентский
+`CreateClientConVar` и серверный `CreateConVar`).
+
+**Мини-игра бинтования/шприца.** Раньше персонаж продолжал ходить, а курсор не
+появлялся. Три причины:
+* `WoundSystem_ScreenClickerWatchdog` снимает курсор, когда
+  `WoundSystemIsAnyWoundMinigameActive() == false`, а этот глобал C:U знает
+  только 6 нативных мини-игр — наши namespaced копии в него не входят. Теперь
+  глобал обёрнут: `original() or WSZC.MinigameActive()`.
+* `WSZC_MinigameOpen` и `WSZC_BandageOpen`/`WSZC_SyringeOpen` приходят разными
+  пакетами; старый `WSZC_MinigameClientWatch` успевал сбросить флаг и отпустить
+  курсор до старта UI. Добавлена 1 секунда grace и повторное включение кликера
+  в `Think`, если C:U его всё-таки забрал.
+* Движение никто не блокировал. Клиентский и серверный `SetupMove` теперь
+  обнуляют `forward/side/up`, `buttons`, `mousex/mousey` и горизонтальную
+  скорость (падение по Z сохраняется), а `PlayerBindPress` глушит бинды ZCity
+  (`+forward`, `+menu`, `slot*`, …), оставляя `toggleconsole`/`screenshot`.
+
 ## Ограничения
 
 - Режим `authority 1` не обещает полной 1:1 vanilla-эквивалентности Organs+:
@@ -353,9 +400,10 @@ SWEP. В authority-режиме каждая такая доза дополни�
 - Хуки сторонних аддонов (`PreHomigradDamage`, `HomigradDamage`,
  `PostEntityTakeDamage`, `simple eye gore`, `zcitygore`, `project hemogen blood`)
  не переопределяются.
-- Проверено синтаксически (`luaparser`, 9 файлов) и на заглушечном Lua-рантайме
+- Проверено синтаксически (`luaparser`, 10 файлов) и на заглушечном Lua-рантайме
  (authority-режим, inspect, мини-игры, шрапнель/`took=false`, адреналин,
- per-limb bleeding, full-screen clip: `TEST_OK 9/9` и `TEST_OK 6/6`);
+ per-limb bleeding, full-screen clip, фильтр FX/крови, курсор и лок движения:
+ `TEST_OK 11/11`, `TEST_OK 6/6`, `TEST_OK 17/17`);
  на живом GMod-сервере не прогонялось.
 
 ## Файлы

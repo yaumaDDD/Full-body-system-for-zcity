@@ -16,6 +16,18 @@ WSZC.MinigameClientAttempts = 0
 WSZC.MinigameSlotIdx = 6
 WSZC.PendingBandageOpen = nil
 WSZC.PendingSyringeOpen = nil
+WSZC.MinigameOpenAt = 0
+
+--- True while a WSZC minigame is running (or its open packet has arrived but
+--- the client copy has not painted its first frame yet).  Used for the cursor
+--- owner, the movement lock and C:U's own minigame-active probe.
+function WSZC.MinigameActive()
+    if WSZC.MinigameHUDOpen == true then return true end
+    local bandage, syringe = WSZCBandageMinigame, WSZCSyringeMinigame
+    if bandage and bandage.IsActive and bandage.IsActive() then return true end
+    if syringe and syringe.IsActive and syringe.IsActive() then return true end
+    return false
+end
 
 function WSZC.MinigameNextInputSeq(mg)
     if not mg then return 0 end
@@ -69,6 +81,64 @@ local function DisableMinigameClicker()
     if gui and gui.EnableScreenClicker then gui.EnableScreenClicker(false) end
 end
 WSZC.DisableMinigameClicker = DisableMinigameClicker
+
+-- C:U's WoundSystem_ScreenClickerWatchdog releases the cursor whenever
+-- WoundSystemIsAnyWoundMinigameActive() is false.  That global only knows the
+-- NATIVE C:U minigames, so it used to steal the cursor from our namespaced
+-- copies.  Extend it once, lazily (C:U may load after us).
+local function PatchCUMinigameActive()
+    if WSZC._CUMinigameActivePatched then return end
+    if type(WoundSystemIsAnyWoundMinigameActive) ~= "function" then return end
+    WSZC._CUMinigameActivePatched = true
+    local original = WoundSystemIsAnyWoundMinigameActive
+    WoundSystemIsAnyWoundMinigameActive = function()
+        return original() or WSZC.MinigameActive()
+    end
+end
+WSZC.PatchCUMinigameActive = PatchCUMinigameActive
+
+-- If ZCity's radial menu is still closing, SetScreenClickerOwned(true) can be
+-- refused by C:U ("external menu open").  Keep re-asserting the cursor while a
+-- WSZC minigame is live; this also defeats the C:U watchdog described above.
+hook.Add("Think", "WSZC_MinigameCursorWatch", function()
+    PatchCUMinigameActive()
+    if not WSZC.MinigameActive() then return end
+    if not (gui and vgui and vgui.CursorVisible) then return end
+    if vgui.CursorVisible() then return end
+    local now = CurTime and CurTime() or 0
+    if (WSZC._NextCursorFix or 0) > now then return end
+    WSZC._NextCursorFix = now + 0.15
+    EnableMinigameClicker()
+end)
+
+-- While a minigame is up the character must stand still.  SetupMove runs after
+-- CreateMove on the client, so zeroing the command here stops walking,
+-- strafing, jumping, crouching, attacking AND camera rotation before the
+-- command ever reaches the server.  Vertical velocity is kept (falling) so the
+-- player does not hang in mid-air.
+hook.Add("SetupMove", "WSZC_MinigameLockMovement", function(ply, mv, cmd)
+    if not WSZC.MinigameActive() then return end
+    if ply ~= LocalPlayer() then return end
+    if mv and mv.SetVelocity and mv.GetVelocity then
+        local v = mv:GetVelocity()
+        mv:SetVelocity(Vector(0, 0, math.min(v.z or 0, 0)))
+    end
+    if not cmd then return end
+    if cmd.SetForwardMove then cmd:SetForwardMove(0) end
+    if cmd.SetSideMove then cmd:SetSideMove(0) end
+    if cmd.SetUpMove then cmd:SetUpMove(0) end
+    if cmd.SetButtons then cmd:SetButtons(0) end
+    if cmd.SetMouseX then cmd:SetMouseX(0) end
+    if cmd.SetMouseY then cmd:SetMouseY(0) end
+end)
+
+-- Keep ZCity binds (radial menu, weapon switch, +use, inventory, ...) from
+-- firing behind the minigame.  Console/screenshot stay available.
+hook.Add("PlayerBindPress", "WSZC_MinigameBlockBinds", function(ply, bind, pressed)
+    if not WSZC.MinigameActive() then return end
+    if bind == "toggleconsole" or bind == "screenshot" or bind == "jpeg" then return end
+    return true
+end)
 
 local function SetVirtualSlot(slotIdx, itemId, durability, maxDur)
     EnsureTables()
@@ -146,6 +216,8 @@ net.Receive("WSZC_MinigameOpen", function()
     WSZC.MinigameSlotIdx = slotIdx
     SetVirtualSlot(slotIdx, itemId, durability, maxDur)
     WSZC.MinigameHUDOpen = true
+    WSZC.MinigameOpenAt = CurTime and CurTime() or 0
+    PatchCUMinigameActive()
     EnableMinigameClicker()
 end)
 
@@ -174,6 +246,7 @@ net.Receive("WSZC_MinigameClose", function()
 
     ClearVirtualSlot(slotIdx)
     WSZC.MinigameHUDOpen = false
+    WSZC.MinigameOpenAt = 0
     WSZC.PendingBandageOpen = nil
     WSZC.PendingSyringeOpen = nil
     DisableMinigameClicker()
@@ -246,6 +319,12 @@ hook.Add("Think", "WSZC_MinigameClientWatch", function()
     local bandage = WSZCBandageMinigame
     local syringe = WSZCSyringeMinigame
     if (not bandage or not bandage.active) and (not syringe or not syringe.active) then
+        -- `WSZC_MinigameOpen` and the minigame's own `WSZC_BandageOpen` /
+        -- `WSZC_SyringeOpen` packet can land in different frames.  Releasing
+        -- the cursor in that gap was the "cursor never appears" bug, so give
+        -- the session 1 second to start before tearing it down.
+        local now = CurTime and CurTime() or 0
+        if now - (WSZC.MinigameOpenAt or 0) < 1.0 then return end
         WSZC.MinigameHUDOpen = false
         DisableMinigameClicker()
     end

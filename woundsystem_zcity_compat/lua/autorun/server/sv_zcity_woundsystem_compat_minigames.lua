@@ -622,6 +622,27 @@ hook.Add("PlayerDisconnected", "WSZC_MinigameDisconnect", function(ply)
     if WSZC.MinigameSessions[ply] then StopMinigame(ply, "disabled") end
 end)
 
+-- Server-side counterpart of the client's WSZC_MinigameLockMovement: even if a
+-- client fails to zero its command, the player cannot walk, jump, shoot or
+-- turn while bandaging/injecting.  Vertical velocity is preserved so falling
+-- is not frozen in mid-air.
+hook.Add("SetupMove", "WSZC_MinigameServerLock", function(ply, mv, cmd)
+    if not (WSZC.MinigameSessions and WSZC.MinigameSessions[ply]) then return end
+    if not (IsValid(ply) and ply:IsPlayer()) then return end
+
+    if mv and mv.SetVelocity and mv.GetVelocity then
+        local v = mv:GetVelocity()
+        mv:SetVelocity(Vector(0, 0, math.min(v.z or 0, 0)))
+    end
+    if not cmd then return end
+    if cmd.SetForwardMove then cmd:SetForwardMove(0) end
+    if cmd.SetSideMove then cmd:SetSideMove(0) end
+    if cmd.SetUpMove then cmd:SetUpMove(0) end
+    if cmd.SetButtons then cmd:SetButtons(0) end
+    if cmd.SetMouseX then cmd:SetMouseX(0) end
+    if cmd.SetMouseY then cmd:SetMouseY(0) end
+end)
+
 hook.Add("Think", "WSZC_MinigameWatch", function()
     WSZC.NextMinigameWatch = WSZC.NextMinigameWatch or 0
     local now = CurTime and CurTime() or 0

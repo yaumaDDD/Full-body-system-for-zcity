@@ -42,7 +42,7 @@
   Gore V2, WIP-текстуры интерфейса) и коннектором, плюс `garrysmod/cfg/zcity_binds.cfg`,
   `README_INSTALL.md`, `WORKSHOP_IDS.txt`, `ZCity_binds.md`, `MANIFEST.txt`.
 * **`woundsystem_zcity_compat.zip`** — только аддон-коннектор **с исходным Lua-кодом**
-  (9 файлов), `addon.json`, `README.md` и `SOURCE_INDEX.md`. Копируется одной
+  (10 файлов), `addon.json`, `README.md` и `SOURCE_INDEX.md`. Копируется одной
   папкой в `garrysmod/addons/`.
 
 ## Исправления этой сборки
@@ -59,6 +59,20 @@
 * Шрапнель от дробовика снова появляется: учитываются `took=false` (ZCity
   пересылает хит в `FakeRagdoll`) и `DMG_GENERIC` у патронов `12/70 gauge`,
   у которых `dmgtype` закомментирован в `sh_ammostuff.lua`.
+* **Все экранные эффекты C:U отключены** — остаются только эффекты ZCity:
+  сняты `RenderScreenspaceEffects` (шейдеры боли, блюр, туннель, аберрация),
+  статик/виньетки, moodles, self-talk, death screen, `CalcView`-тряска,
+  aim-kick, unconscious eye view, туман, искажение текста и звуковой слой
+  (музыка, тиннитус, HEV, искажение чата). Панель ран,
+  mini-игры и курсор C:U сохранены (`zc_woundsystem_compat_disable_cu_fx 0` — откат).
+* **Кровь C:U убрана**: декоративные брызги/лужи/следы, «alien»-кровь на
+  моделях и подавление ванильной крови (`woundsys_replace_vanilla_blood`)
+  отключены, поэтому снова работает кровь ZCity / Hemogen
+  (`zc_woundsystem_compat_disable_cu_blood 0` — откат).
+* В мини-игре бинтования/шприца **персонаж больше не ходит, а курсор появляется**:
+  клиентский + серверный `SetupMove` обнуляют движение/поворот/кнопки,
+  `PlayerBindPress` глушит бинды ZCity, а `WoundSystemIsAnyWoundMinigameActive`
+  расширен, чтобы C:U watchdog не крал курсор.
 
 Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
 и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.

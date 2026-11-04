@@ -37,6 +37,12 @@
 | Нет «адреналинового» FOV-взрыва и радиальных полос | `zc_woundsystem_compat_clamp_adrenaline 1` |
 | Кровотечение только на раненых лимбах | `zc_woundsystem_compat_limb_bleed 1` |
 | Шрапнель от дробовика/взрыва | `zc_woundsystem_compat_shrapnel 1`, `zc_woundsystem_compat_shrapnel_on_blocked 1` |
+| Только эффекты ZCity: все эффекты C:U выключены | `zc_woundsystem_compat_disable_cu_fx 1` |
+| Кровь C:U убрана, ванильная кровь ZCity/Hemogen возвращена | `zc_woundsystem_compat_disable_cu_blood 1` |
+| В мини-игре персонаж не ходит и виден курсор | включается вместе с `zc_woundsystem_compat_minigames 1` (без отдельного конвара) |
+
+Панель травм, HUD и протокол шрапнели C:U при этом остаются — отключаются только
+визуальные эффекты и декоративная кровь, а не UI.
 
 ## Установка
 
