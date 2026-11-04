@@ -21,14 +21,22 @@ local cvZoom = CreateClientConVar("zc_woundsystem_compat_minigame_zoom", "1", tr
     "Extra size multiplier for the WSZC minigames (0.7 .. 1.8)", 0.7, 1.8)
 local cvClamp = CreateClientConVar("zc_woundsystem_compat_clamp_adrenaline", "1", true, false,
     "1 = clamp the shadow organism's adrenaline/painkiller so ZCity camera FX stay sane")
-local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_zoom", "0.75", true, false,
+local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_zoom", "1", true, false,
     "Size of native C:U minigames when fullscreen_native is 0 (0.4 .. 1.2)", 0.4, 1.2)
-local cvFullscreenNative = CreateClientConVar("zc_woundsystem_compat_fullscreen_native", "1", true, false,
-    "1 = also stretch native C:U shrapnel / dislocation / AED minigames over the whole screen")
+-- Live regression (Screenshot_2-8): fullscreen_native=1 multiplied Clip.Scale()
+-- by NativeFullscreenK, so a 26x138 shrapnelpiece.png was stretched into a
+-- cropped black/orange vertical slab and the wound's lower half was pushed
+-- off-screen ("I'm giving birth to a shrapnel, where's the bottom part?").
+-- Keep C:U's own board geometry by default; fullscreen stays available for the
+-- two WSZC minigames that were authored for it.
+local cvFullscreenNative = CreateClientConVar("zc_woundsystem_compat_fullscreen_native", "0", true, false,
+    "0 = keep native C:U shrapnel / dislocation / AED at their authored 760 px size; 1 = stretch them fullscreen")
 local cvHandScale = CreateClientConVar("zc_woundsystem_compat_hand_cursor_scale", "0.45", true, false,
     "Size of the on-screen hand in WSZC bandage/syringe minigames (0.2 .. 1)", 0.2, 1)
 local cvHideMinigameText = CreateClientConVar("zc_woundsystem_compat_hide_minigame_text", "1", true, false,
     "1 = remove every header / instruction / exit-hint text and dark panel in all minigames")
+local cvCloseEmptyClick = CreateClientConVar("zc_woundsystem_compat_close_on_empty_click", "1", true, false,
+    "1 = close WoundView when left-clicking an empty area outside the doll, slots and action point")
 
 --- Multiplier for the huge C:U hand sprites (512x1260 source images).
 function WSZC.HandCursorScale()
@@ -48,8 +56,10 @@ function WSZC.StabilizeHandPhysics(hp)
         opts.pain = 0
         opts.shakeX = 0
         opts.shakeY = 0
-        -- A shorter maximum step keeps the spring from overshooting on low FPS.
-        if not opts.maxLength then opts.maxLength = 45 end
+        -- Do NOT force `opts.maxLength` here.  The old 45 (vs C:U's 75) was
+        -- a second cap on how far the hand could travel per step - combined
+        -- with the zeroed mouse delta it made the bandage hand feel frozen.
+        -- C:U's own maxLength/scale now governs the spring normally.
         return original(mg, dt, opts)
     end
     hp._WSZCStabilized = true
@@ -127,17 +137,35 @@ function WSZC.IsMinigameTextFont(font)
     return MINIGAME_TEXT_BASES[base] == true
 end
 
---- Both C:U shrapnel/syringe and the WSZC syringe draw the SAME stretched
---- `minigameshrapnel.png` as a huge solid-black board.  With our full-screen
---- minigame scale it covers the whole lower half of the monitor (the owner
---- asked for those black panels to go).  This is a *backdrop*, not a game
---- sprite: shrapnel pieces, the hand, the tweezers, bandageOuter.png and all
---- Icons.* keep their own materials and are never suppressed.
-local MINIGAME_BOARD_MARKER = "minigameshrapnel"
-function WSZC.IsMinigameBoardMaterial(name)
+--- `minigameshrapnel.png` is NOT a black UI panel: cl_shrapnel.lua:421 and
+--- cl_syringe.lua:540 draw it as the FRONT LAYER OF THE WOUND, over the lower
+--- half of the tweezers / shrapnel piece.  Suppressing it in 6e2196f deleted
+--- "the bottom part the shard comes out of" from the live screenshot.  It is
+--- now a PROTECTED gameplay sprite, never a filtered board.
+local MINIGAME_WOUND_MARKER = "minigameshrapnel"
+function WSZC.IsMinigameWoundLayer(name)
     if type(name) ~= "string" then return false end
     local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
-    return lower:find(MINIGAME_BOARD_MARKER, 1, true) ~= nil
+    return lower:find(MINIGAME_WOUND_MARKER, 1, true) ~= nil
+end
+WSZC.IsMinigameBoardMaterial = WSZC.IsMinigameWoundLayer -- compatibility alias
+
+--- Every texture that belongs to minigame PLAY must survive the HUD filter:
+--- wound front layer, shrapnel pieces, hand, tweezers, bandage circle, blood
+--- drops, white status icons.  `text=all` may only remove headers, guides,
+--- counters and dark chrome panels - never gameplay sprites or the hand.
+local MINIGAME_GAMEPLAY_MARKERS = {
+    "minigameshrapnel", "shrapnelpiece", "bandageouter", "bandagecircle",
+    "bandagestick", "bandageroll", "handgrasp", "tweezers", "pin",
+    "casunknown-images/icons/", "uipoint", "minigame",
+}
+function WSZC.IsMinigameGameplaySprite(name)
+    if type(name) ~= "string" then return false end
+    local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
+    for i = 1, #MINIGAME_GAMEPLAY_MARKERS do
+        if lower:find(MINIGAME_GAMEPLAY_MARKERS[i], 1, true) then return true end
+    end
+    return false
 end
 
 --- Every C:U / WSZC minigame draws its chrome through three shared Clip
@@ -461,10 +489,101 @@ end
 local function HiddenRegion(x, y, w, h)
     if WSZC.CUDeathVisualsHidden == true then return true end
     if IsDollDrawMaterial(WSZC._DrawMaterialName) then return false end
+    -- Minigame PLAY sprites are never hidden, even though WoundView can stay
+    -- open behind a ZCity SWEP minigame (the radial button opens it).
+    if WSZC.IsMinigameGameplaySprite(WSZC._DrawMaterialName) then return false end
     return HiddenRegionRaw(x, y, w, h)
 end
 WSZC.CUHudHiddenRegion = HiddenRegion -- exported for headless tests
 WSZC.CUHudHiddenRegionRaw = HiddenRegionRaw
+
+---------------------------------------------------------------------------
+-- C:U has NO "click outside to close": CloseHealthHUD() is only called from
+-- the key toggle, the death screen and respawn.  The owner expects a click
+-- on an empty part of WoundView to dismiss it, so add that behaviour here
+-- without editing the addon.  `WSZC.WoundViewEmptyClick(mx, my, s)` is a
+-- pure predicate (headless-testable); the Think hook owns the input edge.
+---------------------------------------------------------------------------
+--- @return true when (mx, my) is genuinely EMPTY: outside the doll, the five
+--- inventory slots, the tool row, the action point, the tooltips and the
+--- left UNI-HEALTH scanner.  `s` is the C:U UI scale (ScrH()/1080*uiScale).
+function WSZC.WoundViewEmptyClick(mx, my, s)
+    if type(mx) ~= "number" or type(my) ~= "number" then return false end
+    s = tonumber(s) or 1
+    local sw, sh = ScrW(), ScrH()
+    local cx, cy = sw / 2, sh / 2 + 20 * s
+
+    local function Inside(x, y, w, h)
+        return mx >= x and mx <= x + w and my >= y and my <= y + h
+    end
+
+    -- Left UNI-HEALTH / scanner panel (even when visually hidden, C:U still
+    -- handles clicks there).
+    if Inside(0, 0, 560 * s, 900 * s) then return false end
+
+    -- The doll itself plus a margin for limb labels / hover targets.  C:U
+    -- lays out the body around (cx, cy) with dollScale ~1.5*s, so +/-430*s
+    -- horizontally and +/-520*s vertically covers head, T-pose arms, legs
+    -- and feet without swallowing the whole screen.
+    if Inside(cx - 430 * s, cy - 520 * s, 860 * s, 1040 * s) then return false end
+
+    -- Five inventory slots (3 lower, 2 upper) and the three tool buttons.
+    local size = 80 * s
+    local startX = cx - 137 * s
+    for i = 0, 2 do
+        if Inside(startX + i * 97 * s - 24 * s, cy + 275 * s - 24 * s,
+                  size + 48 * s, size + 48 * s) then return false end
+    end
+    if Inside(cx - 255 * s - size - 24 * s, cy - 285 * s - 24 * s,
+              size + 48 * s, size + 48 * s) then return false end
+    if Inside(cx + 255 * s - 24 * s, cy - 285 * s - 24 * s,
+              size + 48 * s, size + 48 * s) then return false end
+    local toolW = 3 * size + 2 * (17 * s)
+    if Inside(cx - toolW / 2 - 24 * s, cy + 275 * s - 24 * s,
+              toolW + 48 * s, size + 48 * s) then return false end
+
+    -- REMOVE SHRAPNEL / FIX DISLOCATION action point: C:U lerps its position
+    -- into the global WoundSystemActionButtonPos.  A generous box also covers
+    -- the label drawn to its right.
+    local ap = _G.WoundSystemActionButtonPos
+    if type(ap) == "table" and type(ap.x) == "number" and type(ap.y) == "number" then
+        if Inside(ap.x - 60 * s, ap.y - 60 * s, 300 * s, 120 * s) then return false end
+    end
+    return true
+end
+
+local woundViewClickArmed = false
+hook.Add("Think", "WSZC_WoundViewEmptyClickClose", function()
+    if not cvCloseEmptyClick:GetBool() then return end
+    if WoundSystemHealthHUDOpen ~= true then
+        woundViewClickArmed = false
+        return
+    end
+    -- Never fight an active minigame, a drag, the pause menu, a text entry or
+    -- C:U's own external menus (radial / inventory).
+    if WSZC.MinigameActive and WSZC.MinigameActive() then return end
+    if WoundSystemDragState and WoundSystemDragState.active then return end
+    if WoundSystemWorldDrag and WoundSystemWorldDrag.active then return end
+    if vgui and vgui.GetKeyboardFocus and vgui.GetKeyboardFocus() then return end
+    if gui and gui.IsGameUIVisible and gui.IsGameUIVisible() then return end
+    local hg = WoundSystem and WoundSystem.HealthGUI
+    if hg and type(hg.IsExternalMenuOpen) == "function" and hg.IsExternalMenuOpen() then return end
+
+    local pressed = input and input.IsMouseDown and input.IsMouseDown(MOUSE_LEFT) or false
+    if pressed and not woundViewClickArmed then
+        woundViewClickArmed = true
+        local mx, my = gui.MousePos()
+        local s = ScrH() / 1080
+        local cv = GetConVar and GetConVar("woundsys_ui_scale") or nil
+        if cv then s = s * math.Clamp(cv:GetFloat(), 0.6, 1.6) end
+        if WSZC.WoundViewEmptyClick(mx, my, s) and WoundSystem
+            and type(WoundSystem.CloseHealthHUD) == "function" then
+            WoundSystem.CloseHealthHUD()
+        end
+    elseif not pressed then
+        woundViewClickArmed = false
+    end
+end)
 
 local savedHudFn, hudWrapper
 local drawWrappersInstalled = false
@@ -1079,29 +1198,18 @@ function WSZC.InstallMaterialTracker()
         return origSetMaterial(mat)
     end
 
-    -- The stretched `minigameshrapnel.png` board is the big black lower panel
-    -- (its top row is a white line) in shrapnel / syringe minigames.  Skip
-    -- ONLY that one draw call, while a minigame is active and the hide convar
-    -- is on.  C:U sets the material immediately before DrawRectInt, so the
-    -- shrapnel piece, hand, tweezers, bandageOuter and Icons.* (which all set
-    -- their own material) are untouched.  This wrapper is installed first so
-    -- the later draw/hand wrappers chain through it normally.
-    if type(surface.DrawTexturedRect) == "function" then
-        local origBoardRect = surface.DrawTexturedRect
-        surface.DrawTexturedRect = function(x, y, w, h, ...)
-            if WSZC.MinigameTextHidden()
-                and WSZC.IsMinigameBoardMaterial(WSZC._DrawMaterialName) then
-                return
-            end
-            return origBoardRect(x, y, w, h, ...)
-        end
-    end
+    -- NO DrawTexturedRect suppression here.  The previous build skipped
+    -- `minigameshrapnel.png` while a minigame was active, mistaking the wound
+    -- FRONT LAYER for a black UI panel.  Live result: the lower half of the
+    -- wound vanished and only an oversized shard was left on screen.  Chrome
+    -- is removed by the Clip.DrawHeader / DrawExitGuide / DrawBackdrop hooks
+    -- and the font filter instead; gameplay sprites always draw.
 
     -- C:U multiplies the doll's middle sprite by `finalMiddle`, normally
-    -- pure black.  Our archive `_fill.png` is already dark slate, so it needs
-    -- a white tint to keep that colour.  Only the fills are overridden; the
-    -- `_edge.png` outlines keep C:U's `finalOutline`, so the original white
-    -- outline and its hover reaction (white -> black) are preserved.
+    -- pure black.  Our `_fill.png` is the standard black of the archive
+    -- layers, so it needs a white tint to stay visible.  Only the fills are
+    -- overridden; the `_edge.png` contours keep C:U's `finalOutline`, so the
+    -- white outline and its hover reaction (white -> black) are preserved.
     -- C:U's alpha is preserved.
     if type(surface.SetDrawColor) == "function" then
         origSetDrawColor = surface.SetDrawColor

@@ -6,8 +6,9 @@ space, so this one is committed.  It checks the shipped files, not a transient
 build directory:
 
   * static markers for every previous live-screenshot fix,
-  * the human-proportioned doll: slate fill, ORIGINAL white per-limb outline,
-    thin joint gaps, and C:U's untouched hover colour on the outline,
+  * the human-proportioned doll: STANDARD BLACK fill, a thin outline following
+    EACH limb's shape (never a rectangular sprite frame), and C:U's untouched
+    hover colour on the outline,
   * minigame text is removed by a font-scoped filter only, so ZCity
     notifications / AED status labels / death text / icons all survive,
   * runtime behaviour of the HUD filter, full-screen minigames, hand pivot and
@@ -55,6 +56,7 @@ def src(rel):
 # ---------------------------------------------------------------- static ----
 layout_s = LAYOUT.read_text(encoding='utf-8')
 organism_s = ORGANISM.read_text(encoding='utf-8')
+minigames_s = (CLIENT / 'cl_zcity_woundsystem_compat_minigames.lua').read_text(encoding='utf-8')
 generator_s = src('tools/build_unitmenu_materials.py')
 readme_s = src('README.md')
 install_ru_s = src('INSTALL_RU.md')
@@ -74,10 +76,12 @@ check('S03 material tracker + text filter installed by Think paths',
       and layout_s.count('WSZC.InstallMinigameTextFilter()') >= 1)
 check('S04 death-screen suppression keeps top priority',
       'if WSZC.CUDeathVisualsHidden == true then return true end' in layout_s)
-check('S05 all minigames can be full-screen',
-      'MinigameFullscreenNative' in layout_s and 'NativeFullscreenK' in layout_s)
-check('S06 full-screen native defaults on, cursor hiding defaults on',
-      '"zc_woundsystem_compat_fullscreen_native", "1"' in layout_s
+check('S05 WSZC minigames stay full-screen; native C:U games keep authored geometry',
+      'MinigameFullscreenNative' in layout_s and 'NativeFullscreenK' in layout_s
+      and 'WSZC.WSZCMinigameActive()' in layout_s)
+check('S06 full-screen native defaults OFF (no giant cropped shrapnel), cursor hiding on',
+      '"zc_woundsystem_compat_fullscreen_native", "0"' in layout_s
+      and '"zc_woundsystem_compat_native_minigame_zoom", "1"' in layout_s
       and '"zc_woundsystem_compat_hide_minigame_cursor", "1"' in layout_s)
 check('S07 hand pivot + size cap convars exist',
       all(x in layout_s for x in ('hand_pivot_x', 'hand_pivot_y', 'hand_max_screen')))
@@ -95,14 +99,14 @@ check('S11 reset keeps only the down structure and clears sprint penalties',
 check('S12 hemogen blood is explicitly untouched',
       'advancedblood/' not in ''.join(
           p.read_text(encoding='utf-8') for p in CONN.rglob('*.lua')))
-check('S13 generator: ONE continuous silhouette, outline + joint lines, NO per-sprite frames',
+check('S13 generator: standard black, anatomy kept, per-limb shaped outline, NO frames',
       'HUMAN_LAYOUT' in generator_s
-      and 'DOLL_RGB = (42, 56, 60)' in generator_s
+      and 'DOLL_RGB = (0, 0, 0)' in generator_s
       and 'ALPHA_THRESHOLD = 96' in generator_s
-      and 'union = ImageChops.lighter(union, layer)' in generator_s
-      and 'outer_band' in generator_s
-      and 'seam_lines = ImageChops.multiply(seam_lines, union)' in generator_s
-      and 'rectangular white frame' in generator_s
+      and 'EDGE_PAD = 6' in generator_s
+      and 'ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(EDGE_WIDTH)))' in generator_s
+      and 'outer_band' not in generator_s
+      and 'union = ImageChops.lighter(union, layer)' not in generator_s
       and 'MaxFilter(15)' not in generator_s
       and 'transparent sprite' not in generator_s)
 check('S14 docs describe human proportions, restored outline, hover, no minigame text',
@@ -153,10 +157,15 @@ check('S30 DrawHeader keeps the icon but blanks text + top bar',
       and 'clean.panelAlpha = 0' in layout_s
       and 'clip["_WSZCOrig" .. name] = orig' in layout_s
       and '{"DrawExitGuide", "DrawBackdrop"}' in layout_s)
-check('S31 black minigame board is suppressed by material name only',
-      'MINIGAME_BOARD_MARKER = "minigameshrapnel"' in layout_s
-      and 'function WSZC.IsMinigameBoardMaterial(name)' in layout_s
-      and 'WSZC.IsMinigameBoardMaterial(WSZC._DrawMaterialName)' in layout_s)
+check('S31 wound FRONT LAYER + gameplay sprites are protected, never suppressed',
+      'MINIGAME_WOUND_MARKER = "minigameshrapnel"' in layout_s
+      and 'function WSZC.IsMinigameWoundLayer(name)' in layout_s
+      and 'function WSZC.IsMinigameGameplaySprite(name)' in layout_s
+      and 'WSZC.IsMinigameBoardMaterial = WSZC.IsMinigameWoundLayer' in layout_s
+      and 'IsMinigameGameplaySprite(WSZC._DrawMaterialName)' in layout_s
+      and 'NO DrawTexturedRect suppression here' in layout_s
+      and 'and WSZC.IsMinigameBoardMaterial(WSZC._DrawMaterialName) then' not in layout_s
+      and 'local origBoardRect = surface.DrawTexturedRect' not in layout_s)
 check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
       'function WSZC.FindCULimbs' not in layout_s
       and 'local function FindCULimbs()' in layout_s
@@ -173,6 +182,38 @@ check('S33 HUMAN_LAYOUT has human proportions and symmetric pairs',
 check('S34 docs no longer claim the rejected transparent-edge build',
       'без белой обводки' not in all_docs
       and 'прозрачный `_edge`' not in all_docs)
+check('S38 hand can move: no zeroed mouse delta and no extra maxLength cap',
+      minigames_s.count('cmd:SetMouseX(0)') == 0
+      and minigames_s.count('cmd:SetMouseY(0)') == 0
+      and 'opts.maxLength = 45' not in layout_s
+      and 'Do NOT force `opts.maxLength` here' in layout_s
+      and 'DO NOT zero cmd:SetMouseX / SetMouseY here' in minigames_s
+      and 'MouseX/MouseY are intentionally NOT zeroed in SetupMove' in minigames_s
+      and 'cmd:SetViewAngles(ang)' in minigames_s
+      and 'return nil' in minigames_s)
+check('S39 shrapnel survives ragdoll -> standing (authoritative organism)',
+      '"wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation"' in organism_s
+      and '_WSZCRagdollTransitionUntil' in organism_s
+      and 'CarryShrapnelShadow' in organism_s
+      and 'RestoreShrapnelShadow' in organism_s
+      and 'WSZC.ReconcileSpawnShrapnel' in organism_s
+      and 'org.wszc_shrapnel = nil' not in organism_s
+      and 'hook.Add("Fake", "WSZC_ShrapnelRagdollKeep"' in organism_s
+      and 'hook.Add("FakeUp", "WSZC_ShrapnelRagdollKeep"' in organism_s)
+check('S40 clicking empty WoundView space closes it, interactive zones excluded',
+      'function WSZC.WoundViewEmptyClick(mx, my, s)' in layout_s
+      and 'hook.Add("Think", "WSZC_WoundViewEmptyClickClose"' in layout_s
+      and 'WoundSystem.CloseHealthHUD()' in layout_s
+      and 'WoundSystemActionButtonPos' in layout_s
+      and 'WoundSystemDragState' in layout_s
+      and '"zc_woundsystem_compat_close_on_empty_click", "1"' in layout_s)
+check('S41 text=all no longer deletes gameplay sprites / the wound front layer',
+      'NO DrawTexturedRect suppression here' in layout_s
+      and 'IsMinigameGameplaySprite' in layout_s
+      and 'handgrasp' in layout_s
+      and 'shrapnelpiece' in layout_s
+      and 'bandageouter' in layout_s
+      and 'WSZC.MinigameTextHidden()' in layout_s)
 
 # Lua syntax (luaparser is optional).
 try:
@@ -233,8 +274,9 @@ try:
     check('S17 white outline restored: 15 opaque white _edge.png',
           edge_boxes == 15 and edge_white > 100 and edges.getbbox() is not None)
     # Regression for the live "Lego robot" screenshot: a per-sprite white
-    # frame means almost every border pixel of that sprite is white.  A real
-    # outline follows the body shape, so border coverage stays far below 100%.
+    # frame means white pixels touch the rectangular sprite border.  The
+    # owner chose an outline that follows EACH limb's shape instead, so the
+    # contour is inset (EDGE_PAD) and NO border pixel may be white at all.
     worst_border = 0.0
     for limb, (cx, cy, w, h) in geom.items():
         w, h = int(w), int(h)
@@ -244,14 +286,27 @@ try:
         border += [(0, y) for y in range(h)] + [(w - 1, y) for y in range(h)]
         white = sum(1 for x, y in border if p[x, y] > 0)
         worst_border = max(worst_border, white / len(border))
-    check('S36 NO closed white frame on any limb sprite (%.1f%% max)' % (worst_border * 100),
-          worst_border < 0.60)
+    check('S36 NO rectangular frame: outlines never touch a sprite border (%.1f%%)' % (worst_border * 100),
+          worst_border == 0.0)
     thorax = Image.open(limb_dir / 'thorax_fill.png').convert('RGBA')
     r, g, b, a = thorax.getpixel((thorax.width // 2, thorax.height // 2))
-    check('S18 limbs keep the existing dark slate, not pure black',
-          a > 200 and (r, g, b) == (42, 56, 60))
+    check('S18 standard BLACK fill restored (not slate 42,56,60)',
+          a > 200 and (r, g, b) == (0, 0, 0))
+    # Every outline must be non-empty (b47a0cb's transparent _edge was rejected)
+    # and must follow its limb's shape rather than a box: white pixels sit in
+    # the interior of the sprite, not on its border.
+    check('S37 generator emits standard black + shape-following per-limb contours',
+          edge_boxes == 15
+          and 'DOLL_RGB = (0, 0, 0)' in generator_s
+          and 'EDGE_PAD = 6' in generator_s
+          and 'EDGE_WIDTH = 5' in generator_s
+          and 'ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(EDGE_WIDTH)))' in generator_s
+          and 'outer_band' not in generator_s
+          and 'seam_lines' not in generator_s
+          and 'ImageDraw' not in generator_s
+          and 'assert worst == 0.0' in generator_s)
     # Thin transparent joint gaps between neighbouring fills.  The white
-    # outline ring is a SEPARATE sprite, so the fill mask still shows seams.
+    # outline is a SEPARATE sprite, so the fill mask still shows seams.
     mask = body.point(lambda p: 255 if p > 127 else 0)
     px = mask.load()
     seam_pixels = 0
@@ -308,7 +363,10 @@ def validate_zips():
     shipped_layout = full['garrysmod/addons/woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua'].decode('utf-8')
     assert 'HandRectForCursor' in shipped_layout
     assert 'WSZC.InstallMinigameTextFilter()' in shipped_layout
-    assert 'IsMinigameBoardMaterial' in shipped_layout
+    assert 'WSZC.IsMinigameWoundLayer' in shipped_layout
+    assert 'WSZC.IsMinigameGameplaySprite' in shipped_layout
+    assert 'origBoardRect' not in shipped_layout
+    assert 'function WSZC.WoundViewEmptyClick' in shipped_layout
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
     assert len(full) == 2765
     return True
@@ -485,14 +543,15 @@ end)()
 end)()
 ''')
 
-    rt('R06 fullscreen_native 0 restores the 570 px square', '''
+    rt('R06 native games keep C:U\'s own 760 px board at zoom 1 by default', '''
 (function()
     convars["zc_woundsystem_compat_fullscreen_native"]._v = "0"
     WoundSystemDislocationMinigame = { active = true }
     local x, y, w, h, r = WoundSystem.MinigameClip.GetRect()
+    local s = WoundSystem.MinigameClip.Scale()
     WoundSystemDislocationMinigame = { active = false }
-    convars["zc_woundsystem_compat_fullscreen_native"]._v = "1"
-    return w == 570 and h == 570 and r < 18
+    convars["zc_woundsystem_compat_fullscreen_native"]._v = "0"
+    return w == 760 and h == 760 and r == 18 and math.abs(s - (1000 / 1080)) < 0.0001
 end)()
 ''')
 
@@ -681,7 +740,7 @@ end)()
 end)()
 ''')
 
-    rt('R21 defaults: archive hand, pinned, hidden backdrop, slate fill, no minigame text', '''
+    rt('R21 defaults: archive hand, black doll, native C:U minigames, empty-click close', '''
 (function()
     return convars["zc_woundsystem_compat_handanim"]._v == "1"
        and convars["zc_woundsystem_compat_hand_pin_cursor"]._v == "1"
@@ -689,6 +748,9 @@ end)()
        and convars["zc_woundsystem_compat_unitmenu_tint"]._v == "1"
        and convars["zc_woundsystem_compat_hide_minigame_cursor"]._v == "1"
        and convars["zc_woundsystem_compat_hide_minigame_text"]._v == "1"
+       and convars["zc_woundsystem_compat_fullscreen_native"]._v == "0"
+       and convars["zc_woundsystem_compat_native_minigame_zoom"]._v == "1"
+       and convars["zc_woundsystem_compat_close_on_empty_click"]._v == "1"
 end)()
 ''')
 
@@ -780,28 +842,32 @@ end)()
 end)()
 ''')
 
-    rt('R26 IsMinigameBoardMaterial matches only the stretched black board', '''
+    rt('R26 wound front layer identified; ALL gameplay sprites protected', '''
 (function()
-    return WSZC.IsMinigameBoardMaterial("casunknown-images/shrapnelminigame/minigameShrapnel.png") == true
-       and WSZC.IsMinigameBoardMaterial("casunknown-images/syringeminigame/minigameshrapnel.png") == true
-       and WSZC.IsMinigameBoardMaterial("casunknown-images/shrapnelminigame/shrapnelpiece.png") == false
-       and WSZC.IsMinigameBoardMaterial("casunknown-images/shrapnelminigame/handGraspIdle1.png") == false
-       and WSZC.IsMinigameBoardMaterial("casunknown-images/bandageminigame/bandageOuter.png") == false
-       and WSZC.IsMinigameBoardMaterial("casunknown-images/icons/fracturedbone.png") == false
-       and WSZC.IsMinigameBoardMaterial(nil) == false
+    return WSZC.IsMinigameWoundLayer("casunknown-images/shrapnelminigame/minigameShrapnel.png") == true
+       and WSZC.IsMinigameWoundLayer("casunknown-images/syringeminigame/minigameshrapnel.png") == true
+       and WSZC.IsMinigameWoundLayer("casunknown-images/shrapnelminigame/shrapnelpiece.png") == false
+       and WSZC.IsMinigameWoundLayer(nil) == false
+       and WSZC.IsMinigameGameplaySprite("casunknown-images/shrapnelminigame/minigameShrapnel.png") == true
+       and WSZC.IsMinigameGameplaySprite("casunknown-images/shrapnelminigame/shrapnelpiece.png") == true
+       and WSZC.IsMinigameGameplaySprite("casunknown-images/shrapnelminigame/handGraspIdle1.png") == true
+       and WSZC.IsMinigameGameplaySprite("casunknown-images/bandageminigame/bandageOuter.png") == true
+       and WSZC.IsMinigameGameplaySprite("casunknown-images/icons/fracturedbone.png") == true
+       and WSZC.IsMinigameGameplaySprite(nil) == false
 end)()
 ''')
 
-    rt('R27 only the black board rect is skipped; shrapnel piece still draws', '''
+    rt('R27 wound front layer + shrapnel piece BOTH draw while text is hidden', '''
 (function()
     WoundSystemShrapnelMinigame = { active = true }
+    convars["zc_woundsystem_compat_hide_minigame_text"]._v = "1"
     surfaceCalls = {}
     surface.SetMaterial(Material("casunknown-images/shrapnelminigame/minigameShrapnel.png"))
     surface.DrawTexturedRect(0, 700, 1000, 600)
     surface.SetMaterial(Material("casunknown-images/shrapnelminigame/shrapnelpiece.png"))
     surface.DrawTexturedRect(500, 400, 40, 200)
-    local rects = 0
-    for _, c in ipairs(surfaceCalls) do if c.kind == "rect" then rects = rects + 1 end end
+    local onRects = 0
+    for _, c in ipairs(surfaceCalls) do if c.kind == "rect" then onRects = onRects + 1 end end
     convars["zc_woundsystem_compat_hide_minigame_text"]._v = "0"
     surfaceCalls = {}
     surface.SetMaterial(Material("casunknown-images/shrapnelminigame/minigameShrapnel.png"))
@@ -810,7 +876,7 @@ end)()
     for _, c in ipairs(surfaceCalls) do if c.kind == "rect" then offRects = offRects + 1 end end
     convars["zc_woundsystem_compat_hide_minigame_text"]._v = "1"
     WoundSystemShrapnelMinigame = { active = false }
-    return rects == 1 and offRects == 1
+    return onRects == 2 and offRects == 1
 end)()
 ''')
 
@@ -837,6 +903,40 @@ end)()
        and head.size == k and head.sourceW == gh.w and head.sourceH == gh.h
        and head.texturePadding == 0 and head.flip == false
        and head._WSZCUnitmenuOriginal.matM ~= nil
+end)()
+''')
+
+    rt('R30 empty-click predicate: empty corners close, doll/slots/action do not', '''
+(function()
+    local function S() return 1 end
+    local far = WSZC.WoundViewEmptyClick(960, 60, S())
+    local panel = WSZC.WoundViewEmptyClick(100, 400, S())
+    local doll = WSZC.WoundViewEmptyClick(500, 500, S())
+    local slot = WSZC.WoundViewEmptyClick(500, 795, S())
+    WoundSystemActionButtonPos = { x = 700, y = 300 }
+    local action = WSZC.WoundViewEmptyClick(710, 305, S())
+    WoundSystemActionButtonPos = { x = nil, y = nil }
+    local badArgs = WSZC.WoundViewEmptyClick(nil, 10, S())
+    return far == true and panel == false and doll == false
+       and slot == false and action == false and badArgs == false
+end)()
+''')
+
+    rt('R31 gameplay sprites survive the WoundView hidden-region filter', '''
+(function()
+    WSZC.CUHudFiltered = true; WSZC.CUDeathVisualsHidden = false
+    WoundSystemHealthHUDOpen = true
+    surface.SetMaterial(Material("casunknown-images/shrapnelminigame/minigameShrapnel.png"))
+    local wound = WSZC.CUHudHiddenRegion(0, 0, 1000, 1000)
+    surface.SetMaterial(Material("casunknown-images/shrapnelminigame/shrapnelpiece.png"))
+    local piece = WSZC.CUHudHiddenRegion(0, 0, 1000, 1000)
+    surface.SetMaterial(Material("casunknown-images/bandageminigame/bandageOuter.png"))
+    local bandage = WSZC.CUHudHiddenRegion(0, 0, 1000, 1000)
+    surface.SetMaterial(Material("cu/scanner"))
+    local chrome = WSZC.CUHudHiddenRegion(0, 0, 1000, 1000)
+    WSZC.CUHudFiltered = false
+    WoundSystemHealthHUDOpen = false
+    return wound == false and piece == false and bandage == false and chrome == true
 end)()
 ''')
 

@@ -282,12 +282,14 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа и сохраняет структуру ZCity (`otrub`/`fake`/`canmove`); `0` — исходный ZCity reset. |
 | `zc_woundsystem_compat_fullscreen_minigame` | этот аддон (client) | `1` — мини-игры бинта/шприца на весь экран; `0` — исходный квадрат ~760 px C:U. |
 | `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `1.0` — базовый размер мини-игры; диапазон `0.7..1.8`. |
-| `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | `0.75` — размер НАТИВНЫХ мини-игр C:U (вправление, осколки, AED) относительно квадрата 760 px; диапазон `0.4..1.2`. Full-screen сюда не применяется. |
+| `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | **`1`** — авторский размер НАТИВНЫХ мини-игр C:U (вправление, осколки, AED), квадрат 760 px без shrink; диапазон `0.4..1.2`. |
+| `zc_woundsystem_compat_fullscreen_native` | этот аддон (client) | **`0`** — нативные C:U мини-игры в авторском размере. `1` — прежнее растяжение на весь экран; live-откат показал огромный обрезанный осколок и потерю нижней части раны. |
+| `zc_woundsystem_compat_close_on_empty_click` | этот аддон (client) | **`1`** — клик по пустой области WoundView закрывает окно через `WoundSystem.CloseHealthHUD()`; кукла, 5 слотов, кнопки инструментов, action point, UNI-HEALTH и drag исключены. |
 | `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | `0.45` — множитель спрайта руки 512×1260 в мини-играх бинта/шприца; диапазон `0.2..1`. |
 | `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 слоёв `unitmenu/limbs` архива; `0` — родные спрайты C:U. |
 | `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.24` — размер куклы относительно `dollScale` C:U; диапазон `0.1..0.8`. |
-| `zc_woundsystem_compat_unitmenu_tint` | этот аддон (client) | `1` — белый `SetDrawColor` для `*_fill.png` ( slate иначе умножается на чёрный `finalMiddle`). `*_edge.png` не трогается: обводка и её затемнение при наведении остаются за C:U. |
-| `zc_woundsystem_compat_hide_minigame_text` | этот аддон (client) | `1` — убрать заголовок / счётчик / три строки инструкций / `Press RMB/ESC to exit`, чёрные панели и растянутый чёрный фон во **всех** 5 C:U + 2 WSZC мини-играх. AED-статус `WoundSystemAEDStatus` тоже убран. Иконки, осколки, рука, уведомления ZCity, красный death-текст, капли и `Icons.*` остаются. `0` — вернуть как было. |
+| `zc_woundsystem_compat_unitmenu_tint` | этот аддон (client) | `1` — белый `SetDrawColor` для `*_fill.png` (стандартный чёрный иначе умножается на чёрный `finalMiddle`). `*_edge.png` не трогается: обводка по форме лимба и её затемнение при наведении остаются за C:U. |
+| `zc_woundsystem_compat_hide_minigame_text` | этот аддон (client) | `1` — убрать заголовок / счётчик / три строки инструкций / `Press RMB/ESC to exit` и чёрные панели во **всех** 5 C:U + 2 WSZC мини-играх. AED-статус `WoundSystemAEDStatus` убран только внутри активной мини-игры. **`minigameshrapnel.png` — передний слой раны, НЕ удаляется.** Иконки, осколок, рука, пинцет, `bandageOuter`, уведомления ZCity, красный death-текст, капли и `Icons.*` остаются. `0` — вернуть как было. |
 | `zc_woundsystem_compat_handanim` | этот аддон (client) | `1` — кадры `homigrad/handanim/hand.png` и `3_3.png` вместо руки 512×1260; `0` — родная рука C:U. |
 | `zc_woundsystem_compat_handanim_scale` | этот аддон (client) | `0.55` — размер реалистичной руки; диапазон `0.2..1.5`. |
 | `zc_woundsystem_compat_dislocation_start` | этот аддон (server) | `35` — стартовое смещение кости в мини-игре вправления (было 100); диапазон `10..100`. Меньше = кость на экране и меньше ударов. |
@@ -764,19 +766,17 @@ camelCase-копий (архив в lowercase, Linux-клиент регистр
   `REMOVE SHRAPNEL` / `FIX DISLOCATION` остаются видимыми.
 * `CUDeathVisualsHidden` по-прежнему имеет высший приоритет в обеих функциях.
 
-**Мини-игры на весь экран при выборе.** Раньше full-screen `Clip.GetRect()`
-давался только нашим bandage/syringe, а нативные C:U (shrapnel, dislocation,
-AED) наоборот **уменьшались** до `760 * 0.75 = 570 px` — на скриншоте 2 виден
-именно этот маленький квадрат. Теперь
-`zc_woundsystem_compat_fullscreen_native 1` (по умолчанию) даёт
-`0, 0, ScrW(), ScrH(), 0` и для них. Чтобы игровое поле не осталось крошечным
-внутри большого чёрного фона, перехвачен и `Clip.Scale()`:
-`WSZC.NativeFullscreenK()` умножает его на
-`clamp(min(ScrW, ScrH) / (820 * base), 1, 2.2)`. И shrapnel, и dislocation
-строят `MG.scale`, борд, спрайты, `SimToScreen`/`ScreenToSim` и хитбоксы из
-`Clip.Scale()`, поэтому всё увеличивается **согласованно** и остаётся
-играбельным. Откат: `zc_woundsystem_compat_fullscreen_native 0` возвращает
-прежний 570 px квадрат и старый `zc_woundsystem_compat_native_minigame_zoom`.
+**Мини-игры: WSZC на весь экран, нативные C:U в авторском размере.** Две наши
+мини-игры (бандаж/шприц) получают full-screen `Clip.GetRect()` через
+`zc_woundsystem_compat_fullscreen_minigame 1`. Нативные C:U (shrapnel,
+dislocation, AED) **по умолчанию НЕ растягиваются**:
+`zc_woundsystem_compat_fullscreen_native 0` и
+`zc_woundsystem_compat_native_minigame_zoom 1` дают родной квадрат 760 px без
+shrink. Причина — live-откат: `fullscreen_native 1` умножал `Clip.Scale()` на
+`NativeFullscreenK()` (до 2.2×), из-за чего осколок 26×138 превращался в
+огромный обрезанный чёрно-оранжевый спрайт, а нижняя часть раны уходила за
+экран («я осколок рожаю или че, где нижняя часть откуда он достается?»).
+`fullscreen_native 1` оставляет прежнее растяжение доступным как опцию.
 
 **Бег после травмы и «Reset organism».** `RESET_KEEP` сохранял не только
 «лежачую» структуру, но и `canmove`, `stun`, `consciousness`, `brain` — то есть
@@ -793,7 +793,7 @@ AED) наоборот **уменьшались** до `760 * 0.75 = 570 px` — 
 C:U; красные капли на груди/животе — иконки кровотечения WoundView. Компат их
 не рисует и не глушит, это штатный ZCity/C:U HUD.
 
-### По live-скриншотам №5: человеческие пропорции, цвет и обводка не менялись
+### По live-скриншотам №5 и №6: наша анатомия, стандартный чёрный, обводка по форме лимбов
 
 **Кукла = приложенное эталонное фото.** Запечённые позиции 15 слоёв архива
 давали широкое «пальто» с короткими ногами, поэтому
@@ -801,18 +801,21 @@ C:U; красные капли на груди/животе — иконки к�
 `HUMAN_LAYOUT` (маленькая голова, узкий торс, плечи на уровне рук, ноги не
 короче головы+торса, симметрия пар). Каждый слой обрезается по жёсткому порогу
 alpha >96 (иначе `r_foot.png` с прозрачной левой половиной давал стопу-полоску),
-масштабируется LANCZOS в свою ячейку и эрозируется на 3 px — тонкие зазоры шеи,
-плеч, талии, локтей, коленей и щиколоток сохраняются. **Цвет не менялся**:
-`_fill.png` — тёмно-шиферный `(42, 56, 60)`. **Белая обводка возвращена, но без рамок**:
-`outer_band` строится от объединения всех 15 масок, а не от каждого спрайта —
-белое идёт только по внешнему контуру тела и по стыкам лимбов. Вариант с
-per-limb кольцом (`be9c0b5`) дал на live «конструктор из кубиков» и отменён.
-Обводка не единая, как в `1da8b4a`, и не пустая, как в `b47a0cb`. C:U умножает `matM` на чёрный
-`finalMiddle`, поэтому `zc_woundsystem_compat_unitmenu_tint 1` ставит белый
-`SetDrawColor` ТОЛЬКО для `*_fill.png`; `*_edge.png` намеренно не
-перекрашивается, чтобы `finalOutline` + `HoverAnims` затемняли обводку при
-наведении штатно. **Реакция на наведение не изменена.** 15 id лимбов,
-ховер-хитбоксы и `REMOVE SHRAPNEL` / `FIX DISLOCATION` не изменились.
+масштабируется LANCZOS в свою ячейку **с отступом `EDGE_PAD=6`** и эрозируется
+на 3 px — тонкие зазоры шеи, плеч, талии, локтей, коленей и щиколоток
+сохраняются. **Стандартный чёрный `(0,0,0)`** — ровно RGB исходных слоёв
+архива; шифер `(42,56,60)` отклонён live. **Обводка по форме каждого лимба**:
+`mask - MinFilter(mask, 5)` повторяет контур головы/рук/ног как родные
+`casunknown-images/outlines/*`, при этом ни один белый пиксель не касается
+границы прямоугольного спрайта (assert в генераторе `worst == 0.0`).
+Отменены и per-limb кольца `be9c0b5` («конструктор»), и единый `outer_band`
+`1da8b4a`, и пустая обводка `b47a0cb`, и родные `middle/*`/`native_tint` —
+анатомия осталась НАША. C:U умножает `matM` на чёрный `finalMiddle`, поэтому
+`zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` ТОЛЬКО для
+`*_fill.png`; `*_edge.png` намеренно не перекрашивается, чтобы `finalOutline` +
+`HoverAnims` затемняли обводку при наведении штатно. **Реакция на наведение не
+изменена.** 15 id лимбов, ховер-хитбоксы и `REMOVE SHRAPNEL` /
+`FIX DISLOCATION` не изменились.
 `WSZC.FindCULimbs()` получил кэш, запасные пути поиска (все хуки +
 экспортированные таблицы C:U) и повтор в `PreDrawHUD`, чтобы геометрия не
 терялась при поздней регистрации `WoundDollAndPanel` в живом клиенте.
@@ -820,8 +823,10 @@ per-limb кольцом (`be9c0b5`) дал на live «конструктор и
 **Лишний текст и чёрные панели мини-игр.** `zc_woundsystem_compat_hide_minigame_text 1`
 убирает «Shrapnel extraction (1/5)», счётчик, три строки инструкций и
 `Press RMB/ESC to exit` во всех 5 нативных C:U и 2 WSZC мини-играх, а также
-чёрную верхнюю панель, полноэкранную подложку и растянутый чёрный фон
-`minigameshrapnel.png` (большой чёрный низ на скрине). `Clip.DrawHeader`
+чёрную верхнюю панель и полноэкранную подложку. **`minigameshrapnel.png` НЕ
+удаляется** — это передний слой раны (нижняя часть, откуда достаётся осколок),
+а не чёрная панель; `WSZC.IsMinigameGameplaySprite()` защищает рану, осколок,
+руку, пинцет, `bandageOuter`, `Icons.*`. `Clip.DrawHeader`
 перевызывается с пустыми `title/value/guide` и `panelAlpha = 0`, но **иконка
 мини-игры остаётся**; `Clip.DrawExitGuide` / `Clip.DrawBackdrop` глушатся;
 `draw.SimpleText*` фильтруется по `WSZC.IsMinigameTextFont()` для
@@ -980,3 +985,16 @@ end
 
 Практика: после смерти подождать 1 секунду и нажать ЛКМ. Полный возврат
 визуала экрана смерти C:U — `zc_woundsystem_compat_disable_cu_fx 0`.
+
+### По live-скриншотам №6: пять исправлений (`Screenshot_2-8`, `Screenshot_3-5`)
+
+| Претензия | Что было не так | Исправление |
+| --- | --- | --- |
+| «рукой двигать не могу в бандаже» | `InputMouseApply` и `SetupMove` вызывали `cmd:SetMouseX(0)` / `SetMouseY(0)`. При `gui.EnableScreenClicker(true)` GMod питает `gui.MousePos()` из того же `CUserCmd` mouse delta — обнуление прибивало курсор к `(0,0)`, и `HandPhysics.Step()` видел нулевую цель. | Оба сеттера удалены. Заморозка камеры (`SetViewAngles`), нулевое движение/кнопки и `return nil` сохранены. Мышь доходит и до VGUI-курсора, и до мини-игры. |
+| «я осколок рожаю или че, где нижняя часть откуда он достается?» | `minigameshrapnel.png` ошибочно сочли чёрной панелью и подавляли в `surface.DrawTexturedRect`; это **передний слой раны** (`cl_shrapnel.lua:421`, `cl_syringe.lua:540`). Плюс `fullscreen_native 1` умножал `Clip.Scale()` на `NativeFullscreenK()` до 2.2×, растягивая осколок 26×138 в огромный обрезанный спрайт и уводя низ раны за экран. | Подавление удалено полностью; добавлены `WSZC.IsMinigameWoundLayer()` и белый список `WSZC.IsMinigameGameplaySprite()` (рана, осколок, рука, пинцет, `bandageOuter`, `Icons.*`) в HUD-фильтре. `fullscreen_native` по умолчанию `0`, `native_minigame_zoom` `1` → авторский квадрат 760 px. `text=all` убирает только заголовки/инструкции/чёрный chrome. |
+| «почему шрапнель пропадает при вставании из рагдолла» | `RESET_KEEP` не содержал `wszc_shrapnel*`, поэтому `hg.organism.Clear()` стирал тень; а `PlayerSpawn` безусловно занулял organism и C:U limbs, перебивая `RestoreShrapnelSoon` (0/0.3 с) из-за неопределённого порядка хуков. | Три поля добавлены в `RESET_KEEP`; `CarryShrapnelShadow()`/`RestoreShrapnelShadow()` переживают и ветку `down=false`; `hook.Add("Fake"/"FakeUp"/"HG_OnWakeOtrub")` ставит `_WSZCRagdollTransitionUntil`; `WSZC.ReconcileSpawnShrapnel()` при переходе **восстанавливает** из авторитетного organism, а чистит C:U только на настоящем респавне. `SyncShrapnel()` больше не копирует свежую пустую таблицу limbs обратно в organism в том же тике. |
+| «сделай wound view куклу не таким цветом, верни стандартный и обводку по краям тоже» | `(42,56,60)` + единый `outer_band` + прямоугольные `seam_lines` — отклонено live. | Выбор владельца: **`black_anatomy` + `native_outline`**. `_fill` = стандартный чёрный `(0,0,0)` исходных слоёв архива; `_edge` = тонкая линия по форме **каждого** лимба (`mask - MinFilter(mask,5)`), вписанная с `EDGE_PAD=6`, поэтому ноль белых пикселей на границах спрайтов. Наша `HUMAN_LAYOUT` сохранена; `native_tint`/`middle/*`/`1da8b4a`/`b47a0cb`/рамки не возвращались. Hover `finalOutline`/`HoverAnims` сохранён. |
+| «почему когда я нажимаю на пустую область wound view окно не закрывается» | В самом C:U нет generic outside-click close: `CloseHealthHUD()` зовётся только по клавише, смерти и респавну; `GUIState` — local `:1702`. | Добавлено новое WSZC-поведение: `WSZC.WoundViewEmptyClick(mx,my,s)` + `Think`-хук `WSZC_WoundViewEmptyClickClose` по переднему фронту ЛКМ вызывает `WoundSystem.CloseHealthHUD()`. Исключены кукла, 5 слотов, кнопки инструментов, action point, UNI-HEALTH, тултипы, drag, активная мини-игра, внешние меню и фокус ввода. Откат: `zc_woundsystem_compat_close_on_empty_click 0`. |
+
+Все пять правок проверены headless (71+ проверок, `ALL_LUA_OK`, пересборка материалов и обоих ZIP), но **живой GMod агентом не запускался** — принятие только по свежим live-скриншотам.
+

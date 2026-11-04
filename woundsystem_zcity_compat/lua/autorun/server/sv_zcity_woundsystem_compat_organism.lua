@@ -475,12 +475,16 @@ local function SyncShrapnel(ply, org)
     org.wszc_shrapnel_floor = org.wszc_shrapnel_floor or {}
 
     if ply._WSZCLimbsRef ~= limbs then
+        -- A NEW PlayerLimbs table means C:U rebuilt its limb state (spawn /
+        -- ragdoll transition).  Re-assert the organism shadow FIRST.  Do NOT
+        -- copy the fresh (possibly empty) table back into the organism on this
+        -- same tick: that is exactly what erased the fragments when the player
+        -- stood up from the ragdoll.  The next tick sees a known table and
+        -- resumes normal bidirectional sync.
         WSZC.RestoreShrapnel(ply)
-        -- RestoreShrapnel() returns early when there are no fragments, so it
-        -- cannot be the only place that records the table identity.  Without
-        -- this, a player with a dislocation but no shrapnel would look like a
-        -- "fresh ragdoll" on EVERY tick and the reduction would be undone.
+        WSZC.RestoreBones(ply)
         ply._WSZCLimbsRef = limbs
+        return
     end
 
     for limbId, state in pairs(limbs) do
@@ -631,6 +635,10 @@ end
 -- once more after every ragdoll hook has run (C:U may reset limbs there).
 local function RestoreShrapnelSoon(ply)
     if not (Authority() and IsValid(ply) and ply.IsPlayer and ply:IsPlayer()) then return end
+    -- Tell WSZC_OrganismSpawn that this PlayerSpawn is a ragdoll -> standing
+    -- transition, NOT a respawn.  Without the marker GMod's undefined hook
+    -- order could clear the organism shadow before we re-attach it.
+    ply._WSZCRagdollTransitionUntil = (CurTime and CurTime() or 0) + 5
     timer.Simple(0, function()
         WSZC.RestoreShrapnel(ply)
         WSZC.RestoreBones(ply)
@@ -640,6 +648,7 @@ local function RestoreShrapnelSoon(ply)
         WSZC.RestoreBones(ply)
     end)
 end
+WSZC.RestoreShrapnelSoon = RestoreShrapnelSoon
 hook.Add("Fake", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
 hook.Add("FakeUp", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
 hook.Add("HG_OnWakeOtrub", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
@@ -1552,6 +1561,15 @@ end
 local RESET_KEEP = {
     "otrub", "needotrub", "fake", "needfake",
     "alive", "otrub_start", "unconscious",
+    -- hg.organism.Clear() wipes every non-whitelisted field when the player
+    -- drops into / gets up from the unconscious ragdoll.  These three are our
+    -- authoritative shrapnel shadow; dropping them made the fragments vanish
+    -- on standing up ("why does shrapnel disappear when I get up?").
+    "wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation",
+}
+
+local SHRAPNEL_SHADOW_KEYS = {
+    "wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation",
 }
 
 local function SnapshotZCityStructure(org)
@@ -1559,6 +1577,40 @@ local function SnapshotZCityStructure(org)
     for _, key in ipairs(RESET_KEEP) do snap[key] = org[key] end
     return snap
 end
+
+--- `down` is already false by the time some ZCity builds call Clear() on
+--- wake-up (the FakeRagdoll entity was removed first), so the structure
+--- snapshot above is skipped entirely.  Re-attach just the shrapnel shadow
+--- whenever a Fake / FakeUp / HG_OnWakeOtrub transition is in progress.
+local function RestoreShrapnelShadow(org)
+    if type(org) ~= "table" then return end
+    local owner = org.owner
+    local ply = IsValid(owner) and owner or nil
+    if not ply then return end
+    local now = CurTime and CurTime() or 0
+    if (ply._WSZCRagdollTransitionUntil or 0) <= now then return end
+    local carry = ply._WSZCShrapnelCarry
+    if type(carry) ~= "table" then return end
+    for _, key in ipairs(SHRAPNEL_SHADOW_KEYS) do
+        if type(carry[key]) == "table" then org[key] = carry[key] end
+    end
+end
+
+--- Called right before any hg.organism.Clear()/wb.ResetOrganism() while a
+--- ragdoll transition is active, so the shadow survives even if the stock
+--- Clear() wipes every field.
+local function CarryShrapnelShadow(ply, org)
+    if not (IsValid(ply) and type(org) == "table") then return end
+    local now = CurTime and CurTime() or 0
+    if (ply._WSZCRagdollTransitionUntil or 0) <= now then return end
+    local carry = {}
+    for _, key in ipairs(SHRAPNEL_SHADOW_KEYS) do
+        if type(org[key]) == "table" then carry[key] = org[key] end
+    end
+    ply._WSZCShrapnelCarry = carry
+end
+WSZC.CarryShrapnelShadow = CarryShrapnelShadow
+WSZC.RestoreShrapnelShadow = RestoreShrapnelShadow
 
 --- Explicitly lift the speed / sprint penalties: some ZCity builds do not
 --- reinitialise these fields in hg.organism.Clear(), they just leave them as
@@ -1613,10 +1665,13 @@ function WSZC.InstallResetStructureGuard()
         -- A normal Player Spawn has no ragdoll / unconscious state: let the
         -- stock clear run and then make sure sprint is available again.
         if not down then
+            CarryShrapnelShadow(owner, org)
             local a, b, c = originalClear(org, ...)
+            RestoreShrapnelShadow(org)
             ClearMovementPenalties(org)
             return a, b, c
         end
+        CarryShrapnelShadow(owner, org)
         local snap = SnapshotZCityStructure(org)
         local a, b, c = originalClear(org, ...)
         RestoreZCityStructure(org, snap)
@@ -1633,6 +1688,7 @@ function WSZC.InstallResetStructureGuard()
             local ply = (wb.GetPlayer and wb.GetPlayer(ent))
                 or (IsValid(ent) and ent.IsPlayer and ent:IsPlayer() and ent) or nil
             local org = IsValid(ply) and ply.organism or nil
+            CarryShrapnelShadow(ply, org)
             local snap = type(org) == "table" and SnapshotZCityStructure(org) or nil
             -- Suppress the explicit "stand up if the old state kept him on the
             -- floor" call.  Its timer.Simple(0) would otherwise run AFTER this
@@ -1777,19 +1833,43 @@ function WSZC.InstallOrganismMode()
         end
     end)
 
-    -- C:U's WoundSystem_SpawnSync restores persisted limb state on a map
-    -- transition without calling InitPlayer().  GMod does not guarantee hook
-    -- order, so clear shrapnel both immediately and on the next frame (after
-    -- every PlayerSpawn hook has run).
-    local function ClearSpawnShrapnel(ply)
+    -- The organism is authoritative (`organism_authoritative`).  The old
+    -- ClearSpawnShrapnel() unconditionally nil'ed org.wszc_shrapnel* on EVERY
+    -- PlayerSpawn and repeated it on the next frame, which also fired when
+    -- ZCity stood a player up from the unconscious ragdoll: "why does
+    -- shrapnel disappear when I get up?".  C:U's WoundSystem_SpawnSync can
+    -- restore a persisted limb table on a map change without InitPlayer(),
+    -- so a plain respawn must still clear C:U's limbs - but a ragdoll
+    -- transition must instead PUSH the surviving organism shadow back in.
+    local function ReconcileSpawnShrapnel(ply)
         if not (Authority() and IsValid(ply)) then return end
         local org = ply.organism
-        if type(org) == "table" then
-            org.wszc_shrapnel = nil
-            org.wszc_shrapnel_floor = nil
-        end
         local h = H()
         local limbs = h and h.GetLimbs and h.GetLimbs(ply)
+
+        local preserved = false
+        if type(org) == "table" and type(org.wszc_shrapnel) == "table" then
+            for _, value in pairs(org.wszc_shrapnel) do
+                if (tonumber(value) or 0) > 0 then preserved = true break end
+            end
+        end
+        -- Fake / FakeUp / HG_OnWakeOtrub set this marker.  GMod does not
+        -- guarantee hook order, so it also covers a PlayerSpawn that arrives
+        -- before the organism shadow was re-attached.
+        local now = CurTime and CurTime() or 0
+        local transitioning = (ply._WSZCRagdollTransitionUntil or 0) > now
+
+        if preserved or transitioning then
+            WSZC.RestoreShrapnel(ply)
+            WSZC.RestoreBones(ply)
+            if type(limbs) == "table" then ply._WSZCLimbsRef = limbs end
+            return
+        end
+
+        -- Genuine respawn / map change: no fragments in the authoritative
+        -- organism, so make sure C:U's persisted limb table cannot resurrect
+        -- them.  Do NOT nil the organism fields here - hg.organism.Clear()
+        -- already did that, and RESET_KEEP now preserves them for ragdolls.
         if type(limbs) ~= "table" then return end
         for limbId, state in pairs(limbs) do
             if type(state) == "table" and (tonumber(state.shrapnel) or 0) > 0 then
@@ -1798,11 +1878,12 @@ function WSZC.InstallOrganismMode()
             end
         end
     end
+    WSZC.ReconcileSpawnShrapnel = ReconcileSpawnShrapnel
 
     hook.Add("PlayerSpawn", "WSZC_OrganismSpawn", function(ply)
         if not Authority() then return end
-        ClearSpawnShrapnel(ply)
-        timer.Simple(0, function() ClearSpawnShrapnel(ply) end)
+        ReconcileSpawnShrapnel(ply)
+        timer.Simple(0, function() ReconcileSpawnShrapnel(ply) end)
     end)
 
     -- Re-apply: other addons (or a woundsys_enabled toggle) may re-register

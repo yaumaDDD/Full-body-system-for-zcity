@@ -74,9 +74,11 @@
 иконки `status/*` и кадры `homigrad/handanim`. Управление: 
 `zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.24),
 `zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_handanim_scale` (0.55).
-Мини-игры раскрываются на весь экран: `zc_woundsystem_compat_fullscreen_minigame` (1),
-`zc_woundsystem_compat_fullscreen_native` (1); откат на 570 px —
-`zc_woundsystem_compat_native_minigame_zoom` (0.75) при `fullscreen_native 0`.
+Две WSZC мини-игры раскрываются на весь экран: `zc_woundsystem_compat_fullscreen_minigame` (1).
+Нативные C:U shrapnel/dislocation/AED **по умолчанию в авторском размере 760 px**:
+`zc_woundsystem_compat_fullscreen_native` (0), `zc_woundsystem_compat_native_minigame_zoom` (1).
+Растяжение нативных игр ломало рану и растягивало осколок; `1` — вернуть его.
+Клик по пустой области WoundView закрывает окно: `zc_woundsystem_compat_close_on_empty_click` (1).
 Рука мини-игры ставится кончиками пальцев ровно на курсор:
 `zc_woundsystem_compat_hand_pivot_x` (0.16), `..._hand_pivot_y` (0.45),
 `..._hand_max_screen` (0.34). Системный курсор скрывается:
@@ -86,10 +88,11 @@
 `..._hand_pivot_x 0.16` / `..._hand_pivot_y 0.45`, системный курсор
 скрыт (`..._hide_minigame_cursor 1`). Кукла расставлена по приложенному
 эталонному фото в **человеческие пропорции** (`HUMAN_LAYOUT`): маленькая голова,
-узкий торс, плечи на уровне рук, ноги не короче головы+торса. Цвет оставлен
-прежним тёмно-шиферным `(42,56,60)`. **Белая обводка возвращена, но без
-прямоугольных рамок**: `outer_band` строится от объединения всех 15 масок, поэтому
-белое идёт только по внешнему контуру тела и по тонким линиям стыков лимбов.
+узкий торс, плечи на уровне рук, ноги не короче головы+торса. **Стандартный
+чёрный `(0,0,0)`** вместо отклонённого шиферного `(42,56,60)`. **Обводка по
+форме каждого лимба**: тонкая линия повторяет контур головы/рук/ног (как родные
+`outlines/*`), вписана с отступом `EDGE_PAD=6`, поэтому ни один белый пиксель не
+касается границы прямоугольного спрайта — «конструктора» и единого `outer_band` нет.
 `..._unitmenu_tint 1` ставит белый `SetDrawColor` только для `*_fill.png`, а
 `*_edge.png` остаётся под штатным `finalOutline` C:U — **реакция на наведение
 не изменена**. Тёмная подложка WoundView отключена
@@ -102,8 +105,10 @@
 `Clip.DrawHeader` (иконка мини-игры остаётся), отключает `Clip.DrawExitGuide`
 (`Press RMB/ESC to exit`) и `Clip.DrawBackdrop`, точечно фильтрует только
 chrome-шрифты (`RetroTooltipTitle*`, `RetroTooltipDesc*`,
-`RetroMinigameGuide*`) и убирает растянутый чёрный фон
-`minigameshrapnel.png`. Уведомления ZCity (`BerserkFont`, `HuyFont`,
+`RetroMinigameGuide*`) и AED-статус. **`minigameshrapnel.png` — передний слой
+раны, а не чёрная панель: он НЕ удаляется.** Все игровые спрайты (осколок, рука,
+пинцет, `bandageOuter`, `Icons.*`) защищены `WSZC.IsMinigameGameplaySprite()`.
+Уведомления ZCity (`BerserkFont`, `HuyFont`,
 `ZB_ProotOSMedium`), красный death-текст,
 капли, белые иконки переломов, осколки и рука **не подавляются**. `0` — вернуть
 исходный текст и панели.

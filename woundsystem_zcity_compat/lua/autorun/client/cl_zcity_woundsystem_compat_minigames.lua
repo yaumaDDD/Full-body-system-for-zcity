@@ -129,12 +129,13 @@ end
 hook.Add("InputMouseApply", "WSZC_MinigameFreezeMouse", function(cmd)
     if not WSZC.MinigameActive() then return end
     if cmd then
-        -- Only the CUserCmd camera delta is suppressed.  NEVER return true
-        -- here: that also kills gui.MousePos(), which the syringe/bandage
-        -- minigame uses to move its on-screen hand, and makes the cursor
-        -- flicker.  CreateMove / SetupMove restore ViewAngles separately.
-        if cmd.SetMouseX then cmd:SetMouseX(0) end
-        if cmd.SetMouseY then cmd:SetMouseY(0) end
+        -- DO NOT zero cmd:SetMouseX / SetMouseY here.  With
+        -- gui.EnableScreenClicker(true) GMod drives gui.MousePos() from the
+        -- very same CUserCmd mouse delta, so zeroing it pins the cursor at
+        -- (0,0): "the hand will not move in the bandage minigame".  The
+        -- camera is already frozen by SetViewAngles below and in CreateMove /
+        -- SetupMove, so the mouse delta can safely reach the VGUI cursor.
+        -- Also never return true here (that would swallow the cursor too).
         local ang = WSZC.MinigameFrozenAngles
         if ang and cmd.SetViewAngles then cmd:SetViewAngles(ang) end
     end
@@ -263,8 +264,8 @@ hook.Add("SetupMove", "WSZC_MinigameLockMovement", function(ply, mv, cmd)
     if cmd.SetSideMove then cmd:SetSideMove(0) end
     if cmd.SetUpMove then cmd:SetUpMove(0) end
     if cmd.SetButtons then cmd:SetButtons(0) end
-    if cmd.SetMouseX then cmd:SetMouseX(0) end
-    if cmd.SetMouseY then cmd:SetMouseY(0) end
+    -- MouseX/MouseY are intentionally NOT zeroed in SetupMove either: the
+    -- VGUI cursor still needs that delta while a minigame owns the clicker.
     -- Last line of defence: GMod already applied mouse delta to ViewAngles.
     local ang = WSZC.MinigameFrozenAngles
     if ang and cmd.SetViewAngles then cmd:SetViewAngles(ang) end
