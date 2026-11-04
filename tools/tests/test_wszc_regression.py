@@ -173,12 +173,23 @@ check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
       and 'WSZC.ClearCULimbsCache' in layout_s
       and 'hook.Add("PreDrawHUD", "WSZC_UnitmenuDollRetry"' in layout_s
       and 'HUDPaintBackground' in layout_s)
-check('S33 HUMAN_LAYOUT has human proportions and symmetric pairs',
-      "'thigh_R':   (695, 922" in generator_s
-      and "'crus_R':    (695, 1168" in generator_s
-      and "'head':      (750, 190" in generator_s
-      and "'arm_R':     (530, 413" in generator_s
-      and "'arm_L':     (970, 413" in generator_s)
+check('S33 HUMAN_LAYOUT follows Screenshot_3-6 sizes and symmetric pairs',
+      "'head':      (750, 200, 118, 198)" in generator_s
+      and "'thorax':    (750, 430, 250, 262)" in generator_s
+      and "'abdomen':   (750, 705, 236, 288)" in generator_s
+      and "'arm_R':     (539, 376, 171, 104)" in generator_s
+      and "'arm_L':     (961, 376, 171, 104)" in generator_s
+      and "'forearm_R': (348, 376, 211, 104)" in generator_s
+      and "'forearm_L': (1152, 376, 211, 104)" in generator_s
+      and "'hand_R':    (190, 376, 107, 104)" in generator_s
+      and "'hand_L':    (1310, 376, 107, 104)" in generator_s
+      and "'thigh_R':   (690, 965, 115, 232)" in generator_s
+      and "'thigh_L':   (810, 965, 115, 232)" in generator_s
+      and "'crus_R':    (686, 1191, 84, 220)" in generator_s
+      and "'crus_L':    (814, 1191, 84, 220)" in generator_s
+      and "'foot_R':    (675, 1351, 80, 100)" in generator_s
+      and "'foot_L':    (825, 1351, 80, 100)" in generator_s
+      and 'Screenshot_3-6.png' in generator_s)
 check('S34 docs no longer claim the rejected transparent-edge build',
       'без белой обводки' not in all_docs
       and 'прозрачный `_edge`' not in all_docs)
@@ -322,10 +333,19 @@ try:
     leg_top = g['thigh_R'][1] - g['thigh_R'][3] / 2
     leg_bottom = g['foot_R'][1] + g['foot_R'][3] / 2
     torso_h, leg_h = torso_bottom - head_top, leg_bottom - leg_top
-    check('S20 legs are at least as long as head+torso (human proportions)',
-          leg_h >= 0.85 * torso_h
+    # Screenshot_3-6.png: legs 117 px vs head+torso 159 px -> 0.736.  The
+    # owner asked for EVERY limb to be resized to that reference, so the old
+    # "legs >= 0.85 * torso" expectation (from the rejected wide-coat layout)
+    # is replaced by the measured reference ratio, while the shape checks
+    # (narrow torso, thin limbs, symmetric pairs) keep their meaning.
+    check('S20 limb sizes follow Screenshot_3-6 proportions',
+          0.70 * torso_h <= leg_h <= 0.78 * torso_h
           and g['thorax'][2] > g['head'][2]
           and g['thigh_R'][2] < g['thorax'][2]
+          and g['abdomen'][3] > g['thorax'][3]
+          and g['forearm_R'][2] > g['arm_R'][2]
+          and g['hand_R'][2] < g['forearm_R'][2]
+          and g['foot_R'][2] < g['crus_R'][2]
           and abs(g['arm_R'][0] + g['arm_L'][0] - 1500) < 1
           and abs(g['thigh_R'][0] + g['thigh_L'][0] - 1500) < 1
           and abs(g['foot_R'][1] - g['foot_L'][1]) < 1)
