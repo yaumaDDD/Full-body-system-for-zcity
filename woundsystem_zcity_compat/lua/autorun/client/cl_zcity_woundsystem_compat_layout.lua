@@ -88,7 +88,7 @@ function WSZC.NativeMinigameActive()
     local list = {
         "WoundSystemDislocationMinigame", "WoundSystemShrapnelMinigame",
         "WoundSystemAEDMinigame", "WoundSystemBandageMinigame",
-        "WoundSystemSyringeMinigame",
+        "WoundSystemSyringeMinigame", "WoundSystemSelfHarmMinigame",
     }
     for _, name in ipairs(list) do
         local mg = _G[name]
@@ -106,15 +106,20 @@ function WSZC.MinigameTextHidden()
     return false
 end
 
---- Only C:U's minigame CHROME fonts are suppressed (header / guide / exit
---- hint).  Status labels are explicitly preserved: ZCity notifications use
---- BerserkFont / HuyFont / SmallHuyFont / ZB_ProotOSMedium, C:U status labels
---- use TechScanner* / CrunchyTech*, AED uses WoundSystemAEDStatus, and the red
---- death text uses its own font.  WoundSystemGetFont() appends "_<scale>" to
---- these base names at runtime, so we strip that suffix before matching.
+--- All text belonging to a minigame is suppressed: the three CHROME fonts
+--- (header / guide / exit hint) plus AED's own WoundSystemAEDStatus status
+--- label, which the owner explicitly included in "text = all".
+--- Everything else is preserved: ZCity notifications use BerserkFont /
+--- HuyFont / SmallHuyFont / ZB_ProotOSMedium, C:U status labels use
+--- TechScanner* / CrunchyTech*, the red death text uses its own font.
+--- The wrapper additionally checks MinigameTextHidden(), so no HUD text
+--- outside an active minigame can ever be swallowed.
+--- WoundSystemGetFont() appends "_<scale>" to these base names at runtime,
+--- so we strip that suffix before matching.
 local MINIGAME_TEXT_BASES = {
     RetroTooltipTitle = true, RetroTooltipDesc = true,
     RetroMinigameGuide = true,
+    WoundSystemAEDStatus = true,
 }
 function WSZC.IsMinigameTextFont(font)
     if type(font) ~= "string" then return false end
@@ -148,7 +153,9 @@ end
 ---
 --- A font-scoped text wrapper is the second line of defence: AED's local
 --- DrawCenteredStatusText calls draw.SimpleText directly with
---- WoundSystemAEDStatus.  We only ever swallow MINIGAME fonts, never ZCity's.
+--- WoundSystemAEDStatus, which is now also a suppressed minigame font.
+--- Only MINIGAME fonts are swallowed, and only while a minigame is active;
+--- ZCity notifications, the red death text and all other HUD text survive.
 local clipTextWrapped, drawTextWrapped = false, false
 function WSZC.InstallMinigameTextFilter()
     local clip = WoundSystem and WoundSystem.MinigameClip
@@ -157,7 +164,7 @@ function WSZC.InstallMinigameTextFilter()
             local orig = clip.DrawHeader
             clip._WSZCOrigDrawHeader = orig
             clip.DrawHeader = function(data)
-                if not cvHideMinigameText:GetBool() then return orig(data) end
+                if not WSZC.MinigameTextHidden() then return orig(data) end
                 local clean = {}
                 if type(data) == "table" then
                     for k, v in pairs(data) do clean[k] = v end
@@ -172,7 +179,7 @@ function WSZC.InstallMinigameTextFilter()
                 local orig = clip[name]
                 clip["_WSZCOrig" .. name] = orig
                 clip[name] = function(...)
-                    if cvHideMinigameText:GetBool() then return end
+                    if WSZC.MinigameTextHidden() then return end
                     return orig(...)
                 end
             end

@@ -95,14 +95,16 @@ check('S11 reset keeps only the down structure and clears sprint penalties',
 check('S12 hemogen blood is explicitly untouched',
       'advancedblood/' not in ''.join(
           p.read_text(encoding='utf-8') for p in CONN.rglob('*.lua')))
-check('S13 generator: human layout, slate fill, ORIGINAL white per-limb ring',
+check('S13 generator: ONE continuous silhouette, outline + joint lines, NO per-sprite frames',
       'HUMAN_LAYOUT' in generator_s
       and 'DOLL_RGB = (42, 56, 60)' in generator_s
-      and 'MinFilter(JOINT_ERODE)' in generator_s
-      and 'MaxFilter(OUTLINE_RING)' in generator_s
-      and 'transparent sprite' not in generator_s
+      and 'ALPHA_THRESHOLD = 96' in generator_s
+      and 'union = ImageChops.lighter(union, layer)' in generator_s
+      and 'outer_band' in generator_s
+      and 'seam_lines = ImageChops.multiply(seam_lines, union)' in generator_s
+      and 'rectangular white frame' in generator_s
       and 'MaxFilter(15)' not in generator_s
-      and '255 if p > 96 else 0' in generator_s)
+      and 'transparent sprite' not in generator_s)
 check('S14 docs describe human proportions, restored outline, hover, no minigame text',
       'человеческ' in all_docs.lower()
       and 'бел' in all_docs.lower() and 'обводк' in all_docs.lower()
@@ -136,11 +138,13 @@ check('S28 minigame text convar defaults on, filter is shared by all games',
       '"zc_woundsystem_compat_hide_minigame_text", "1"' in layout_s
       and 'function WSZC.InstallMinigameTextFilter()' in layout_s
       and 'MINIGAME_TEXT_BASES' in layout_s)
-check('S29 font filter is scoped to minigame CHROME fonts only',
+check('S29 font filter covers ALL minigame fonts incl. AED, but no ZCity fonts',
       'function WSZC.IsMinigameTextFont(font)' in layout_s
       and 'font:match("^(.-)_%d+$")' in layout_s
       and 'WSZC.MinigameTextHidden() and WSZC.IsMinigameTextFont(font)' in layout_s
-      and 'WoundSystemAEDStatus = true' not in layout_s
+      and 'WoundSystemAEDStatus = true' in layout_s
+      and 'WoundSystemSelfHarmMinigame' in layout_s
+      and 'WSZC.MinigameTextHidden()' in layout_s
       and 'BerserkFont = true' not in layout_s
       and 'ZB_ProotOSMedium = true' not in layout_s)
 check('S30 DrawHeader keeps the icon but blanks text + top bar',
@@ -226,8 +230,22 @@ try:
         elayer.paste(ea, box)
         body = ImageChops.lighter(body, flayer)
         edges = ImageChops.lighter(edges, elayer)
-    check('S17 ORIGINAL white outline restored: 15 opaque white _edge.png',
+    check('S17 white outline restored: 15 opaque white _edge.png',
           edge_boxes == 15 and edge_white > 100 and edges.getbbox() is not None)
+    # Regression for the live "Lego robot" screenshot: a per-sprite white
+    # frame means almost every border pixel of that sprite is white.  A real
+    # outline follows the body shape, so border coverage stays far below 100%.
+    worst_border = 0.0
+    for limb, (cx, cy, w, h) in geom.items():
+        w, h = int(w), int(h)
+        a = Image.open(limb_dir / (limb + '_edge.png')).convert('RGBA').getchannel('A')
+        p = a.load()
+        border = [(x, 0) for x in range(w)] + [(x, h - 1) for x in range(w)]
+        border += [(0, y) for y in range(h)] + [(w - 1, y) for y in range(h)]
+        white = sum(1 for x, y in border if p[x, y] > 0)
+        worst_border = max(worst_border, white / len(border))
+    check('S36 NO closed white frame on any limb sprite (%.1f%% max)' % (worst_border * 100),
+          worst_border < 0.60)
     thorax = Image.open(limb_dir / 'thorax_fill.png').convert('RGBA')
     r, g, b, a = thorax.getpixel((thorax.width // 2, thorax.height // 2))
     check('S18 limbs keep the existing dark slate, not pure black',
@@ -674,13 +692,14 @@ end)()
 end)()
 ''')
 
-    rt('R22 IsMinigameTextFont matches chrome fonts + _scale suffix only', '''
+    rt('R22 IsMinigameTextFont matches chrome + AED fonts and _scale suffix only', '''
 (function()
     return WSZC.IsMinigameTextFont("RetroTooltipTitle") == true
        and WSZC.IsMinigameTextFont("RetroTooltipTitle_150") == true
        and WSZC.IsMinigameTextFont("RetroMinigameGuide_200") == true
        and WSZC.IsMinigameTextFont("RetroTooltipDesc") == true
-       and WSZC.IsMinigameTextFont("WoundSystemAEDStatus") == false
+       and WSZC.IsMinigameTextFont("WoundSystemAEDStatus") == true
+       and WSZC.IsMinigameTextFont("WoundSystemAEDStatus_150") == true
        and WSZC.IsMinigameTextFont("BerserkFont") == false
        and WSZC.IsMinigameTextFont("HuyFont") == false
        and WSZC.IsMinigameTextFont("ZB_ProotOSMedium") == false
@@ -697,13 +716,17 @@ end)()
     local off = WSZC.MinigameTextHidden() == false
     convars["zc_woundsystem_compat_hide_minigame_text"]._v = "1"
     WoundSystemShrapnelMinigame = { active = false }
-    return outside and inside and off
+    WoundSystemSelfHarmMinigame = { active = true }
+    local selfharm = WSZC.MinigameTextHidden() == true
+    WoundSystemSelfHarmMinigame = { active = false }
+    return outside and inside and off and selfharm
 end)()
 ''')
 
     rt('R24 DrawHeader blanks text/bar but KEEPS the icon; exit + backdrop are no-ops', '''
 (function()
     WSZC.InstallMinigameTextFilter()
+    WoundSystemShrapnelMinigame = { active = true }
     clipCalls = {}
     local icon = Material("casunknown-images/icons/shrapnel.png")
     WoundSystem.MinigameClip.DrawHeader({
@@ -724,11 +747,17 @@ end)()
     local restored = #clipCalls == 2 and clipCalls[1].kind == "exit"
         and clipCalls[2].kind == "backdrop"
     convars["zc_woundsystem_compat_hide_minigame_text"]._v = "1"
-    return kept and noChrome and restored
+    -- Convar ON but NO minigame running: the chrome must survive untouched.
+    WoundSystemShrapnelMinigame = { active = false }
+    clipCalls = {}
+    WoundSystem.MinigameClip.DrawHeader({ title = "Keep me", mat = icon })
+    local outside = #clipCalls == 1 and clipCalls[1].d.title == "Keep me"
+    WoundSystemShrapnelMinigame = { active = false }
+    return kept and noChrome and restored and outside
 end)()
 ''')
 
-    rt('R25 ZCity notification / AED status text survives, chrome text is suppressed', '''
+    rt('R25 ZCity notification survives, ALL minigame text incl. AED suppressed', '''
 (function()
     WSZC.InstallMinigameTextFilter()
     WoundSystemShrapnelMinigame = { active = true }
@@ -738,11 +767,16 @@ end)()
     draw.SimpleText("HP 68%", "ZB_ProotOSMedium", 10, 30, Color(255,255,255))
     draw.SimpleText("Shrapnel extraction", "RetroTooltipTitle_150", 10, 40, Color(255,255,255))
     draw.SimpleTextOutlined("Press RMB/ESC to exit", "RetroTooltipTitle", 10, 50, Color(255,255,255))
-    WoundSystemShrapnelMinigame = { active = false }
     local fonts = {}
     for _, c in ipairs(textCalls) do fonts[#fonts + 1] = c.f end
-    return #textCalls == 3 and fonts[1] == "BerserkFont"
-       and fonts[2] == "WoundSystemAEDStatus" and fonts[3] == "ZB_ProotOSMedium"
+    local inside = #textCalls == 2 and fonts[1] == "BerserkFont"
+       and fonts[2] == "ZB_ProotOSMedium"
+    -- Outside a minigame the AED label is ordinary HUD text; it must survive.
+    WoundSystemShrapnelMinigame = { active = false }
+    textCalls = {}
+    draw.SimpleText("ANALYZING...", "WoundSystemAEDStatus", 10, 20, Color(255,255,255))
+    local outside = #textCalls == 1 and textCalls[1].f == "WoundSystemAEDStatus"
+    return inside and outside
 end)()
 ''')
 
