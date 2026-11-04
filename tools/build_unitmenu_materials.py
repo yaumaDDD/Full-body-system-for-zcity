@@ -12,6 +12,11 @@ so we crop every layer to its alpha bounding box and emit:
     woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/<id>_edge.png
     woundsystem_zcity_compat/materials/wszc/unitmenu/status/<name>.png
 
+The 15 source layers have 1-2 px gaps between joints, so a per-limb outline
+would draw white seams through the body.  A morphological close on the union
+produces ONE continuous silhouette and ONE outer contour; each limb sprite
+receives only the part of that contour inside its bounding box.
+
 The runtime connector (cl_zcity_woundsystem_compat_layout.lua) swaps C:U's
 `Limbs` upvalue materials/geometry in place; no file inside the original ZIP
 addons is modified.
@@ -66,31 +71,66 @@ def main():
     (OUT / 'limbs').mkdir(parents=True, exist_ok=True)
     (OUT / 'status').mkdir(parents=True, exist_ok=True)
 
-    centers = {}
+    # Load all 15 layers first.  The archive leaves 1-2 px gaps between
+    # adjacent limbs (neck, waist, elbow, knee, ankle).  Drawing a white ring
+    # around EACH layer separately therefore painted bright seams straight
+    # through the torso and limbs - the live screenshots showed a doll made of
+    # stacked rectangles.  We close those gaps once on the UNION and derive one
+    # single outer contour, then cut that contour into the 15 limb boxes.
+    layers = {}
     for limb_id, layer in LIMB_LAYERS.items():
-        src = Image.open(io.BytesIO(z.read(PREFIX + 'zcity_delta/unitmenu/limbs/' + layer + '.png')))
-        src = src.convert('RGBA')
+        layers[limb_id] = Image.open(
+            io.BytesIO(z.read(PREFIX + 'zcity_delta/unitmenu/limbs/' + layer + '.png'))
+        ).convert('RGBA')
+
+    canvas = next(iter(layers.values())).size
+    union = Image.new('L', canvas, 0)
+    for src in layers.values():
+        union = ImageChops.lighter(union, src.getchannel('A'))
+    # Morphological closing: bridge the seams, then restore the outer boundary.
+    body = union.filter(ImageFilter.MaxFilter(15)).filter(ImageFilter.MinFilter(15))
+    # The source alpha is anti-aliased: dilating the GREYSCALE mask would leave
+    # bright pixels inside semi-transparent edges and paint faint seams again.
+    # Binarise first so the contour is strictly OUTSIDE the silhouette.
+    mask = body.point(lambda p: 255 if p > 127 else 0)
+    outline = ImageChops.subtract(mask.filter(ImageFilter.MaxFilter(7)), mask)
+
+    centers, boxes = {}, []
+    for limb_id, src in layers.items():
         a = src.getchannel('A')
         bbox = a.getbbox()
-        assert bbox, layer
+        assert bbox, limb_id
         x0, y0, x1, y1 = bbox
         pad = 5
         box = (max(0, x0 - pad), max(0, y0 - pad),
                min(src.width, x1 + pad), min(src.height, y1 + pad))
         crop = src.crop(box)
 
-        # Fill: keep the black silhouette as authored in the archive.
+        # Fill: the closed union clipped to this limb's box, so neighbouring
+        # sprites overlap by a pixel or two and never show the world through
+        # a transparent seam.
+        crop.putalpha(body.crop(box))
         crop.save(OUT / 'limbs' / (limb_id + '_fill.png'), optimize=True)
 
-        # Edge: a 3 px outer ring, white, so C:U's white `finalOutline` tint
-        # produces a clean contour around the black silhouette.
-        dil = crop.getchannel('A').filter(ImageFilter.MaxFilter(7))
-        ring = ImageChops.subtract(dil, crop.getchannel('A'))
+        # Edge: ONLY the global outer contour inside this box.  No internal
+        # rings, hence no white lines across the chest/arms/legs.
         edge = Image.new('RGBA', crop.size, (255, 255, 255, 0))
-        edge.putalpha(ring)
+        edge.putalpha(outline.crop(box))
         edge.save(OUT / 'limbs' / (limb_id + '_edge.png'), optimize=True)
 
         centers[limb_id] = ((x0 + x1) / 2, (y0 + y1) / 2, crop.width, crop.height)
+        boxes.append(box)
+
+    # Every pixel of the single contour must be reachable by one of the 15
+    # sprites C:U draws; otherwise a piece of the outline would be missing.
+    coverage = Image.new('L', canvas, 0)
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(coverage)
+    for box in boxes:
+        draw.rectangle(box, fill=255)
+    missed = ImageChops.multiply(outline, ImageChops.invert(coverage))
+    assert missed.getbbox() is None, 'outer outline not covered by limb boxes'
+    assert outline.getbbox() is not None, 'empty outline'
 
     for name in STATUS:
         src = Image.open(io.BytesIO(z.read(PREFIX + 'zcity_delta/unitmenu/status/' + name + '.png')))

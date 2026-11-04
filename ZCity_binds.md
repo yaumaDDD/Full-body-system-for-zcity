@@ -77,6 +77,10 @@
 Мини-игры раскрываются на весь экран: `zc_woundsystem_compat_fullscreen_minigame` (1),
 `zc_woundsystem_compat_fullscreen_native` (1); откат на 570 px —
 `zc_woundsystem_compat_native_minigame_zoom` (0.75) при `fullscreen_native 0`.
+Рука мини-игры ставится кончиками пальцев ровно на курсор:
+`zc_woundsystem_compat_hand_pivot_x` (0.16), `..._hand_pivot_y` (0.45),
+`..._hand_max_screen` (0.34). Системный курсор скрывается:
+`zc_woundsystem_compat_hide_minigame_cursor` (1), откат — 0.
 Клавиши, хитбоксы лимбов и логика мини-игр не меняются.
 
 Все материалы интерфейса (647 файлов: `casunknown-images/*`, `woundsystem/*`,

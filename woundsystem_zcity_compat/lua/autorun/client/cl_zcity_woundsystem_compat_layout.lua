@@ -635,6 +635,17 @@ local cvHandanim = CreateClientConVar("zc_woundsystem_compat_handanim", "1", tru
     "1 = use the repository handanim frames instead of the 512x1260 C:U hand")
 local cvHandanimScale = CreateClientConVar("zc_woundsystem_compat_handanim_scale", "0.55", true, false,
     "Size of the realistic minigame hand (0.2 .. 1.5)", 0.2, 1.5)
+-- C:U centres the rotated hand rectangle ON the cursor, but our realistic
+-- sprite grips with the fingertips near its left edge.  These two fractions
+-- say which point of the 960x540 sprite must land exactly on the cursor.
+local cvHandPivotX = CreateClientConVar("zc_woundsystem_compat_hand_pivot_x", "0.16", true, false,
+    "Grip point inside the hand sprite, X fraction 0..1", 0, 1)
+local cvHandPivotY = CreateClientConVar("zc_woundsystem_compat_hand_pivot_y", "0.45", true, false,
+    "Grip point inside the hand sprite, Y fraction 0..1", 0, 1)
+local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_screen", "0.34", true, false,
+    "Cap the minigame hand width at this fraction of ScrW (0.1 .. 1)", 0.1, 1)
+local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "1", true, false,
+    "1 = hide the OS cursor while any C:U / WSZC minigame is open")
 
 WSZC.UnitmenuHandSrcW = 960
 WSZC.UnitmenuHandSrcH = 540
@@ -908,32 +919,118 @@ function WSZC.InstallNativeHandOverride()
         return nil
     end
 
-    local function reshape(x, y, w, h)
-        if not handSwap then return x, y, w, h end
+    local function HandDrawSize(w, h)
         local k = math.Clamp(cvHandanimScale:GetFloat(), 0.2, 1.5)
         -- 512x1260 -> 960x540 keeps the same visual scale factor as our own
         -- minigames.  Only the DRAW call changes, never MG.handDrawW/H.
-        return x, y, w * (960 / 512) * k, h * (540 / 1260) * k
+        local nw, nh = w * (960 / 512) * k, h * (540 / 1260) * k
+        -- Full-screen native games scale Clip.Scale() up; without a cap the
+        -- hand grows to half the monitor and swallows the shrapnel piece.
+        local maxW = ScrW() * math.Clamp(cvHandMaxScreen:GetFloat(), 0.1, 1)
+        if maxW > 0 and nw > maxW then
+            local f = maxW / nw
+            nw, nh = nw * f, nh * f
+        end
+        return nw, nh
+    end
+    WSZC.HandDrawSize = HandDrawSize
+
+    local function HandPivot()
+        return math.Clamp(cvHandPivotX:GetFloat(), 0, 1),
+               math.Clamp(cvHandPivotY:GetFloat(), 0, 1)
+    end
+    WSZC.HandPivot = HandPivot
+
+    --- C:U passes the CENTER of the rotated rect, which is the cursor.
+    --- Return the rect that puts the sprite's grip point exactly there.
+    function WSZC.HandRectForCursor(cx, cy, w, h)
+        local nw, nh = HandDrawSize(w, h)
+        local px, py = HandPivot()
+        return cx + (0.5 - px) * nw, cy + (0.5 - py) * nh, nw, nh
     end
 
     surface.DrawTexturedRectRotated = function(x, y, w, h, rot, ...)
         if handSwap then
-            local nx, ny, nw, nh = reshape(x, y, w, h)
+            local nx, ny, nw, nh = WSZC.HandRectForCursor(x, y, w, h)
             handSwap = false
+            -- rot 0: the realistic hand must never wobble away from the cursor.
             return origRectRotated(nx, ny, nw, nh, 0, ...)
         end
         return origRectRotated(x, y, w, h, rot, ...)
     end
     surface.DrawTexturedRect = function(x, y, w, h, ...)
         if handSwap then
-            local nx, ny, nw, nh = reshape(x, y, w, h)
+            -- Non-rotated rects are top-left based; only resize them.
+            local nw, nh = HandDrawSize(w, h)
             handSwap = false
-            return origTexturedRect(nx, ny, nw, nh, ...)
+            return origTexturedRect(x, y, nw, nh, ...)
         end
         return origTexturedRect(x, y, w, h, ...)
     end
     nativeHandInstalled = true
     return true
+end
+
+---------------------------------------------------------------------------
+-- The OS cursor must not be visible in a minigame: the drawn hand IS the
+-- pointer.  C:U calls gui.EnableScreenClicker(true), which shows the arrow;
+-- a blank VGUI cursor keeps mouse input working while hiding the arrow.
+---------------------------------------------------------------------------
+local cursorHidden, savedCursor, nextCursorSync = false, "arrow", 0
+
+local function WorldPanel()
+    if type(vgui) ~= "table" or type(vgui.GetWorldPanel) ~= "function" then return nil end
+    local ok, panel = pcall(vgui.GetWorldPanel)
+    if ok and panel and type(panel.SetCursor) == "function" then return panel end
+    return nil
+end
+
+function WSZC.BlankMinigameCursor()
+    local panel = WorldPanel()
+    if not panel then return false end
+    if not cursorHidden and type(panel.GetCursor) == "function" then
+        local ok, cur = pcall(panel.GetCursor, panel)
+        if ok and type(cur) == "string" and cur ~= "blank" then savedCursor = cur end
+    end
+    pcall(panel.SetCursor, panel, "blank")
+    cursorHidden = true
+    return true
+end
+
+function WSZC.RestoreMinigameCursor(force)
+    if not cursorHidden and not force then return false end
+    local panel = WorldPanel()
+    if panel then pcall(panel.SetCursor, panel, savedCursor or "arrow") end
+    cursorHidden = false
+    return true
+end
+
+function WSZC.SyncMinigameCursor()
+    if not cvHideCursor:GetBool() then
+        WSZC.RestoreMinigameCursor(true)
+        return false
+    end
+    local active = (WSZC.WSZCMinigameActive and WSZC.WSZCMinigameActive())
+        or (WSZC.NativeMinigameActive and WSZC.NativeMinigameActive())
+    if active then return WSZC.BlankMinigameCursor() end
+    return WSZC.RestoreMinigameCursor()
+end
+
+hook.Add("Think", "WSZC_MinigameCursor", function()
+    local now = CurTime and CurTime() or 0
+    if now < nextCursorSync then return end
+    nextCursorSync = now + 0.15
+    WSZC.SyncMinigameCursor()
+end)
+
+-- Enabling the screen clicker resets the cursor image on some GMod builds.
+if type(gui) == "table" and type(gui.EnableScreenClicker) == "function" then
+    local origEnableScreenClicker = gui.EnableScreenClicker
+    gui.EnableScreenClicker = function(on, ...)
+        local res = origEnableScreenClicker(on, ...)
+        if on and cvHideCursor:GetBool() then WSZC.SyncMinigameCursor() end
+        return res
+    end
 end
 
 WSZC.NextUnitmenuInstall = 0
