@@ -31,5 +31,6 @@
 `weapon_thiamine`, режимы `2/3/5` медкита. Жгут, обезболивающее, режим `4`
 медкита, blood bag и прочие спецы без `mg` тоже остаются мгновенными.
 
-Подробности установки, таблица источников шрапнели, таблица предметов, конвары
-и ограничения: [`woundsystem_zcity_compat/README.md`](woundsystem_zcity_compat/README.md).
+Подробности установки (включая список подписок Мастерской и обязательный
+`Simple Custom Shaders`), таблица источников шрапнели, таблица предметов,
+конвары и ограничения: [`woundsystem_zcity_compat/README.md`](woundsystem_zcity_compat/README.md).

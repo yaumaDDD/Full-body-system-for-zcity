@@ -122,6 +122,45 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
    увидит и C:U, и `hg.WoundBridge`. Клиентские мини-игры подключаются отдельно,
    после загрузки C:U `cl_clip.lua` / `cl_health_gui.lua` / `WoundSystem.Items`.
 
+### Подписки Мастерской (Steam Workshop)
+
+Сам `woundsystem_zcity_compat` в Мастерской **не published**: это папка в
+`garrysmod/addons/`, подпиской его не поставить.
+
+Для системы нужен **ровно один** экземпляр C:U. Два источника одновременно
+(папка из `casualites unknown.zip` **и** GMA из Мастерской) дают двойные хуки,
+таймеры, net-сообщения, `CreateConVar` и HUD — это главный источник «ерроров».
+Выберите одно:
+
+* **Рекомендуется** — папка `casualties_unknown_health_system_beta` из
+  `casualites unknown.zip`: компат написан именно под этот билд.
+* **Альтернатива** — подписка `3728573930` («Casualties: Source /
+  Casualties: Unknown Health System»). Это живой обновляемый билд (49 правок,
+  ver 0.2.22Bt Patch 1, 41 МБ), он может отличаться от приложенного ZIP: тогда
+  `WSZC.Setup()` не найдёт ожидаемый `WoundSystem.Health.*` API и `WSZC_Ready`
+  останется `false`. У подписки есть обязательный предмет **Simple Custom
+  Shaders** (`3440271589`) — без него шейдеры `shaders/fxc/*.vcs` не приедут.
+  Если выбрана Мастерская, папку из ZIP нужно удалить.
+
+Контент ZCity подтягивается сам через `resource.AddWorkshop` при
+`hg_loadcontent 1`: `3657897364` (main content), `3257937532` (distac content),
+`3389728250` (Glide), `3389795738` (GTAV helicopters). На выделенном сервере эти
+ID должны быть в `workshop.vdf` / `+host_workshop_collection`, иначе клиенты
+увидят ERROR-модели и `missing material` в консоли. В ZIP C:U лежат только Lua,
+3 шрифта и 3 скомпилированных шейдера — звуков и материалов там нет;
+`woundsys_resource_downloads 1` помогает лишь когда файлы реально есть на
+сервере.
+
+`zcity organs +`, `project hemogen blood`, `simple eye gore`, `zcitygore` для
+системы **не обязательны**: компат к ним не обращается. При установке
+`zcitygore` папкой нужен `zcity_gore_torso_workshopid` (по умолчанию `0`), из
+Мастерской аддон определяет свой ID через `engine.GetAddons()`.
+
+Обязательные конвары: `woundsys_enabled 1`, `zc_woundsystem_bridge 1`. Если C:U
+не загрузился, компат не падает: он около 30 с повторяет `WSZC.Setup()` и
+остаётся выключенным (`WSZC_Ready = false`); ZCity работает на ванильном
+`ply.organism`, но панель C:U, мини-игры и шрапнель недоступны.
+
 В консоли при успехе будет одна из строк:
 
 ```text
