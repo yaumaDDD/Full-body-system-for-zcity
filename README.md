@@ -72,7 +72,24 @@
 * В мини-игре бинтования/шприца **персонаж больше не ходит, а курсор появляется**:
   клиентский + серверный `SetupMove` обнуляют движение/поворот/кнопки,
   `PlayerBindPress` глушит бинды ZCity, а `WoundSystemIsAnyWoundMinigameActive`
-  расширен, чтобы C:U watchdog не крал курсор.
+  расширен, чтобы C:U watchdog не крал курсор. **Камера тоже заморожена** —
+  `InputMouseApply`/`CreateMove`/`SetupMove` возвращают `ViewAngles`, сохранённые
+  при открытии (обнуление одного `MouseX/Y` не работало: GMod применяет мышь
+  раньше `SetupMove`).
+* **Шрапнель только от дробовика и взрыва**: старый тест принимал любой
+  `DMG_BULLET` и даже патрон «9x19 mm» — из-за неё осколки лезли от пистолетов.
+  Теперь определяется по `DMG_BUCKSHOT`, калибрам `12/70`, `20/70`, `23x75` и
+  `NumBullet > 1` у shotgun-SWEP; взрыв даёт фрагменты по `DMG_BLAST`.
+  Откат: `zc_woundsystem_compat_shrapnel_only_shotgun_blast 0`.
+* **Шрапнель ложится в раненую конечность**: конечность берётся из
+  `org.dmgstack[hitgroup]` / `ply.HitBones` (авторитетные данные ZCity), а не из
+  «ближайшей кости» по точке входа пули. Если конечность не определена —
+  осколок не создаётся вообще, чтобы не появляться «непонятно где».
+* **`reset organism` больше не поднимает персонажа**: `WB.ResetOrganism` явно
+  звал `RestoreRagdoll` → `hg.FakeUp`, а `hg.organism.Clear` сбрасывал
+  `otrub/fake/canmove`. Теперь состояние без сознания / fake-ragdoll
+  сохраняется, структура `ply.organism` ZCity не подменяется; обычный спавн
+  очищается как раньше (`zc_woundsystem_compat_preserve_reset_structure 0` — откат).
 
 Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
 и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.

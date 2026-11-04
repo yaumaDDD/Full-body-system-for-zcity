@@ -11,12 +11,12 @@ GMod. Исходные ZIP-аддоны не изменяются: всё пат
 |---|---|---|
 | `lua/autorun/sh_zcity_woundsystem_compat.lua` | shared | `WSZC.OrganismAuthority()`, конвар `zc_woundsystem_compat_authority`, `WithVanillaContext`, `PatchIsEnabled`, `PatchIsBridged` (weak-key `BridgedWrappers`), повторные попытки инициализации |
 | `lua/autorun/server/sv_zcity_woundsystem_compat.lua` | server | Основной мост: weak-key `WSZC.RawDamage`, `DamageWrapper`, снимки/дельты медицины в `ApplyItemToBodyImpl`, публикация `WSZC_Ready` / `WSZC_OrganismAuthority`, `Setup()`/`Attempt()`, mode-aware `InstallOrganismMode` |
-| `lua/autorun/server/sv_zcity_woundsystem_compat_organism.lua` | server | Authority-слой: единый `state.shrapnel`, `InjectDamageShrapnel` (пули/взрывы/стекло), `Constants()` из реального `WoundSystem.Health.Constants`, `WrapHook` с `wrappedByKey`, glass brush/ragdoll, per-limb shadow-синхронизация, масштаб адреналина/обезболивающего, `WSZC.DisableCUBloodReplacement()` (возврат ванильной крови ZCity), `WB.SwepHeal`, подавление второй физиологии, 5-секундный reapply |
-| `lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua` | server | instant / watchdog / continuous мини-игры, виртуальный слот `6`, `WSZC_*` net-сообщения, рантайм-фильтр надписи «Not completed - nothing was applied», серверный `SetupMove`-лок движения |
+| `lua/autorun/server/sv_zcity_woundsystem_compat_organism.lua` | server | Authority-слой: единый `state.shrapnel`, `IsShotgunHit()` (только дробовик/взрыв), `FreshHitgroup`/`LimbFromHitBones` (limb из `org.dmgstack`/`HitBones`), `InjectDamageShrapnel` в `PostEntityTakeDamage`, `InstallResetStructureGuard()` (не поднимать при reset), `Constants()` из реального `WoundSystem.Health.Constants`, `WrapHook` с `wrappedByKey`, glass brush/ragdoll, per-limb shadow-синхронизация, масштаб адреналина/обезболивающего, `WSZC.DisableCUBloodReplacement()` (возврат ванильной крови ZCity), `WB.SwepHeal`, подавление второй физиологии, 5-секундный reapply |
+| `lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua` | server | instant / watchdog / continuous мини-игры, виртуальный слот `6`, `WSZC_*` net-сообщения, рантайм-фильтр надписи «Not completed - nothing was applied», `session.frozenAngles` и серверный `SetupMove`-лок движения + камеры |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua` | client | Full-screen мини-игры: переопределение `WoundSystem.MinigameClip.GetRect()`, единый `WSZC.MinigameScale()`, клиентский кламп `org.adrenaline`/`org.painkiller` |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_fx.lua` | client | Фильтр эффектов C:U: снимает `RenderScreenspaceEffects`/`CalcView`/`HUDPaint*`/`PostDrawHUD`/`CreateMove`/fog-хуки и blood-хуки, нейтрализует `TextCorruption`, выставляет визуальные конвары C:U в `0`, умеет восстанавливать оригиналы |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_inspect.lua` | client | Пункт «Проверить травмы» в круговом меню ZCity → `WoundSystem.OpenHealthHUD()`, gate `WSZC_Ready`, `OPEN_DELAY = 0.12`, `wszc_open_wounds` |
-| `lua/autorun/client/cl_zcity_woundsystem_compat_minigames.lua` | client | Клиентская часть мини-игр, приём `WSZC_*`, владение курсором (обёртка `WoundSystemIsAnyWoundMinigameActive`), блокировка движения `SetupMove` и биндов `PlayerBindPress` |
+| `lua/autorun/client/cl_zcity_woundsystem_compat_minigames.lua` | client | Клиентская часть мини-игр, приём `WSZC_*`, владение курсором (обёртка `WoundSystemIsAnyWoundMinigameActive`), заморозка `ViewAngles` (`InputMouseApply`/`CreateMove`/`SetupMove`), блокировка движения `SetupMove` и биндов `PlayerBindPress` |
 | `lua/autorun/client/wszc_cl_bandage.lua` | client | Порт родной C:U мини-игры бинтования (ЛКМ/ПКМ/ESC), layout на весь экран |
 | `lua/autorun/client/wszc_cl_syringe.lua` | client | Порт родной C:U мини-игры шприца (ЛКМ/ПКМ/ESC), board = весь экран, оффсеты в долях viewport |
 | `addon.json` | мета | `title`, `type: ServerContent`, ignore `*.md`/`*.txt` |
@@ -55,8 +55,19 @@ GMod. Исходные ZIP-аддоны не изменяются: всё пат
 | Курсор в мини-игре | `WoundSystem_ScreenClickerWatchdog` снимает курсор, когда `WoundSystemIsAnyWoundMinigameActive() == false`, а этот глобал знает только 6 нативных мини-игр C:U. Коннектор оборачивает его (`original() or WSZC.MinigameActive()`), повторно включает кликер в `Think`, если его украли, и даёт 1 секунду grace между `WSZC_MinigameOpen` и `WSZC_BandageOpen`/`WSZC_SyringeOpen` (раньше watchdog успевал сбросить `MinigameHUDOpen` до старта UI) |
 | Персонаж не ходит | Клиентский и серверный `SetupMove` (`WSZC_MinigameLockMovement` / `WSZC_MinigameServerLock`) обнуляют `forward/side/up`, `buttons`, `mousex/mousey` и горизонтальную скорость, сохраняя падение по Z. `PlayerBindPress` блокирует бинды ZCity (`+forward`, `+menu`, `slot*`, …), кроме `toggleconsole`/`screenshot`/`jpeg` |
 
+## Источники шрапнели, конечность, reset и камера (последняя правка)
+
+| Требование | Реализация |
+|---|---|
+| Не от пистолетов | `IsShotgunHit()` вместо `IsBallisticHit()`: убраны `DMG_BULLET` и эвристика «NxM mm» (из-за неё `9x19 mm` считался дробью). Остались `DMG_BUCKSHOT`, ammo `12/70*` / `20/70*` / `23x75*`, `NumBullet > 1` или класс shotgun-SWEP у инфликтора/активного оружия. Взрыв — отдельная ветка `DMG_BLAST`. Конвар отката `zc_woundsystem_compat_shrapnel_only_shotgun_blast` |
+| Не «непонятно где» | `DamageLimb()` больше не гадает по ближайшей кости и не имеет fallback `thorax`. Приоритет: `org.dmgstack[hitgroup]` (ZCity пишет урон и `CurTime()`), `ply:LastHitGroup()`, `ply.HitBones`, затем `GetDamagePosition()` с порогом 55 юнитов. Если limb неизвестен — фрагмент не создаётся. Инъекция перенесена из `CaptureRawDamage` в `PostEntityTakeDamage`, т.к. `dmgstack` заполняется внутри ZCity-хука |
+| `reset organism` не встаёт | `InstallResetStructureGuard()` оборачивает `hg.organism.Clear` и `WB.ResetOrganism`: `WB.RestoreRagdoll` временно заменяется no-op (иначе `timer.Simple(0)` → `hg.FakeUp` сработает после обёртки), а `otrub/needotrub/fake/needfake/canmove/alive/stun/consciousness/...` снимок возвращается после очистки (травмы и `health` всё равно сбрасываются); повторно шлются `hg.send_organism`/`hg.send_bareinfo` и обновляется shadow. Обычный спавн без ragdoll/unconscious не затрагивается. Конвар `zc_woundsystem_compat_preserve_reset_structure` |
+| Не крутить камеру | Клиент сохраняет `LocalPlayer():EyeAngles()` при `WSZC_MinigameOpen`; `InputMouseApply` (return true), `CreateMove` и `SetupMove` forcibly `cmd:SetViewAngles(frozen)`. Сервер хранит `session.frozenAngles` и делает то же в `WSZC_MinigameServerLock`. `WSZC_MinigameClose` и watchdog снимают заморозку |
+
 Валидация: все 10 Lua-файлов проходят `luaparser`, `addon.json` — JSON-парсер,
 headless-тесты `TEST_OK 11/11` (шрапнель, `took=false`, дедуп, адреналин,
 per-limb кровотечение, возврат ванильной крови), `TEST_OK 6/6` (full-screen
-clip, zoom, кламп) и `TEST_OK 17/17` (фильтр визуальных и аудио-эффектов/крови,
-курсор, блокировка движения и биндов). Живой GMod-сервер не запускался.
+clip, zoom, кламп), `TEST_OK 20/20` (фильтр визуальных и аудио-эффектов/крови,
+курсор, заморозка камеры, блокировка движения и биндов) и `TEST_OK 11/11`
+( shotgun/pistol/rifle источники, limb из `dmgstack`, blast, откат конвара,
+reset-guard, обычный спавн). Живой GMod-сервер не запускался.

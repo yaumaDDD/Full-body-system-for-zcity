@@ -97,6 +97,40 @@ local function PatchCUMinigameActive()
 end
 WSZC.PatchCUMinigameActive = PatchCUMinigameActive
 
+-- Freeze the VIEW ANGLES, not just the mouse delta.  GMod applies the mouse
+-- movement in InputMouseApply / CreateMove and writes cmd:SetViewAngles()
+-- BEFORE SetupMove runs, so zeroing MouseX/MouseY in SetupMove alone still
+-- lets the player spin the camera during the bandage/syringe minigame.
+local function FreezeMinigameView()
+    if WSZC.MinigameFrozenAngles then return end
+    local ply = LocalPlayer and LocalPlayer() or nil
+    if not (IsValid and IsValid(ply) and ply.EyeAngles) then return end
+    local ok, ang = pcall(ply.EyeAngles, ply)
+    if ok and ang then WSZC.MinigameFrozenAngles = ang end
+end
+
+local function ReleaseMinigameView()
+    WSZC.MinigameFrozenAngles = nil
+end
+
+hook.Add("InputMouseApply", "WSZC_MinigameFreezeMouse", function(cmd)
+    if not WSZC.MinigameActive() then return end
+    if cmd then
+        if cmd.SetMouseX then cmd:SetMouseX(0) end
+        if cmd.SetMouseY then cmd:SetMouseY(0) end
+        local ang = WSZC.MinigameFrozenAngles
+        if ang and cmd.SetViewAngles then cmd:SetViewAngles(ang) end
+    end
+    -- Suppress the engine's default mouse -> view rotation entirely.
+    return true
+end)
+
+hook.Add("CreateMove", "WSZC_MinigameFreezeView", function(cmd)
+    if not WSZC.MinigameActive() then return end
+    local ang = WSZC.MinigameFrozenAngles
+    if ang and cmd and cmd.SetViewAngles then cmd:SetViewAngles(ang) end
+end)
+
 -- If ZCity's radial menu is still closing, SetScreenClickerOwned(true) can be
 -- refused by C:U ("external menu open").  Keep re-asserting the cursor while a
 -- WSZC minigame is live; this also defeats the C:U watchdog described above.
@@ -130,6 +164,9 @@ hook.Add("SetupMove", "WSZC_MinigameLockMovement", function(ply, mv, cmd)
     if cmd.SetButtons then cmd:SetButtons(0) end
     if cmd.SetMouseX then cmd:SetMouseX(0) end
     if cmd.SetMouseY then cmd:SetMouseY(0) end
+    -- Last line of defence: GMod already applied mouse delta to ViewAngles.
+    local ang = WSZC.MinigameFrozenAngles
+    if ang and cmd.SetViewAngles then cmd:SetViewAngles(ang) end
 end)
 
 -- Keep ZCity binds (radial menu, weapon switch, +use, inventory, ...) from
@@ -218,6 +255,7 @@ net.Receive("WSZC_MinigameOpen", function()
     WSZC.MinigameHUDOpen = true
     WSZC.MinigameOpenAt = CurTime and CurTime() or 0
     PatchCUMinigameActive()
+    FreezeMinigameView()
     EnableMinigameClicker()
 end)
 
@@ -249,6 +287,7 @@ net.Receive("WSZC_MinigameClose", function()
     WSZC.MinigameOpenAt = 0
     WSZC.PendingBandageOpen = nil
     WSZC.PendingSyringeOpen = nil
+    ReleaseMinigameView()
     DisableMinigameClicker()
 end)
 
@@ -326,6 +365,7 @@ hook.Add("Think", "WSZC_MinigameClientWatch", function()
         local now = CurTime and CurTime() or 0
         if now - (WSZC.MinigameOpenAt or 0) < 1.0 then return end
         WSZC.MinigameHUDOpen = false
+        ReleaseMinigameView()
         DisableMinigameClicker()
     end
 end)

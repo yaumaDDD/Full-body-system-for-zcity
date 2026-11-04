@@ -63,6 +63,12 @@ local cvOnBlocked = CreateConVar("zc_woundsystem_compat_shrapnel_on_blocked", "1
 local cvCUBlood = CreateConVar("zc_woundsystem_compat_disable_cu_blood", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Stop C:U from hiding vanilla/ZCity blood (woundsys_replace_vanilla_blood)", 0, 1)
+local cvShotgunOnly = CreateConVar("zc_woundsystem_compat_shrapnel_only_shotgun_blast", "1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Lodge fragments ONLY from shotguns and explosions (0 = also every DMG_BULLET pistol hit)", 0, 1)
+local cvPreserveReset = CreateConVar("zc_woundsystem_compat_preserve_reset_structure", "1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "On 'reset organism' keep ZCity unconscious/ragdoll structure instead of standing the player up", 0, 1)
 local cvDebug = CreateConVar("zc_woundsystem_compat_organism_debug", "0",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Print organism-authority diagnostics", 0, 1)
@@ -431,62 +437,154 @@ local function GuessHitgroup(ent, dmginfo)
             end
         end
     end
+    -- Never guess "somewhere" from a far-away damage position: a far hit used
+    -- to pick an arbitrary nearest bone (a leg hit could lodge in a hand).
+    if best and bestDist and bestDist <= (55 * 55) then return best end
+    return nil
+end
+
+local function LimbFromHitgroup(hitgroup)
+    if not hitgroup then return nil end
+    local wb = WB()
+    local limb = wb and wb.HitgroupToWS and wb.HitgroupToWS[hitgroup]
+    limb = NormalizeLimb(limb) or NormalizeLimb(HitgroupLimb(hitgroup))
+    -- HITGROUP_GENERIC / HITGROUP_GEAR must NOT turn into an arbitrary thorax.
+    return limb
+end
+
+-- ZCity records every hit in org.dmgstack[hitgroup] = { amount, CurTime(), ... }
+-- inside its own damage hook.  This is the authoritative limb for the hit,
+-- unlike dmginfo:GetDamagePosition() (bullet entry point, often on a different
+-- ragdoll bone).  Read the freshest entry only, so old wounds do not win.
+local function FreshHitgroup(org)
+    if type(org) ~= "table" or type(org.dmgstack) ~= "table" then return nil end
+    local now = CurTime and CurTime() or 0
+    local best, bestTime
+    for hitgroup, stack in pairs(org.dmgstack) do
+        if type(stack) == "table" and (tonumber(stack[1]) or 0) > 0 then
+            local t = tonumber(stack[2]) or 0
+            if (now - t) < 1.0 and (not bestTime or t > bestTime) then
+                bestTime, best = t, hitgroup
+            end
+        end
+    end
     return best
 end
 
-local function DamageLimb(ply, ent, dmginfo, hitgroup)
-    if not hitgroup then hitgroup = GuessHitgroup(ent, dmginfo) end
-    -- ZCity's own bridge map is authoritative for hitgroups, so shrapnel lands
-    -- on the same limb the C:U HUD highlights for that hitgroup.
-    local wb = WB()
-    if wb and wb.HitgroupToWS and hitgroup then
-        local limb = wb.HitgroupToWS[hitgroup]
-        if LIMB_ORG[limb] then return limb end
+-- ply.HitBones[bonename] = CurTime() + damage is filled by ZCity for the
+-- hitgroup's bones.  Secondary source, still exact for the injured limb.
+local function LimbFromHitBones(ply)
+    if not (IsValid(ply) and type(ply.HitBones) == "table") then return nil end
+    local now = CurTime and CurTime() or 0
+    local best, bestExpiry
+    for bonename, expiry in pairs(ply.HitBones) do
+        local n = tonumber(expiry) or 0
+        if type(bonename) == "string" and n > now then
+            local limb = NormalizeLimb(BoneLimb(bonename))
+            if limb and (not bestExpiry or n > bestExpiry) then
+                bestExpiry, best = n, limb
+            end
+        end
     end
-    local limb = HitgroupLimb(hitgroup)
-    if limb then return limb end
-    return "thorax"
+    return best
 end
 
+--- Resolve the EXACT limb that was hit.  Returning nil means "unknown" and the
+--- caller SKIPS the fragment -- shrapnel must never appear "somewhere random".
+local function DamageLimb(ply, ent, dmginfo, hitgroup)
+    local limb = LimbFromHitgroup(hitgroup)
+    if limb then return limb end
+
+    if IsValid(ply) and ply.LastHitGroup then
+        local ok, hg = pcall(ply.LastHitGroup, ply)
+        if ok then limb = LimbFromHitgroup(hg) end
+        if limb then return limb end
+    end
+
+    local org = IsValid(ply) and ply.organism or nil
+    limb = LimbFromHitgroup(FreshHitgroup(org))
+    if limb then return limb end
+
+    limb = LimbFromHitBones(ply)
+    if limb then return limb end
+
+    -- Last resort: the damage position must really be on the bone.
+    return LimbFromHitgroup(GuessHitgroup(ent, dmginfo))
+end
+
+--- Shrapnel may come from SHOTGUNS or EXPLOSIONS only -- never from a pistol.
+---
 --- ZCity's custom bullet engine (sh_luabullets.lua) calls
 --- `info:SetDamageType(tAmmoData.dmgtype)`, but the 12/70 gauge / slug ammo
 --- definitions in sh_ammostuff.lua have `dmgtype` COMMENTED OUT.  Shotgun
---- pellets therefore arrive as DMG_GENERIC (0), and a check for only
---- DMG_BULLET / DMG_BUCKSHOT never sees them.  `info:SetAmmoType(iAmmoType)`
---- IS always set, so the ammo name is the reliable identifier.
+--- pellets therefore arrive as DMG_GENERIC (0).  `info:SetAmmoType()` IS
+--- always set, so the ammo name is the reliable identifier.  The old check
+--- also accepted plain DMG_BULLET and any "NxM mm" rifle/pistol calibre,
+--- which is exactly why pistols produced fragments.
 local SHOTGUN_AMMO = {
     ["12/70gauge"] = true, ["12/70slug"] = true, ["12/70rip"] = true,
+    ["12/70beanbag"] = true, ["12/70blank"] = true,
     ["20/70gauge"] = true, ["20/70slug"] = true,
 }
 
-local function IsBallisticHit(dmginfo, dmgtype)
-    local bullet = DMG_BULLET or 0
+-- Calibre families used by ZCity's shotgun SWEPs (xm1014, spas12, saiga12,
+-- remington870, roullet, doublebarrel_short and the KS-23 style 23x75).
+local function IsShotgunAmmoName(name)
+    if type(name) ~= "string" then return false end
+    local lower = string.lower(name)
+    local compact = string.gsub(lower, "%s+", "")
+    if SHOTGUN_AMMO[compact] then return true end
+    return string.find(compact, "12/70", 1, true) == 1
+        or string.find(compact, "20/70", 1, true) == 1
+        or string.find(compact, "23x75", 1, true) == 1
+        or string.find(lower, "buckshot", 1, true) ~= nil
+        or string.find(lower, "shotgun", 1, true) ~= nil
+end
+
+local SHOTGUN_WEAPONS = {
+    weapon_xm1014 = true, weapon_spas12 = true, weapon_saiga12 = true,
+    weapon_remington870 = true, weapon_remington870_roullet = true,
+    weapon_doublebarrel_short = true,
+}
+
+local function IsShotgunEntity(ent)
+    if not IsValid(ent) then return false end
+    local ok, class = pcall(ent.GetClass, ent)
+    if ok and SHOTGUN_WEAPONS[class] then return true end
+    -- NumBullet > 1 is the pellet count on every ZCity shotgun SWEP; pistols
+    -- and rifles always have 1.
+    return (tonumber(ent.NumBullet) or 0) > 1
+end
+
+local function IsShotgunHit(dmginfo, dmgtype)
+    -- zc_woundsystem_compat_shrapnel_only_shotgun_blast 0 restores the old
+    -- "any bullet" behaviour for servers that want it back.
+    if cvShotgunOnly and not cvShotgunOnly:GetBool() then
+        local bullet = DMG_BULLET or 0
+        local buckshot = DMG_BUCKSHOT or 0
+        return (bullet ~= 0 and bit.band(dmgtype, bullet) ~= 0)
+            or (buckshot ~= 0 and bit.band(dmgtype, buckshot) ~= 0)
+    end
+
     local buckshot = DMG_BUCKSHOT or 0
-    if bullet ~= 0 and bit.band(dmgtype, bullet) ~= 0 then return true end
     if buckshot ~= 0 and bit.band(dmgtype, buckshot) ~= 0 then return true end
 
     if dmginfo.GetAmmoType and game and game.GetAmmoName then
         local ok, ammoId = pcall(dmginfo.GetAmmoType, dmginfo)
         if ok and type(ammoId) == "number" and ammoId >= 0 then
             local ok2, name = pcall(game.GetAmmoName, ammoId)
-            if ok2 and type(name) == "string" then
-                -- game.GetAmmoName() returns the display name, e.g.
-                -- "12/70 gauge" or "9x19 mm Parabellum", while the ammo table
-                -- keys are compact ("12/70gauge").  Check both forms.
-                local lower = string.lower(name)
-                local compact = (string.gsub(lower, "%s+", ""))
-                if SHOTGUN_AMMO[lower] or SHOTGUN_AMMO[compact] then return true end
-                if string.find(lower, "gauge", 1, true)
-                    or string.find(lower, "buckshot", 1, true)
-                    or (string.find(lower, "mm", 1, true) and string.find(lower, "x", 1, true)) then
-                    return true
-                end
-            end
+            if ok2 and IsShotgunAmmoName(name) then return true end
         end
     end
 
     local inf = dmginfo.GetInflictor and dmginfo:GetInflictor()
-    if IsValid(inf) and (tonumber(inf.NumBullet) or 0) > 1 then return true end
+    if IsShotgunEntity(inf) then return true end
+    local att = dmginfo.GetAttacker and dmginfo:GetAttacker()
+    if IsShotgunEntity(att) then return true end
+    if IsValid(att) and att.GetActiveWeapon then
+        local ok, wep = pcall(att.GetActiveWeapon, att)
+        if ok and IsShotgunEntity(wep) then return true end
+    end
     return false
 end
 
@@ -518,12 +616,16 @@ function WSZC.InjectDamageShrapnel(ent, dmginfo, hitgroup, rawOverride)
     raw = tonumber(raw) or 0
 
     local limbId = DamageLimb(ply, ent, dmginfo, hitgroup)
+    if not limbId then
+        Debug("shrapnel skipped: no reliable injured limb for %s", tostring(ent))
+        return
+    end
     local added = 0
 
-    -- C:U's Fn.AddGunshotShrapnel(): one fragment per bullet/buckshot hit,
-    -- blocked by HEV, capped at ShrapnelPieceCount.
+    -- One fragment per SHOTGUN hit only (HEV blocks it), capped at
+    -- ShrapnelPieceCount.  Pistols / rifles / SMGs deliberately produce none.
     local blast = DMG_BLAST or 0
-    if IsBallisticHit(dmginfo, dmgtype) and not HevBlocks(ply) then
+    if IsShotgunHit(dmginfo, dmgtype) and not HevBlocks(ply) then
         added = added + 1
     end
 
@@ -614,12 +716,12 @@ end
 -- Standing player / ragdoll punching a breakable glass brush.  ZCity's own
 -- hook for this is commented out (sv_input.lua:441-446) and GlassShards
 -- (sv_util.lua:1354) only spawns a world item, so this is the missing piece.
--- Post-damage fallback for all shrapnel production.  `took == false` is NORMAL
--- in ZCity: homigrad-damage returns true for a player hit and forwards it to
+-- The ONLY shrapnel injection point.  It runs after ZCity's damage hook has
+-- filled org.dmgstack / ply.HitBones, so the fragment lands on the limb that
+-- was actually hit (a leg stays a leg).  `took == false` is NORMAL in ZCity:
+-- homigrad-damage returns true for a player hit and forwards it to
 -- ply.FakeRagdoll, so GMod reports the damage as blocked even though the wound
--- was applied.  Dropping those hits used to lose every shotgun fragment.
--- The primary injection happens in CaptureRawDamage (before that return);
--- ShrapnelHandled de-duplicates the two paths.
+-- was applied.  ShrapnelHandled de-duplicates repeated post hooks.
 hook.Add("PostEntityTakeDamage", "WSZC_AuthorityDamagePost", function(ent, dmginfo, took)
     if not (Authority() and IsValid(ent) and dmginfo) then return end
     local raw = WSZC.RawDamage[dmginfo]
@@ -936,14 +1038,14 @@ end
 
 local function CaptureRawDamage(ent, dmginfo)
     if not (IsValid(ent) and dmginfo and dmginfo.GetDamage) then return end
+    -- Save the UNSCALED damage.  ZCity calls dmginfo:ScaleDamage(0.15) and may
+    -- rewrite the damage type later in this very hook, so PostEntityTakeDamage
+    -- would otherwise see only 15% of the real blast damage.
     local ok, raw = pcall(dmginfo.GetDamage, dmginfo)
     if ok then WSZC.RawDamage[dmginfo] = raw end
-    -- Inject BEFORE ZCity's hook can return true / scale damage / rewrite the
-    -- damage type.  This is the reliable path for 12/70 pellets, which arrive
-    -- as DMG_GENERIC and are then forwarded to the fake ragdoll.
-    if Authority() then
-        WSZC.InjectDamageShrapnel(ent, dmginfo, nil, ok and raw or nil)
-    end
+    -- Deliberately NO injection here: ZCity writes org.dmgstack[hitgroup] and
+    -- ply.HitBones INSIDE this hook, and the shrapnel must land on that exact
+    -- limb.  WSZC_AuthorityDamagePost runs afterwards (also for took=false).
 end
 
 -- Plain no-op replacements for the ZCity bridge entry points.  With these in
@@ -1044,6 +1146,97 @@ function WSZC.DisableCUBloodReplacement()
     return true
 end
 
+---------------------------------------------------------------------------
+-- "Reset organism" must NOT stand the character up
+---------------------------------------------------------------------------
+-- ZCity's `hg_organism_clear` / the admin "Reset organism" property clear the
+-- whole organism table.  WB.ResetOrganism() additionally calls
+-- WB.RestoreRagdoll(..., false), which runs hg.FakeUp(ply, true) and resets
+-- org.fake / org.needfake.  That is the "character gets up by himself".
+-- The owner wants the reset to clean the wounds but KEEP the ZCity organism
+-- structure (unconscious / fake-ragdoll state), i.e. never auto-stand.
+-- Only the "down / unconscious" structure is preserved.  Wounds, blood,
+-- organs, health etc. are still cleared -- that is what "reset" is for.
+local RESET_KEEP = {
+    "otrub", "needotrub", "fake", "needfake",
+    "canmove", "alive", "stun", "consciousness",
+    "brain", "otrub_start", "unconscious",
+}
+
+local function SnapshotZCityStructure(org)
+    local snap = {}
+    for _, key in ipairs(RESET_KEEP) do snap[key] = org[key] end
+    return snap
+end
+
+local function RestoreZCityStructure(org, snap)
+    if type(org) ~= "table" or type(snap) ~= "table" then return end
+    for key, value in pairs(snap) do org[key] = value end
+    local owner = org.owner
+    if IsValid(owner) then owner.fullsend = true end
+    if hg then
+        if hg.send_organism then pcall(hg.send_organism, org) end
+        if hg.send_bareinfo then pcall(hg.send_bareinfo, org) end
+    end
+    -- Keep the C:U shadow (HUD / NWBool) in sync with the ZCity structure.
+    if cvShadow and cvShadow:GetBool() and IsValid(owner) then
+        pcall(PushShadow, owner, org)
+    end
+end
+
+function WSZC.InstallResetStructureGuard()
+    if WSZC._ResetGuardPatched then return true end
+    local wb = WB()
+    local clear = hg and hg.organism and hg.organism.Clear
+    if not (wb and type(clear) == "function") then return false end
+    WSZC._ResetGuardPatched = true
+
+    local originalClear = clear
+    hg.organism.Clear = function(org, ...)
+        if not (cvPreserveReset and cvPreserveReset:GetBool() and Authority()) then
+            return originalClear(org, ...)
+        end
+        if type(org) ~= "table" then return originalClear(org, ...) end
+        local owner = org.owner
+        local down = (IsValid(owner) and IsValid(owner.FakeRagdoll))
+            or org.otrub == true or org.fake == true
+        -- A normal Player Spawn has no ragdoll / unconscious state: let the
+        -- stock clear run untouched there.
+        if not down then return originalClear(org, ...) end
+        local snap = SnapshotZCityStructure(org)
+        local a, b, c = originalClear(org, ...)
+        RestoreZCityStructure(org, snap)
+        return a, b, c
+    end
+
+    if type(wb.ResetOrganism) == "function" then
+        local originalReset = wb.ResetOrganism
+        local originalRestore = wb.RestoreRagdoll
+        wb.ResetOrganism = function(ent, ...)
+            if not (cvPreserveReset and cvPreserveReset:GetBool() and Authority()) then
+                return originalReset(ent, ...)
+            end
+            local ply = (wb.GetPlayer and wb.GetPlayer(ent))
+                or (IsValid(ent) and ent.IsPlayer and ent:IsPlayer() and ent) or nil
+            local org = IsValid(ply) and ply.organism or nil
+            local snap = type(org) == "table" and SnapshotZCityStructure(org) or nil
+            -- Suppress the explicit "stand up if the old state kept him on the
+            -- floor" call.  Its timer.Simple(0) would otherwise run AFTER this
+            -- wrapper returns and undo everything.
+            wb.RestoreRagdoll = function() return true end
+            local ok, res = pcall(originalReset, ent, ...)
+            wb.RestoreRagdoll = originalRestore
+            if snap then RestoreZCityStructure(org, snap) end
+            if not ok then
+                Warn("WB.ResetOrganism failed: " .. tostring(res))
+                return false
+            end
+            return res
+        end
+    end
+    return true
+end
+
 local function InstallVanillaHooks()
     -- Org Think "Main": without this wrapper the hook returns early through
     -- WB.Think() and every vanilla ZCity organ module (and Organs+) is skipped.
@@ -1121,6 +1314,7 @@ function WSZC.InstallOrganismMode()
     InstallMedicalBridge()
     DisableCUPhysiology()
     WSZC.DisableCUBloodReplacement()
+    WSZC.InstallResetStructureGuard()
 
     -- Org Think runs at 10 Hz in ZCity.  Our own hook keeps the C:U HUD and the
     -- shrapnel shadow in sync, and holds the regeneration block.
@@ -1184,6 +1378,7 @@ function WSZC.InstallOrganismMode()
         if not Authority() then return end
         InstallVanillaHooks()
         DisableCUPhysiology()
+        WSZC.InstallResetStructureGuard()
     end)
 
     -- Wrappers are installed unconditionally but every one of them checks

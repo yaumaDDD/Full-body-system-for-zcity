@@ -392,6 +392,11 @@ local function StartMinigame(ply, data)
     if WSZC.NextMinigameId > 16000000 then WSZC.NextMinigameId = 1 end
 
     local now = CurTime and CurTime() or 0
+    local frozenAngles
+    if ply.EyeAngles then
+        local okAng, ang = pcall(ply.EyeAngles, ply)
+        if okAng then frozenAngles = ang end
+    end
     local session = {
         id = id,
         kind = kind,
@@ -412,6 +417,9 @@ local function StartMinigame(ply, data)
         onClose = data.onClose,
         data = data,
         startedAt = now,
+        -- Freeze the camera for the whole session.  The client also freezes
+        -- ViewAngles; this server copy defeats a modified/legacy client.
+        frozenAngles = frozenAngles,
         lastInputAt = now,
         lastAckSeq = 0,
         closed = false,
@@ -627,7 +635,8 @@ end)
 -- turn while bandaging/injecting.  Vertical velocity is preserved so falling
 -- is not frozen in mid-air.
 hook.Add("SetupMove", "WSZC_MinigameServerLock", function(ply, mv, cmd)
-    if not (WSZC.MinigameSessions and WSZC.MinigameSessions[ply]) then return end
+    local session = WSZC.MinigameSessions and WSZC.MinigameSessions[ply]
+    if not session then return end
     if not (IsValid(ply) and ply:IsPlayer()) then return end
 
     if mv and mv.SetVelocity and mv.GetVelocity then
@@ -641,6 +650,11 @@ hook.Add("SetupMove", "WSZC_MinigameServerLock", function(ply, mv, cmd)
     if cmd.SetButtons then cmd:SetButtons(0) end
     if cmd.SetMouseX then cmd:SetMouseX(0) end
     if cmd.SetMouseY then cmd:SetMouseY(0) end
+    -- Zeroing the mouse delta is not enough: GMod already applied it to
+    -- ViewAngles before SetupMove.  Force the frozen angles back.
+    if session.frozenAngles and cmd.SetViewAngles then
+        cmd:SetViewAngles(session.frozenAngles)
+    end
 end)
 
 hook.Add("Think", "WSZC_MinigameWatch", function()

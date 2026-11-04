@@ -265,6 +265,8 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_hide_empty_notice` | этот аддон | `1` — убрать надпись «Not completed - nothing was applied»; `0` — вернуть. |
 | `zc_woundsystem_compat_disable_cu_fx` | этот аддон (client) | `1` — снять ВСЕ экранные/камерные/UI-эффекты C:U, оставить только эффекты ZCity; `0` — вернуть хуки C:U. |
 | `zc_woundsystem_compat_disable_cu_blood` | этот аддон (client + server) | `1` — убрать декоративную кровь C:U и вернуть ванильную кровь ZCity/Hemogen; `0` — вернуть как было. |
+| `zc_woundsystem_compat_shrapnel_only_shotgun_blast` | этот аддон (server) | `1` — осколки только от дробовика и взрыва, не от пистолетов/винтовок; `0` — старое поведение (любой `DMG_BULLET`). |
+| `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа и сохраняет структуру ZCity (`otrub`/`fake`/`canmove`); `0` — исходный ZCity reset. |
 | `zc_woundsystem_compat_fullscreen_minigame` | этот аддон (client) | `1` — мини-игры бинта/шприца на весь экран; `0` — исходный квадрат ~760 px C:U. |
 | `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `1.0` — базовый размер мини-игры; диапазон `0.7..1.8`. |
 | `zc_woundsystem_compat_clamp_adrenaline` | этот аддон (client) | `1` — клампить `org.adrenaline` ≤2 и `org.painkiller` ≤1, чтобы камера ZCity не давала FOV-взрыв. |
@@ -376,6 +378,55 @@ C:U пересоздаёт `EYEVIEW_CalcView` из своего `Think`.
   скорость (падение по Z сохраняется), а `PlayerBindPress` глушит бинды ZCity
   (`+forward`, `+menu`, `slot*`, …), оставляя `toggleconsole`/`screenshot`.
 
+## Шрапнель: только дробовик/взрыв и точная конечность
+
+**Источники.** Раньше `IsBallisticHit()` возвращал `true` для любого
+`DMG_BULLET` и даже для любого калибра вида «NxM mm», поэтому пистолеты и
+винтовки сажали осколки. Новый `IsShotgunHit()` принимает только:
+`DMG_BUCKSHOT`; ammo `12/70*`, `20/70*`, `23x75*` (все shotgun-SWEP ZCity —
+xm1014, spas12, saiga12, remington870, roullet, doublebarrel_short); инфликтор
+или активное оружие с `NumBullet > 1`. Отдельная ветка `DMG_BLAST` даёт
+фрагменты от взрывчатки. Патроны `9x19 mm`, `7.62x39 mm` и т.п. больше **не
+дают** шрапнель. Откат: `zc_woundsystem_compat_shrapnel_only_shotgun_blast 0`.
+
+**Конечность.** Прежде limb угадывался по ближайшей кости к
+`dmginfo:GetDamagePosition()` — точке входа пули, которая у дробовика часто
+лежит на другой части ragdoll, поэтому «оторвал ногу, осколок в руке». Теперь
+приоритет у авторитетных данных ZCity: `org.dmgstack[hitgroup]` (ZCity сам
+пишет туда урон и `CurTime()`), затем `ply:LastHitGroup()`, `ply.HitBones`,
+и только потом позиция с жёстким порогом 55 юнитов. Если ни один источник не
+дал конечность — осколок **не создаётся**, а не падает в случайный `thorax`.
+Инъекция перенесена из pre-хука в `PostEntityTakeDamage`: `org.dmgstack`
+заполняется внутри ZCity-хука, и только после него limb известен.
+`took == false` по-прежнему обрабатывается (это норма для ZCity).
+
+## `reset organism` не встаёт сам
+
+`hg_organism_clear` и админское «Reset organism» очищают `ply.organism`:
+`Org Clear / Main` сбрасывает `otrub/fake/canmove/alive`, а
+`WB.ResetOrganism()` дополнительно вызывает `WB.RestoreRagdoll(..., false)` →
+`hg.FakeUp(ply, true)` в `timer.Simple(0)`. Это и было «персонаж встал сам».
+
+`WSZC.InstallResetStructureGuard()` оборачивает `hg.organism.Clear` и
+`WB.ResetOrganism`: на время `ResetOrganism` `WB.RestoreRagdoll` подменяется на
+no-op (иначе отложенный таймер поднял бы игрока уже после обёртки), а состояние
+`otrub / needotrub / fake / needfake / canmove / alive / stun / consciousness` / ...
+сохраняется и возвращается после очистки. Травмы и `health` при этом очищаются как обычно —
+сохраняется именно **структура ZCity**, а не C:U body/limbs. После восстановления
+повторно шлются `hg.send_organism` / `hg.send_bareinfo` и обновляется shadow C:U.
+Обычный `Player Spawn` (нет `FakeRagdoll`, нет `otrub`) не затрагивается.
+Откат: `zc_woundsystem_compat_preserve_reset_structure 0`.
+
+## Камера в мини-игре
+
+Обнуление `MouseX/MouseY` в `SetupMove` не останавливало вращение: GMod
+применяет мышь в `InputMouseApply` / `CreateMove` и записывает
+`cmd:SetViewAngles()` **до** `SetupMove`. Теперь при открытии мини-игры
+запоминаются `LocalPlayer():EyeAngles()`, а `InputMouseApply` (с `return true`),
+`CreateMove` и `SetupMove` возвращают их обратно. Сервер хранит те же углы в
+`WSZC.MinigameSessions[ply].frozenAngles` и форсирует их в своём `SetupMove`,
+поэтому модифицированный клиент тоже не крутит камеру.
+
 ## Ограничения
 
 - Режим `authority 1` не обещает полной 1:1 vanilla-эквивалентности Organs+:
@@ -402,8 +453,9 @@ C:U пересоздаёт `EYEVIEW_CalcView` из своего `Think`.
  не переопределяются.
 - Проверено синтаксически (`luaparser`, 10 файлов) и на заглушечном Lua-рантайме
  (authority-режим, inspect, мини-игры, шрапнель/`took=false`, адреналин,
- per-limb bleeding, full-screen clip, фильтр FX/крови, курсор и лок движения:
- `TEST_OK 11/11`, `TEST_OK 6/6`, `TEST_OK 17/17`);
+ per-limb bleeding, full-screen clip, фильтр FX/крови, курсор, лок камеры и
+ движения, источники шрапнели и reset-guard:
+ `TEST_OK 11/11`, `TEST_OK 6/6`, `TEST_OK 20/20`, `TEST_OK 11/11`);
  на живом GMod-сервере не прогонялось.
 
 ## Файлы
