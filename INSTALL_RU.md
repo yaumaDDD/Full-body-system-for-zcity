@@ -43,6 +43,10 @@
 | Шрапнель только от дробовика и взрыва, не от пистолетов | `zc_woundsystem_compat_shrapnel_only_shotgun_blast 1` |
 | Осколок ложится в раненую конечность (`org.dmgstack` / `HitBones`) | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
 | `reset organism` не поднимает персонажа, структура ZCity сохранена | `zc_woundsystem_compat_preserve_reset_structure 1` |
+| Шрапнель сохраняется при падении/подъёме из ragdoll | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
+| Стекло в ragdoll (руки/ноги) даёт осколки | `zc_woundsystem_compat_glass_shrapnel 1` |
+| Ошибки в shrapnel-мини-игре → боль и нарастающее кровотечение | включается вместе с `zc_woundsystem_compat_shadow 1` |
+| Рука/курсор работают в мини-игре шприца | включается вместе с `zc_woundsystem_compat_minigames 1` |
 
 Панель травм, HUD и протокол шрапнели C:U при этом остаются — отключаются только
 визуальные эффекты и декоративная кровь, а не UI.

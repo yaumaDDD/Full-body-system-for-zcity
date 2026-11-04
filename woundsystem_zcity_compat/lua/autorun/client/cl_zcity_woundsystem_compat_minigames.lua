@@ -116,13 +116,16 @@ end
 hook.Add("InputMouseApply", "WSZC_MinigameFreezeMouse", function(cmd)
     if not WSZC.MinigameActive() then return end
     if cmd then
+        -- Only the CUserCmd camera delta is suppressed.  NEVER return true
+        -- here: that also kills gui.MousePos(), which the syringe/bandage
+        -- minigame uses to move its on-screen hand, and makes the cursor
+        -- flicker.  CreateMove / SetupMove restore ViewAngles separately.
         if cmd.SetMouseX then cmd:SetMouseX(0) end
         if cmd.SetMouseY then cmd:SetMouseY(0) end
         local ang = WSZC.MinigameFrozenAngles
         if ang and cmd.SetViewAngles then cmd:SetViewAngles(ang) end
     end
-    -- Suppress the engine's default mouse -> view rotation entirely.
-    return true
+    return nil
 end)
 
 hook.Add("CreateMove", "WSZC_MinigameFreezeView", function(cmd)
@@ -137,8 +140,11 @@ end)
 hook.Add("Think", "WSZC_MinigameCursorWatch", function()
     PatchCUMinigameActive()
     if not WSZC.MinigameActive() then return end
-    if not (gui and vgui and vgui.CursorVisible) then return end
-    if vgui.CursorVisible() then return end
+    -- Never fight the game/console menu for the cursor, but otherwise keep
+    -- re-asserting it unconditionally.  Checking vgui.CursorVisible() here
+    -- used to let C:U's watchdog steal it for one frame -> visible flicker.
+    if gui and gui.IsGameUIVisible and gui.IsGameUIVisible() then return end
+    if gui and gui.IsConsoleVisible and gui.IsConsoleVisible() then return end
     local now = CurTime and CurTime() or 0
     if (WSZC._NextCursorFix or 0) > now then return end
     WSZC._NextCursorFix = now + 0.15
@@ -169,11 +175,19 @@ hook.Add("SetupMove", "WSZC_MinigameLockMovement", function(ply, mv, cmd)
     if ang and cmd.SetViewAngles then cmd:SetViewAngles(ang) end
 end)
 
--- Keep ZCity binds (radial menu, weapon switch, +use, inventory, ...) from
--- firing behind the minigame.  Console/screenshot stay available.
+-- Keep ZCity binds (radial menu, weapon switch, inventory, ...) from firing
+-- behind the minigame.  Mouse buttons MUST pass through: the syringe /
+-- bandage minigame reads input.IsMouseDown() to grab its tool, and blocking
+-- +attack made the on-screen hand feel frozen.  SetupMove still zeroes the
+-- CUserCmd buttons, so no shot / swing reaches the server.
+local MINIGAME_ALLOWED_BINDS = {
+    toggleconsole = true, screenshot = true, jpeg = true,
+    ["+attack"] = true, ["-attack"] = true,
+    ["+attack2"] = true, ["-attack2"] = true,
+}
 hook.Add("PlayerBindPress", "WSZC_MinigameBlockBinds", function(ply, bind, pressed)
     if not WSZC.MinigameActive() then return end
-    if bind == "toggleconsole" or bind == "screenshot" or bind == "jpeg" then return end
+    if MINIGAME_ALLOWED_BINDS[bind] then return end
     return true
 end)
 
@@ -362,10 +376,13 @@ hook.Add("Think", "WSZC_MinigameClientWatch", function()
         -- `WSZC_SyringeOpen` packet can land in different frames.  Releasing
         -- the cursor in that gap was the "cursor never appears" bug, so give
         -- the session 1 second to start before tearing it down.
+        -- Only WSZC_MinigameClose may release the cursor.  Tearing it down
+        -- from this watchdog while a session still had a pending open packet
+        -- produced the "cursor appears and disappears" flicker.  A much
+        -- longer grace is a pure safety net for a lost close packet, and it
+        -- only drops the flag -- never the cursor itself.
         local now = CurTime and CurTime() or 0
-        if now - (WSZC.MinigameOpenAt or 0) < 1.0 then return end
+        if now - (WSZC.MinigameOpenAt or 0) < 5.0 then return end
         WSZC.MinigameHUDOpen = false
-        ReleaseMinigameView()
-        DisableMinigameClicker()
     end
 end)

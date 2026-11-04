@@ -90,6 +90,25 @@
   `otrub/fake/canmove`. Теперь состояние без сознания / fake-ragdoll
   сохраняется, структура `ply.organism` ZCity не подменяется; обычный спавн
   очищается как раньше (`zc_woundsystem_compat_preserve_reset_structure 0` — откат).
+* **Шрапнель не теряется при падении в ragdoll**: C:U `InitPlayer()` обнуляет
+  `PlayerLimbs` на `Fake`/`FakeUp`/спавне, а старый `PullShrapnel` тянул пустую
+  таблицу обратно в `ply.organism`. Теперь синхронизация двусторонняя: новая
+  таблица limbs → осколки восстанавливаются из организма; та же таблица →
+  извлечение в мини-игре честно уменьшает счётчик.
+* **Стекло в ragdoll снова регистрируется**: glass-хук вынесен в отдельный
+  `Ragdoll Collide`/`WSZC_GlassRagdoll` (раньше висел `pre`-функцией на ZCity
+  хуке `organism`), стекло определяется и по surfaceprop, и по браш-сущности,
+  порог скорости снижен с 350 до 120, убран фильтр `DeltaTime >= 0.25`,
+  владелец ragdoll резолвится и через `NWEntity("ply")`.
+* **Осложнения от shrapnel-мини-игры**: C:U `BreakShrapnelGrasp()` добавляет
+  `state.bleed`/`state.pain` при рывке, но shadow перезаписывал их из организма
+  каждые 0.25 с. Теперь скачок детектируется и уходит в `ply.organism`:
+  боль, рана на конечности с осколком и **нарастающее кровотечение** (пока
+  осколок не извлечён).
+* **Рука в мини-игре шприца снова двигается, курсор не мигает**:
+  `InputMouseApply` больше не возвращает `true` (это убивало `gui.MousePos()`),
+  `+attack`/`+attack2` пропускаются к UI, курсор удерживается без проверки
+  `vgui.CursorVisible()`, а watchdog больше не роняет его между пакетами.
 
 Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
 и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.

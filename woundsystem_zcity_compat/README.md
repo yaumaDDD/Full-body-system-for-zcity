@@ -427,6 +427,46 @@ no-op (иначе отложенный таймер поднял бы игрок
 `WSZC.MinigameSessions[ply].frozenAngles` и форсирует их в своём `SetupMove`,
 поэтому модифицированный клиент тоже не крутит камеру.
 
+## Шрапнель в ragdoll, стекло, осложнения и ввод
+
+**Потеря при ragdoll.** C:U `InitPlayer()` выбрасывает `PlayerLimbs[ply]` и
+создаёт новую таблицу на `Fake` / `FakeUp` / `WoundSystem_SpawnSync`. Старый
+`PullShrapnel()` был односторонним (C:U → organism) и в этот момент записывал в
+`org.wszc_shrapnel` нули — осколки исчезали. `WSZC.SyncShrapnel()` теперь
+сравнивает ссылку на таблицу: если она новая, `WSZC.RestoreShrapnel()`
+восстанавливает осколки ИЗ `ply.organism` (создавая недостающий limb через
+`H.GetLimbState`), если та же — честно принимает результат извлечения из
+shrapnel-мини-игры. Хуки `Fake` / `FakeUp` / `HG_OnWakeOtrub`额外 переутверждают
+состояние на следующем кадре (дополнительно).
+
+**Стекло в ragdoll.** Раньше glass-обработчик висел `pre`-функцией на ZCity
+хуке `Ragdoll Collide / organism` и дублировал его фильтры урона
+(`speed >= 350`, `DeltaTime >= 0.25`) — лёгкое касание стекла рукой в
+fake-ragdoll до него просто не доходило. Теперь это отдельный хук
+`WSZC_GlassRagdoll`: порог 120, стекло определяется и по surfaceprop, и по
+браш-сущности (`func_breakable_surf`, `MAT_GLASS`, material «glass»), владелец
+ragdoll резолвится в т.ч. через `NWEntity("ply")`.
+
+**Осложнения shrapnel-мини-игры.** C:U `BreakShrapnelGrasp()` (рывок /
+повторное вдавливание осколка) добавляет `state.bleed` и `state.pain`, но наш
+`PushShadow` каждые 0.25 с перезаписывал их из `ply.organism`, поэтому
+кровотечения не было. Теперь shadow помнит, что сам записал
+(`_WSZCExpectedBleed/Pain`), и скачок на конечности с `state.shrapnel > 0`
+уходит в `WSZC.ApplyShrapnelComplication()`: `org.pain`, `org.bleed`, новая
+запись в `org.wounds` с boneName этой конечности (её увидит `LimbBleedMap`) и
+`org.wszc_shrapnel_irritation[limb]`. В `Org Think` irritation понемногу
+наращивает кровотечение и боль, пока осколок не вытащен; при
+`state.shrapnel == 0` счётчик сбрасывается.
+
+**Мини-игра шприца.** `InputMouseApply` с `return true` подавлял не только
+поворот камеры, но и `gui.MousePos()` — отсюда «рука не двигается» и мигающий
+курсор. Теперь он обнуляет только `CUserCmd` и возвращает `nil`, а
+`ViewAngles` фиксируют `CreateMove`/`SetupMove`. `+attack`/`+attack2`
+пропускаются к UI (клик нужен для захвата инструмента; выстрела всё равно не
+будет — `SetupMove` обнуляет кнопки). Watchdog курсора re-assert без проверки
+`vgui.CursorVisible()`, а `WSZC_MinigameClientWatch` больше не роняет курсор
+между сетевыми пакетами.
+
 ## Ограничения
 
 - Режим `authority 1` не обещает полной 1:1 vanilla-эквивалентности Organs+:
@@ -454,9 +494,9 @@ no-op (иначе отложенный таймер поднял бы игрок
 - Проверено синтаксически (`luaparser`, 10 файлов) и на заглушечном Lua-рантайме
  (authority-режим, inspect, мини-игры, шрапнель/`took=false`, адреналин,
  per-limb bleeding, full-screen clip, фильтр FX/крови, курсор, лок камеры и
- движения, источники шрапнели и reset-guard:
- `TEST_OK 11/11`, `TEST_OK 6/6`, `TEST_OK 20/20`, `TEST_OK 11/11`);
- на живом GMod-сервере не прогонялось.
+ движения, источники шрапнели, reset-guard, ragdoll/стекло/осложнения:
+ `TEST_OK 11/11`, `TEST_OK 6/6`, `TEST_OK 20/20`, `TEST_OK 11/11`,
+ `TEST_OK 7/7`); на живом GMod-сервере не прогонялось.
 
 ## Файлы
 

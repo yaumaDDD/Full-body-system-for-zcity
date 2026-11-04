@@ -276,6 +276,68 @@ local function LimbBleedMap(ply, org)
 end
 WSZC.LimbBleedMap = LimbBleedMap -- exported for diagnostics / headless tests
 
+---------------------------------------------------------------------------
+-- Shrapnel minigame complications (pain + growing bleeding)
+---------------------------------------------------------------------------
+-- C:U's BreakShrapnelGrasp() adds state.bleed (+0.4..1.0) and state.pain
+-- (+9..16) when the player yanks / re-impales a fragment.  Our PushShadow
+-- used to overwrite those values from ply.organism every 250 ms, so nothing
+-- ever bled.  Detect the unexpected jump and mirror it into the ZCity
+-- organism: a real wound on that limb plus a rising irritation counter.
+local COMPLICATION_BONES = {
+    head = "ValveBiped.Bip01_Head1", thorax = "ValveBiped.Bip01_Spine2",
+    abdomen = "ValveBiped.Bip01_Spine1",
+    arm_L = "ValveBiped.Bip01_L_UpperArm", forearm_L = "ValveBiped.Bip01_L_Forearm",
+    hand_L = "ValveBiped.Bip01_L_Hand",
+    arm_R = "ValveBiped.Bip01_R_UpperArm", forearm_R = "ValveBiped.Bip01_R_Forearm",
+    hand_R = "ValveBiped.Bip01_R_Hand",
+    thigh_L = "ValveBiped.Bip01_L_Thigh", crus_L = "ValveBiped.Bip01_L_Calf",
+    foot_L = "ValveBiped.Bip01_L_Foot",
+    thigh_R = "ValveBiped.Bip01_R_Thigh", crus_R = "ValveBiped.Bip01_R_Calf",
+    foot_R = "ValveBiped.Bip01_R_Foot",
+}
+
+function WSZC.ApplyShrapnelComplication(ply, org, limbId, bleedDelta, painDelta)
+    if not (IsValid(ply) and type(org) == "table") then return false end
+    local h = H()
+    local state = h and h.GetLimbState and h.GetLimbState(ply, limbId)
+    if type(state) ~= "table" or (tonumber(state.shrapnel) or 0) <= 0 then return false end
+
+    local now = CurTime and CurTime() or 0
+    -- One mistake can be observed by several shadow ticks; collapse them.
+    if (ply._WSZCLastComplication or 0) > (now - 0.4)
+        and ply._WSZCLastComplicationLimb == limbId then return false end
+    ply._WSZCLastComplication, ply._WSZCLastComplicationLimb = now, limbId
+
+    bleedDelta = math.max(tonumber(bleedDelta) or 0, 0.4)
+    painDelta = math.max(tonumber(painDelta) or 0, 8)
+
+    org.wszc_shrapnel_irritation = org.wszc_shrapnel_irritation or {}
+    local irritation = math.Clamp((tonumber(org.wszc_shrapnel_irritation[limbId]) or 0)
+        + bleedDelta, 0, 20)
+    org.wszc_shrapnel_irritation[limbId] = irritation
+
+    org.pain = math.Clamp((tonumber(org.pain) or 0) + painDelta * 0.8, 0, 1000)
+    org.bleed = math.Clamp((tonumber(org.bleed) or 0) + bleedDelta * 0.5, 0, 200)
+
+    -- A real ZCity wound entry on the injured limb: LimbBleedMap() then shows
+    -- the bleeding exactly there instead of on a random limb.
+    org.wounds = org.wounds or {}
+    -- ZCity clears wounds with `org.wounds[n] = nil`, so #org.wounds can point
+    -- into a hole.  Append after the highest numeric index instead.
+    local last = 0
+    for key in pairs(org.wounds) do
+        if type(key) == "number" and key > last then last = key end
+    end
+    local bone = COMPLICATION_BONES[limbId] or COMPLICATION_BONES[NormalizeLimb(limbId) or ""]
+        or "ValveBiped.Bip01_R_Hand"
+    org.wounds[last + 1] = {
+        math.Clamp(irritation * 1.2, 4, 24), nil, nil, bone, now,
+    }
+    Debug("shrapnel complication on %s: bleed +%.2f pain +%.1f", tostring(limbId), bleedDelta, painDelta)
+    return true
+end
+
 -- Resolve the player who owns a damaged player or fake ragdoll.
 local function OwnerOf(ent)
     if not IsValid(ent) then return nil end
@@ -283,6 +345,12 @@ local function OwnerOf(ent)
     local ragdollOwner = hg and hg.RagdollOwner
     if ragdollOwner then
         local ok, ply = pcall(ragdollOwner, ent)
+        if ok and IsValid(ply) and ply:IsPlayer() and ply:Alive() then return ply end
+    end
+    -- FakeRagdoll also stores the owner as an NW entity; some ZCity ragdolls
+    -- (collision proxies, death ragdolls) have no `ragdoll.ply` Lua field.
+    if ent.GetNWEntity then
+        local ok, ply = pcall(ent.GetNWEntity, ent, "ply")
         if ok and IsValid(ply) and ply:IsPlayer() and ply:Alive() then return ply end
     end
     return nil
@@ -358,15 +426,54 @@ function WSZC.AddShrapnel(ply, limbId, count, reason)
     return true
 end
 
--- Pull C:U's post-minigame value back into the organism shadow.  C:U writes
--- `state.shrapnel = CountRemainingPieces(session)` when a fragment is pulled.
-local function PullShrapnel(ply, org)
+--- Put the fragments back into C:U from the ZCity organism.
+--- C:U's InitPlayer() wipes PlayerLimbs[ply] on PlayerSpawn / ragdoll
+--- transitions.  Since `ply.organism` is authoritative, the fragments must
+--- survive that: "fell into a ragdoll and the shrapnel disappeared".
+function WSZC.RestoreShrapnel(ply)
+    if not (Authority() and IsValid(ply)) then return 0 end
+    local org = ply.organism
+    if type(org) ~= "table" or type(org.wszc_shrapnel) ~= "table" then return 0 end
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply)
+    if type(limbs) ~= "table" then return 0 end
+
+    local restored = 0
+    for limbId, value in pairs(org.wszc_shrapnel) do
+        local n = math.floor(tonumber(value) or 0)
+        if n > 0 then
+            local state = limbs[limbId]
+            if type(state) ~= "table" and h.GetLimbState then
+                -- InitPlayer() may have left an empty table for a frame.
+                local ok, created = pcall(h.GetLimbState, ply, limbId)
+                if ok then state = created end
+            end
+            if type(state) == "table" and math.floor(tonumber(state.shrapnel) or 0) ~= n then
+                state.shrapnel = math.Clamp(n, 0, MaxShrapnel())
+                if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
+                restored = restored + 1
+            end
+        end
+    end
+    ply._WSZCLimbsRef = limbs
+    return restored
+end
+
+--- Bidirectional sync.  A NEW PlayerLimbs table means C:U reset its limb
+--- state (ragdoll / spawn transition) and we must RESTORE from the organism,
+--- not pull the empty table back into it.  On the SAME table a lower value is
+--- a real extraction from the shrapnel minigame, so the organism follows C:U.
+local function SyncShrapnel(ply, org)
     local h = H()
     if not (h and h.GetLimbs) then return end
     local limbs = h.GetLimbs(ply)
     if type(limbs) ~= "table" then return end
     org.wszc_shrapnel = org.wszc_shrapnel or {}
     org.wszc_shrapnel_floor = org.wszc_shrapnel_floor or {}
+
+    if ply._WSZCLimbsRef ~= limbs then
+        WSZC.RestoreShrapnel(ply)
+    end
 
     for limbId, state in pairs(limbs) do
         if type(state) == "table" then
@@ -378,6 +485,20 @@ local function PullShrapnel(ply, org)
         end
     end
 end
+WSZC.SyncShrapnel = SyncShrapnel
+local PullShrapnel = SyncShrapnel -- keep the old internal name working
+
+-- ZCity's `hg.Fake` / `hg.FakeUp` fire when the character drops into / gets
+-- up from the unconscious ragdoll.  Re-assert the fragments immediately and
+-- once more after every ragdoll hook has run (C:U may reset limbs there).
+local function RestoreShrapnelSoon(ply)
+    if not (Authority() and IsValid(ply) and ply.IsPlayer and ply:IsPlayer()) then return end
+    timer.Simple(0, function() WSZC.RestoreShrapnel(ply) end)
+    timer.Simple(0.3, function() WSZC.RestoreShrapnel(ply) end)
+end
+hook.Add("Fake", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
+hook.Add("FakeUp", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
+hook.Add("HG_OnWakeOtrub", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
 
 ---------------------------------------------------------------------------
 -- Damage-derived shrapnel (gunshot / blast), moved out of C:U
@@ -679,21 +800,51 @@ local function InjectGlass(ply, limbId, bone)
     WSZC.AddShrapnel(ply, limbId, 1, "glass")
 end
 
--- Ragdoll Collide: a hand/foot phys object striking a glass surface.  ZCity's
--- own velocityDamage() uses data["TheirSurfaceProps"]; mirror that filter here
--- without touching the original function.  This hook runs before the wrapped
--- ZCity hook, in the same vanilla context.
+-- A collision counts as glass EITHER by surfaceprop OR by the brush entity
+-- itself.  In a fake ragdoll the hand/foot phys object often reports the
+-- default surfaceprop from the world side, so relying on TheirSurfaceProps
+-- alone made ragdoll glass hits register never.
+local function IsGlassCollision(data)
+    if util and util.GetSurfacePropName and data["TheirSurfaceProps"] ~= nil then
+        local ok, name = pcall(util.GetSurfacePropName, data["TheirSurfaceProps"])
+        if ok and GLASS_SURFACES[name] then return true end
+    end
+    local hit = data.HitEntity
+    if not IsValid(hit) then return false end
+    local ok, class = pcall(hit.GetClass, hit)
+    if not ok or type(class) ~= "string" then return false end
+    local lower = string.lower(class)
+    if lower == "func_breakable_surf" then return true end
+    if not string.find(lower, "break", 1, true) then return false end
+    if hit.GetMaterialType and hit:GetMaterialType() == (MAT_GLASS or 0) then return true end
+    if hit.GetBrushSurfaces then
+        local ok2, surfaces = pcall(hit.GetBrushSurfaces, hit)
+        if ok2 and type(surfaces) == "table" and surfaces[1] then
+            local ok3, mat = pcall(function()
+                return surfaces[1]:GetMaterial():GetName()
+            end)
+            if ok3 and type(mat) == "string" and string.find(string.lower(mat), "glass", 1, true) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- Ragdoll Collide: a hand/foot phys object striking glass while the player is
+-- in the fake ragdoll.  Registered as its own hook (not as a WrapHook `pre`)
+-- so it also fires when ZCity's "organism" hook is missing or re-registered.
 local function RagdollGlassShrapnel(ragdoll, data)
-    if not (cvGlass and cvGlass:GetBool()) then return end
+    if not (Authority() and cvGlass and cvGlass:GetBool()) then return end
     if not (IsValid(ragdoll) and type(data) == "table") then return end
     if ragdoll == data.HitEntity then return end
-    if (data.DeltaTime or 0) < 0.25 then return end
+    -- ZCity's own velocityDamage() uses DeltaTime >= 0.25 and speed >= 350,
+    -- but those are DAMAGE thresholds: a hand brushing glass must still lodge
+    -- a fragment.  Only require a real, non-trivial impact.
     local speed = (data.OurOldVelocity and data.TheirOldVelocity)
         and (data.OurOldVelocity - data.TheirOldVelocity):Length() or 0
-    if speed < 350 then return end
-    if not (util and util.GetSurfacePropName) then return end
-    local surfaceType = util.GetSurfacePropName(data["TheirSurfaceProps"])
-    if not GLASS_SURFACES[surfaceType] then return end
+    if speed < 120 then return end
+    if not IsGlassCollision(data) then return end
 
     local ply = OwnerOf(ragdoll)
     if not ply then return end
@@ -707,11 +858,22 @@ local function RagdollGlassShrapnel(ragdoll, data)
         end
     end
     local limbId = GlassLimbFromBone(ragdoll, bone)
-    if not limbId then
-        limbId = BoneLimb(ragdoll.GetBoneName and ragdoll:GetBoneName(0) or nil)
+    if not limbId and data.HitObject and data.HitObject.GetEntity then
+        local ok, hitEnt = pcall(data.HitObject.GetEntity, data.HitObject)
+        if ok and IsValid(hitEnt) and hitEnt ~= ragdoll then
+            limbId = GlassLimbFromBone(hitEnt, nil)
+        end
+    end
+    if not limbId and ragdoll.GetBoneName then
+        limbId = BoneLimb(ragdoll:GetBoneName(0))
     end
     InjectGlass(ply, limbId, bone)
 end
+
+-- Own hook name: GMod's hook table is iterated with pairs(), so a separate
+-- hook cannot be accidentally replaced by a third party re-registering
+-- "Ragdoll Collide"/"organism".  Re-assert on every InstallVanillaHooks().
+hook.Add("Ragdoll Collide", "WSZC_GlassRagdoll", RagdollGlassShrapnel)
 
 -- Standing player / ragdoll punching a breakable glass brush.  ZCity's own
 -- hook for this is commented out (sv_input.lua:441-446) and GlassShards
@@ -858,10 +1020,32 @@ local function PushShadow(ply, org)
     bodySet("adrenaline", math.Clamp((tonumber(org.adrenaline) or 0) * 20, 0, 100))
     bodySet("painkiller", math.Clamp((tonumber(org.painkiller) or 0) * 100, 0, 100))
 
+    -- Values WE last wrote into C:U.  Anything above them was added by a C:U
+    -- minigame (BreakShrapnelGrasp) and must be mirrored into the organism.
+    ply._WSZCExpectedBleed = ply._WSZCExpectedBleed or {}
+    ply._WSZCExpectedPain = ply._WSZCExpectedPain or {}
+
     local pain, bleed = math.max(tonumber(org.pain) or 0, 0), math.max(tonumber(org.bleed) or 0, 0)
     local woundMap = (cvLimbBleed and cvLimbBleed:GetBool()) and LimbBleedMap(ply, org) or nil
     for limbId, state in pairs(limbs) do
         if type(state) == "table" then
+            local cuBleed = math.max(tonumber(state.bleed) or 0, 0)
+            local cuPain = math.max(tonumber(state.pain) or 0, 0)
+            local expectedBleed = tonumber(ply._WSZCExpectedBleed[limbId]) or 0
+            local expectedPain = tonumber(ply._WSZCExpectedPain[limbId]) or 0
+            if (tonumber(state.shrapnel) or 0) > 0
+                and (cuBleed > expectedBleed + 0.05 or cuPain > expectedPain + 0.5) then
+                if WSZC.ApplyShrapnelComplication(ply, org, limbId,
+                        cuBleed - expectedBleed, cuPain - expectedPain) then
+                    -- organism changed: recompute the values for this limb
+                    pain = math.max(tonumber(org.pain) or 0, 0)
+                    bleed = math.max(tonumber(org.bleed) or 0, 0)
+                    if cvLimbBleed and cvLimbBleed:GetBool() then
+                        woundMap = LimbBleedMap(ply, org)
+                    end
+                end
+            end
+
             local map = LIMB_ORG[limbId]
             local limbChanged = false
             local function limbSet(key, value)
@@ -886,8 +1070,11 @@ local function PushShadow(ply, org)
             else
                 limbBleed = math.Clamp(bleed * 0.2, 0, 100)
             end
+            local limbPain = math.Clamp(pain * 0.12 + limbBleed * 0.35, 0, 100)
             limbSet("bleed", limbBleed)
-            limbSet("pain", math.Clamp(pain * 0.12 + limbBleed * 0.35, 0, 100))
+            limbSet("pain", limbPain)
+            ply._WSZCExpectedBleed[limbId] = limbBleed
+            ply._WSZCExpectedPain[limbId] = limbPain
             if map and map.dmg then
                 local dmg = math.Clamp(tonumber(org[map.dmg]) or 0, 0, 1)
                 limbSet("muscle", math.Clamp((1 - dmg) * 100, 0, 100))
@@ -1247,9 +1434,10 @@ local function InstallVanillaHooks()
     -- dmginfo:ScaleDamage(0.15), so PostEntityTakeDamage would otherwise see
     -- only 15% of the real blast damage and C:U's thresholds would never fire.
     WrapHook("EntityTakeDamage", "homigrad-damage", CaptureRawDamage)
-    -- Ragdoll collisions: lets the vanilla glass -> AddWoundManual path run and
-    -- adds glass shrapnel for hands/feet impacts (see below).
-    WrapHook("Ragdoll Collide", "organism", RagdollGlassShrapnel)
+    -- Ragdoll collisions: lets the vanilla glass -> AddWoundManual path run.
+    -- Glass shrapnel is a separate hook below so it always fires, even if the
+    -- ZCity hook was re-registered after us.
+    WrapHook("Ragdoll Collide", "organism")
     -- Standing-player PhysicsCollide callback calls hg.velocityDamage.
     local vd = hg and hg.velocityDamage
     if type(vd) == "function" and not wrappedFns[vd] then
@@ -1338,6 +1526,24 @@ function WSZC.InstallOrganismMode()
                     org[map.dmg] = floor
                 elseif n <= 0 then
                     org.wszc_shrapnel_floor[limbId] = nil
+                end
+            end
+        end
+
+        -- A botched shrapnel extraction keeps hurting and bleeding until the
+        -- fragment is removed.  The irritation clears itself when C:U's
+        -- extraction minigame empties state.shrapnel for that limb.
+        if type(org.wszc_shrapnel_irritation) == "table" then
+            local h = H()
+            local dt = math.Clamp(tonumber(dt) or 0.1, 0, 0.5)
+            for limbId, irritation in pairs(org.wszc_shrapnel_irritation) do
+                local state = h and h.GetLimbState and h.GetLimbState(owner, limbId)
+                if type(state) ~= "table" or (tonumber(state.shrapnel) or 0) <= 0 then
+                    org.wszc_shrapnel_irritation[limbId] = nil
+                else
+                    local inc = math.Clamp(tonumber(irritation) or 0, 0, 20) * dt * 0.06
+                    org.bleed = math.Clamp((tonumber(org.bleed) or 0) + inc, 0, 200)
+                    org.pain = math.Clamp((tonumber(org.pain) or 0) + inc * 0.5, 0, 1000)
                 end
             end
         end
