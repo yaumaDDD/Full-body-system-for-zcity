@@ -198,11 +198,43 @@ WSZC.CUHudFiltered = false
 -- hook's respawn input handling keeps working.
 WSZC.CUDeathVisualsHidden = false
 
+--- Materials that belong to the DOLL, its status icons and the shrapnel /
+--- dislocation action point.  The hidden regions below were sized for C:U's
+--- original 760 px square; the unitmenu doll is wider, so its left arm, feet
+--- and the "REMOVE SHRAPNEL" callout overlap them.  Hiding those draw calls
+--- produced the chopped-off doll from the live screenshots.  We remember the
+--- material set by surface.SetMaterial (see InstallMaterialTracker) and let
+--- these specific textures through the filter.  Everything else - the green
+--- scanner, UNI-HEALTH panel and the 5 inventory slots - stays hidden.
+local DOLL_DRAW_MARKERS = {
+    "wszc/unitmenu/limbs/", "wszc/unitmenu/status/",
+    "casunknown-images/middle/", "casunknown-images/outlines/",
+    "casunknown-images/icons/", "casunknown-images/screen/uipoint",
+}
+local function IsDollDrawMaterial(name)
+    if type(name) ~= "string" then return false end
+    local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
+    for i = 1, #DOLL_DRAW_MARKERS do
+        if lower:find(DOLL_DRAW_MARKERS[i], 1, true) then return true end
+    end
+    return false
+end
+WSZC.IsDollDrawMaterial = IsDollDrawMaterial
+
+local function MaterialName(mat)
+    if not mat or not mat.GetName then return nil end
+    local ok, name = pcall(mat.GetName, mat)
+    if ok and type(name) == "string" then return name end
+    return nil
+end
+WSZC.MaterialName = MaterialName
+
 --- Geometry copied from cl_health_gui.lua (WoundDollAndPanel, 1080p base).
 --- Everything is expressed in ScrH()/1080 so it follows the game's own scale.
 local function HiddenRegion(x, y, w, h)
     if WSZC.CUDeathVisualsHidden == true then return true end
     if not WSZC.CUHudFiltered then return false end
+    if IsDollDrawMaterial(WSZC._DrawMaterialName) then return false end
     if type(x) ~= "number" or type(y) ~= "number" then return false end
     w = tonumber(w) or 0
     h = tonumber(h) or 0
@@ -509,6 +541,9 @@ hook.Add("Think", "WSZC_CUInventoryLayout", function()
     local now = CurTime and CurTime() or 0
     if now < (WSZC.NextCUInventoryInstall or 0) then return end
     WSZC.NextCUInventoryInstall = now + 1
+    -- The material tracker must exist even when the hide convars are off: it
+    -- is what keeps the doll / status icons out of HiddenRegion().
+    WSZC.InstallMaterialTracker()
     if not (cvHideInventory:GetBool() or cvHideUnitPanel:GetBool()) then return end
     InstallDrawWrappers()
     -- If C:U's HUDPaint hook is missing/renamed, fall back to a whole-frame
@@ -542,7 +577,7 @@ end)
 
 local cvUnitmenuDoll = CreateClientConVar("zc_woundsystem_compat_unitmenu_doll", "1", true, false,
     "1 = rebuild the WoundView doll from the repository unitmenu limb layers")
-local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "0.28", true, false,
+local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "0.24", true, false,
     "Size of the unitmenu doll relative to C:U's dollScale (0.1 .. 0.8)", 0.1, 0.8)
 local cvHandanim = CreateClientConVar("zc_woundsystem_compat_handanim", "1", true, false,
     "1 = use the repository handanim frames instead of the 512x1260 C:U hand")
@@ -756,7 +791,35 @@ WSZC.ApplyUnitmenuIcons = ApplyUnitmenuIcons
 -- every hitbox) stay exactly as C:U computed them.
 ---------------------------------------------------------------------------
 local nativeHandInstalled, handSwap = false, false
+local materialTrackerInstalled = false
 local origSetMaterial, origRectRotated, origTexturedRect
+
+--- Installed unconditionally (not only when handanim is enabled): the HUD
+--- filter needs the current material to decide whether a draw call belongs to
+--- the doll or to the scanner.  C:U's SetGuiMaterial() calls surface.SetMaterial
+--- directly, so this one wrapper sees every UI texture.
+--- WSZC._OnSetMaterial is an optional hook used by the native hand override;
+--- it may return a replacement material.
+function WSZC.InstallMaterialTracker()
+    if materialTrackerInstalled then return true end
+    if type(surface) ~= "table" or type(surface.SetMaterial) ~= "function" then return false end
+    origSetMaterial = surface.SetMaterial
+    surface.SetMaterial = function(mat)
+        WSZC._DrawMaterialName = MaterialName(mat)
+        local name = WSZC._DrawMaterialName
+        if WSZC._OnSetMaterial then
+            local ok, repl = pcall(WSZC._OnSetMaterial, mat, name)
+            if ok and repl then
+                mat = repl
+                WSZC._DrawMaterialName = MaterialName(mat)
+            end
+        end
+        return origSetMaterial(mat)
+    end
+    materialTrackerInstalled = true
+    return true
+end
+local InstallMaterialTracker = WSZC.InstallMaterialTracker
 
 local function CUHandKind(mat)
     if not mat or not mat.GetName then return nil end
@@ -772,13 +835,12 @@ WSZC.CUHandKind = CUHandKind
 
 function WSZC.InstallNativeHandOverride()
     if nativeHandInstalled then return true end
-    if not (surface and surface.SetMaterial and surface.DrawTexturedRectRotated
-        and surface.DrawTexturedRect) then return false end
-    origSetMaterial = surface.SetMaterial
+    if not (surface and surface.DrawTexturedRectRotated and surface.DrawTexturedRect) then return false end
+    if not InstallMaterialTracker() then return false end
     origRectRotated = surface.DrawTexturedRectRotated
     origTexturedRect = surface.DrawTexturedRect
 
-    surface.SetMaterial = function(mat)
+    WSZC._OnSetMaterial = function(mat)
         handSwap = false
         if cvHandanim:GetBool() and UnitmenuHandMaterials()
             and WSZC.NativeMinigameActive and WSZC.NativeMinigameActive() then
@@ -787,11 +849,11 @@ function WSZC.InstallNativeHandOverride()
                 local repl = WSZC.UnitmenuHandMat(clicked)
                 if repl then
                     handSwap = true
-                    mat = repl
+                    return repl
                 end
             end
         end
-        return origSetMaterial(mat)
+        return nil
     end
 
     local function reshape(x, y, w, h)
@@ -827,6 +889,7 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     local now = CurTime and CurTime() or 0
     if now < (WSZC.NextUnitmenuInstall or 0) then return end
     WSZC.NextUnitmenuInstall = now + 1
+    WSZC.InstallMaterialTracker()
 
     if cvUnitmenuDoll:GetBool() then
         local mats = BuildUnitmenuMaterials()

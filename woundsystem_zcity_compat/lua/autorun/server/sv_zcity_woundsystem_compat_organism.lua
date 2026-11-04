@@ -1039,11 +1039,16 @@ hook.Add("PostEntityTakeDamage", "WSZC_AuthorityDamagePost", function(ent, dmgin
     WSZC.RawDamage[dmginfo] = nil
 end)
 
-hook.Add("PostEntityTakeDamage", "WSZC_GlassStrike", function(ent, dmginfo)
-    if not (Authority() and cvGlass and cvGlass:GetBool()) then return end
-    if not (IsValid(ent) and dmginfo) then return end
+--- Shared by BOTH damage hooks.  ZCity's fists (weapon_hands_sh.lua:1653)
+--- call Ent:TakeDamageInfo() on the glass brush; on some builds only
+--- EntityTakeDamage fires for a brush entity and PostEntityTakeDamage does
+--- not, which is why "punch glass -> no fragments" kept coming back.
+--- glassCooldown in InjectGlass de-duplicates the two paths.
+local function TryGlassStrike(ent, dmginfo)
+    if not (Authority() and cvGlass and cvGlass:GetBool()) then return false end
+    if not (IsValid(ent) and dmginfo) then return false end
     -- A player hit (already handled above) is never a glass brush entity.
-    if ent.organism then return end
+    if ent.organism then return false end
 
     local class = ent.GetClass and ent:GetClass() or ""
     local isGlass = false
@@ -1063,18 +1068,17 @@ hook.Add("PostEntityTakeDamage", "WSZC_GlassStrike", function(ent, dmginfo)
             end
         end
     end
-    if not isGlass then return end
+    if not isGlass then return false end
 
-    -- The inflictor is the hand/foot entity that hit the brush; ZCity gives it
-    -- an organism table.  Fall back to the attacker for weapon-based punches.
+    -- With fists the inflictor is the SWEP (no .organism) and the attacker is
+    -- the player.  With a fake ragdoll it can be the other way round.  Try
+    -- every candidate through OwnerOf instead of requiring .organism twice.
     local inflictor = dmginfo.GetInflictor and dmginfo:GetInflictor() or nil
     local attacker = dmginfo.GetAttacker and dmginfo:GetAttacker() or nil
-    local striker = (IsValid(inflictor) and inflictor.organism and inflictor)
-        or (IsValid(attacker) and attacker.organism and attacker) or nil
-    if not striker then return end
-
-    local ply = OwnerOf(striker)
-    if not ply then return end
+    local striker = (IsValid(inflictor) and inflictor.organism and inflictor) or attacker
+    local ply = OwnerOf(striker) or OwnerOf(attacker) or OwnerOf(inflictor)
+    if not ply then return false end
+    if not IsValid(striker) then striker = ply end
 
     local limbId
     local pos = dmginfo.GetDamagePosition and dmginfo:GetDamagePosition() or nil
@@ -1103,7 +1107,23 @@ hook.Add("PostEntityTakeDamage", "WSZC_GlassStrike", function(ent, dmginfo)
         limbId = GlassLimbFromBone(striker, 0)
     end
 
+    Debug("glass strike: ent=%s ply=%s limb=%s", tostring(ent), tostring(ply), tostring(limbId))
     InjectGlass(ply, limbId, 0)
+    return true
+end
+WSZC.TryGlassStrike = TryGlassStrike
+
+-- Post hook: canonical path, sees the damage after ZCity's own hooks.
+hook.Add("PostEntityTakeDamage", "WSZC_GlassStrike", function(ent, dmginfo)
+    TryGlassStrike(ent, dmginfo)
+end)
+
+-- Pre hook: brush entities (func_breakable_surf) do not always deliver
+-- PostEntityTakeDamage when ZCity's fists call TakeDamageInfo.  Returning nil
+-- never blocks vanilla damage; InjectGlass's 0.5 s cooldown de-duplicates.
+hook.Add("EntityTakeDamage", "WSZC_GlassStrikePre", function(ent, dmginfo)
+    TryGlassStrike(ent, dmginfo)
+    return nil
 end)
 
 ---------------------------------------------------------------------------

@@ -72,7 +72,7 @@
 Внешний вид куклы WoundView и руки мини-игр теперь берётся из архива
 `для переделывания интерфейса.zip`: 15 слоёв `zcity_delta/unitmenu/limbs`,
 иконки `status/*` и кадры `homigrad/handanim`. Управление: 
-`zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.28),
+`zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.24),
 `zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_handanim_scale` (0.55).
 Клавиши, хитбоксы лимбов и логика мини-игр не меняются.
 

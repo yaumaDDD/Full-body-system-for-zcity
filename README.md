@@ -206,7 +206,7 @@
   `handanim/hand.png` (ладонь) и `3_3.png` (кулак) вместо спрайта 512×1260,
   с pivot у кончиков пальцев и без поворота на 290°. Конвары:
   `zc_woundsystem_compat_unitmenu_doll 1`,
-  `zc_woundsystem_compat_unitmenu_scale 0.28`,
+  `zc_woundsystem_compat_unitmenu_scale 0.24`,
   `zc_woundsystem_compat_handanim 1`,
   `zc_woundsystem_compat_handanim_scale 0.55`. Исходные ZIP-аддоны не
   правятся; кадры `homigrad/handanim` теперь тоже лежат в самом коннекторе,
@@ -230,6 +230,54 @@
   фона в папки `dislocationminigame`, `shrapnelminigame`, `syringeminigame`
   плюс `hemothoraxfill_red`. Итог проверяется assert'ом: ни одного
   неразрешённого материала. Полный список с хэшами — `MATERIALS.sha256`.
+
+### По live-скриншотам: кукла, фильтр HUD, осколки от стекла
+
+Кукла из `unitmenu` шире родного квадрата C:U (760 px). `HiddenRegion()` —
+фильтр, который убирает зелёный сканер слева и 5 слотов инвентаря — гасил
+**любой** примитив в этих зонах, поэтому на скриншоте у куклы не было левой
+руки и нижней части ног, а иконки осколков и `REMOVE SHRAPNEL` /
+`FIX DISLOCATION` не рисовались. Исправлено:
+
+* `WSZC.InstallMaterialTracker()` оборачивает `surface.SetMaterial` (C:U
+  `SetGuiMaterial()` зовёт его напрямую) и запоминает текущий материал в
+  `WSZC._DrawMaterialName`. Устанавливается **всегда**, обоими Think-хуками,
+  даже при выключенных `hide_*` конварах.
+* `WSZC.IsDollDrawMaterial()` пропускает через фильтр лимбы
+  (`wszc/unitmenu/limbs/*`, родные `casunknown-images/middle|outlines/*`),
+  иконки статусов (`wszc/unitmenu/status/*`, `casunknown-images/icons/*`) и
+  `screen/uiPoint`. Всё остальное — сканер, `UNI-HEALTH`, слоты — по-прежнему
+  скрыто; `WSZC.CUDeathVisualsHidden` по-прежнему гасит весь экран смерти.
+* Размер куклы по умолчанию уменьшен `0.28 → 0.24`
+  (`zc_woundsystem_compat_unitmenu_scale`), чтобы она не заходила в зоны
+  слотов даже без трекера.
+* Нативный оверрайд руки теперь работает через тот же общий трекер
+  (`WSZC._OnSetMaterial`), без второго перехвата `surface.SetMaterial`.
+
+**Осколки от ударов кулаками по стеклу.** Кулаки ZCity
+(`weapon_hands_sh.lua:1653`) бьют браш `func_breakable_surf` через
+`TakeDamageInfo`, но `PostEntityTakeDamage` для браш-сущностей приходит не на
+всех сборках. Добавлен независимый `hook.Add("EntityTakeDamage",
+"WSZC_GlassStrikePre", ...)` с общей функцией `WSZC.TryGlassStrike()`;
+`return nil` никогда не блокирует ванильный урон, а 0.5-секундный
+`glassCooldown` убирает дубли, если сработали оба хука. Резолвинг игрока
+ослаблен: у SWEP-кулаков нет `.organism`, поэтому теперь пробуются
+`OwnerOf(striker) or OwnerOf(attacker) or OwnerOf(inflictor)`. Путь не зависит
+от `zc_woundsystem_compat_shrapnel_only_shotgun_blast` (тот фильтрует только
+пули/дробь). Диагностика: `zc_woundsystem_compat_organism_debug 1` → в консоль
+`[ZCity/CU compat] glass strike: ent=... ply=... limb=...`. Обязательные
+конвары: `zc_woundsystem_compat_shrapnel 1`,
+`zc_woundsystem_compat_glass_shrapnel 1`, `zc_woundsystem_compat_authority 1`.
+
+**Кровь hemogen не трогалась.** `project hemogen blood.zip` содержит 123 файла
+(`lua/` + `data_static/`) и **не содержит `materials/`**: аддон ссылается на
+`advancedblood/sprites/*` и `advancedblood/decals/*`, которых нет ни в одном
+архиве репозитория. Розово-чёрные квадраты на скриншоте — это ERROR-текстуры
+самого hemogen, а не компата. Ни один файл аддона, ни один его хук или конвар
+этой сборкой не изменён; compat к `advancedblood/*` не обращается. Чтобы их
+убрать, нужно либо докачать материалы hemogen (отдельный архив/Workshop),
+либо отключить аддон — скажите, какой вариант, и сделаю точечно, не трогая
+остальное.
 
 Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
 и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.

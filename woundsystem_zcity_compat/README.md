@@ -285,7 +285,7 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | `0.75` — размер НАТИВНЫХ мини-игр C:U (вправление, осколки, AED) относительно квадрата 760 px; диапазон `0.4..1.2`. Full-screen сюда не применяется. |
 | `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | `0.45` — множитель спрайта руки 512×1260 в мини-играх бинта/шприца; диапазон `0.2..1`. |
 | `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 слоёв `unitmenu/limbs` архива; `0` — родные спрайты C:U. |
-| `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.28` — размер куклы относительно `dollScale` C:U; диапазон `0.1..0.8`. |
+| `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.24` — размер куклы относительно `dollScale` C:U; диапазон `0.1..0.8`. |
 | `zc_woundsystem_compat_handanim` | этот аддон (client) | `1` — кадры `homigrad/handanim/hand.png` и `3_3.png` вместо руки 512×1260; `0` — родная рука C:U. |
 | `zc_woundsystem_compat_handanim_scale` | этот аддон (client) | `0.55` — размер реалистичной руки; диапазон `0.2..1.5`. |
 | `zc_woundsystem_compat_dislocation_start` | этот аддон (server) | `35` — стартовое смещение кости в мини-игре вправления (было 100); диапазон `10..100`. Меньше = кость на экране и меньше ударов. |
@@ -663,7 +663,9 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  `TEST_OK 21/21` (кукла из архива, `Limbs` upvalue, иконки статусов, кадры руки,
  нативный оверрайд, PNG/геометрия) и `TEST_OK 14/14` (647 материалов,
  покрытие всех 125 ссылок C:U Lua, алиасы регистра/переноса, .vtf/.vmt,
- зеркало в папку C:U, `MATERIALS.sha256`) — всего **130 тестов**); на живом GMod-сервере ассистентом не прогонялось.
+ зеркало в папку C:U, `MATERIALS.sha256`) и `TEST_OK 15/15` (фильтр куклы, трекер материалов, оба хука
+ стекла, hemogen не тронут) — всего **145 тестов**); на живом GMod-сервере
+ ассистентом не прогонялось.
  Пользовательские live-скриншоты после `3d7c793` и `e70bfb5` показали, что
  предыдущие headless-тесты не доказывали скрытие в реальном клиенте;
  исправления выше сделаны по ним, но собственной live-проверки не было.
@@ -695,6 +697,54 @@ camelCase-копий (архив в lowercase, Linux-клиент регистр
 статусов должны быть без розовых ERROR-квадратов; в консоли не должно быть
 `missing material`. Если ERROR остался, сначала убедитесь, что распакована
 именно эта сборка и клиент+сервер перезапущены.
+
+### По live-скриншотам: кукла, фильтр HUD, осколки от стекла
+
+Кукла из `unitmenu` шире родного квадрата C:U (760 px). `HiddenRegion()` —
+фильтр, который убирает зелёный сканер слева и 5 слотов инвентаря — гасил
+**любой** примитив в этих зонах, поэтому на скриншоте у куклы не было левой
+руки и нижней части ног, а иконки осколков и `REMOVE SHRAPNEL` /
+`FIX DISLOCATION` не рисовались. Исправлено:
+
+* `WSZC.InstallMaterialTracker()` оборачивает `surface.SetMaterial` (C:U
+  `SetGuiMaterial()` зовёт его напрямую) и запоминает текущий материал в
+  `WSZC._DrawMaterialName`. Устанавливается **всегда**, обоими Think-хуками,
+  даже при выключенных `hide_*` конварах.
+* `WSZC.IsDollDrawMaterial()` пропускает через фильтр лимбы
+  (`wszc/unitmenu/limbs/*`, родные `casunknown-images/middle|outlines/*`),
+  иконки статусов (`wszc/unitmenu/status/*`, `casunknown-images/icons/*`) и
+  `screen/uiPoint`. Всё остальное — сканер, `UNI-HEALTH`, слоты — по-прежнему
+  скрыто; `WSZC.CUDeathVisualsHidden` по-прежнему гасит весь экран смерти.
+* Размер куклы по умолчанию уменьшен `0.28 → 0.24`
+  (`zc_woundsystem_compat_unitmenu_scale`), чтобы она не заходила в зоны
+  слотов даже без трекера.
+* Нативный оверрайд руки теперь работает через тот же общий трекер
+  (`WSZC._OnSetMaterial`), без второго перехвата `surface.SetMaterial`.
+
+**Осколки от ударов кулаками по стеклу.** Кулаки ZCity
+(`weapon_hands_sh.lua:1653`) бьют браш `func_breakable_surf` через
+`TakeDamageInfo`, но `PostEntityTakeDamage` для браш-сущностей приходит не на
+всех сборках. Добавлен независимый `hook.Add("EntityTakeDamage",
+"WSZC_GlassStrikePre", ...)` с общей функцией `WSZC.TryGlassStrike()`;
+`return nil` никогда не блокирует ванильный урон, а 0.5-секундный
+`glassCooldown` убирает дубли, если сработали оба хука. Резолвинг игрока
+ослаблен: у SWEP-кулаков нет `.organism`, поэтому теперь пробуются
+`OwnerOf(striker) or OwnerOf(attacker) or OwnerOf(inflictor)`. Путь не зависит
+от `zc_woundsystem_compat_shrapnel_only_shotgun_blast` (тот фильтрует только
+пули/дробь). Диагностика: `zc_woundsystem_compat_organism_debug 1` → в консоль
+`[ZCity/CU compat] glass strike: ent=... ply=... limb=...`. Обязательные
+конвары: `zc_woundsystem_compat_shrapnel 1`,
+`zc_woundsystem_compat_glass_shrapnel 1`, `zc_woundsystem_compat_authority 1`.
+
+**Кровь hemogen не трогалась.** `project hemogen blood.zip` содержит 123 файла
+(`lua/` + `data_static/`) и **не содержит `materials/`**: аддон ссылается на
+`advancedblood/sprites/*` и `advancedblood/decals/*`, которых нет ни в одном
+архиве репозитория. Розово-чёрные квадраты на скриншоте — это ERROR-текстуры
+самого hemogen, а не компата. Ни один файл аддона, ни один его хук или конвар
+этой сборкой не изменён; compat к `advancedblood/*` не обращается. Чтобы их
+убрать, нужно либо докачать материалы hemogen (отдельный архив/Workshop),
+либо отключить аддон — скажите, какой вариант, и сделаю точечно, не трогая
+остальное.
 
 ## Файлы
 
