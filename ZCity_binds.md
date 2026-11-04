@@ -84,11 +84,28 @@
 Рука мини-игры берётся из архива, но без инерции C:U:
 `zc_woundsystem_compat_hand_pin_cursor` (1), поворот `0`, точка захвата
 `..._hand_pivot_x 0.16` / `..._hand_pivot_y 0.45`, системный курсор
-скрыт (`..._hide_minigame_cursor 1`). Кукла — тёмно-шиферный силуэт
-с тонкими линиями суставов и без белой обводки
-(`..._unitmenu_tint 1`). Тёмная подложка WoundView отключена
-(`..._hide_woundview_backdrop 1`); иконки и статус-надписи оставлены
-как есть. Клавиши, хитбоксы лимбов и логика мини-игр не меняются.
+скрыт (`..._hide_minigame_cursor 1`). Кукла расставлена по приложенному
+эталонному фото в **человеческие пропорции** (`HUMAN_LAYOUT`): маленькая голова,
+узкий торс, плечи на уровне рук, ноги не короче головы+торса. Цвет оставлен
+прежним тёмно-шиферным `(42,56,60)`, **белая обводка возвращена** (белое кольцо
+`MaxFilter(7)` в каждом `_edge.png`), тонкие зазоры суставов сохранены.
+`..._unitmenu_tint 1` ставит белый `SetDrawColor` только для `*_fill.png`, а
+`*_edge.png` остаётся под штатным `finalOutline` C:U — **реакция на наведение
+не изменена**. Тёмная подложка WoundView отключена
+(`..._hide_woundview_backdrop 1`); иконки и статус-надписи оставлены как есть.
+Клавиши, хитбоксы лимбов и логика мини-игр не меняются.
+
+Лишний текст мини-игр убран без правки чужих файлов:
+`zc_woundsystem_compat_hide_minigame_text 1` (по умолчанию) через
+`WSZC.InstallMinigameTextFilter()` обнуляет `title/value/guide/panelAlpha` в
+`Clip.DrawHeader` (иконка мини-игры остаётся), отключает `Clip.DrawExitGuide`
+(`Press RMB/ESC to exit`) и `Clip.DrawBackdrop`, точечно фильтрует только
+chrome-шрифты (`RetroTooltipTitle*`, `RetroTooltipDesc*`,
+`RetroMinigameGuide*`) и убирает растянутый чёрный фон
+`minigameshrapnel.png`. Уведомления ZCity (`BerserkFont`, `HuyFont`,
+`ZB_ProotOSMedium`), статус AED (`WoundSystemAEDStatus`), красный death-текст,
+капли, белые иконки переломов, осколки и рука **не подавляются**. `0` — вернуть
+исходный текст и панели.
 
 Все материалы интерфейса (647 файлов: `casunknown-images/*`, `woundsystem/*`,
 лимбы C:U, кадры руки, .vtf/.vmt) теперь лежат в

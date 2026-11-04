@@ -6,9 +6,12 @@ space, so this one is committed.  It checks the shipped files, not a transient
 build directory:
 
   * static markers for every previous live-screenshot fix,
+  * the human-proportioned doll: slate fill, ORIGINAL white per-limb outline,
+    thin joint gaps, and C:U's untouched hover colour on the outline,
+  * minigame text is removed by a font-scoped filter only, so ZCity
+    notifications / AED status labels / death text / icons all survive,
   * runtime behaviour of the HUD filter, full-screen minigames, hand pivot and
     cursor hiding (lupa / LuaRuntime; skipped if lupa is unavailable),
-  * the generated doll PNGs really form ONE seam-free silhouette (Pillow),
   * both ZIPs, the 647-material mirror and MANIFEST sha256.
 
 Usage: python3 tools/tests/test_wszc_regression.py
@@ -54,13 +57,21 @@ layout_s = LAYOUT.read_text(encoding='utf-8')
 organism_s = ORGANISM.read_text(encoding='utf-8')
 generator_s = src('tools/build_unitmenu_materials.py')
 readme_s = src('README.md')
+install_ru_s = src('INSTALL_RU.md')
+binds_s = src('ZCity_binds.md')
+compat_readme_s = src('woundsystem_zcity_compat/README.md')
+source_index_s = src('woundsystem_zcity_compat/SOURCE_INDEX.md')
+all_docs = '\n'.join((readme_s, install_ru_s, binds_s,
+                      compat_readme_s, source_index_s))
 
 check('S01 hidden-region filter is split into raw + whitelisted',
       'HiddenRegionRaw' in layout_s and 'WSZC.CUHudHiddenRegionRaw' in layout_s)
 check('S02 doll / status / uiPoint materials are whitelisted',
       'DOLL_DRAW_MARKERS' in layout_s and 'IsDollDrawMaterial' in layout_s)
-check('S03 material tracker installed by every Think path',
-      'InstallMaterialTracker' in layout_s and layout_s.count('WSZC.InstallMaterialTracker()') >= 2)
+check('S03 material tracker + text filter installed by Think paths',
+      'InstallMaterialTracker' in layout_s
+      and layout_s.count('WSZC.InstallMaterialTracker()') >= 2
+      and layout_s.count('WSZC.InstallMinigameTextFilter()') >= 1)
 check('S04 death-screen suppression keeps top priority',
       'if WSZC.CUDeathVisualsHidden == true then return true end' in layout_s)
 check('S05 all minigames can be full-screen',
@@ -84,19 +95,30 @@ check('S11 reset keeps only the down structure and clears sprint penalties',
 check('S12 hemogen blood is explicitly untouched',
       'advancedblood/' not in ''.join(
           p.read_text(encoding='utf-8') for p in CONN.rglob('*.lua')))
-check('S13 generator emits slate fills and transparent outlines, no white ring',
-      'DOLL_RGB' in generator_s and 'MinFilter(JOINT_ERODE)' in generator_s
-      and 'transparent sprite' in generator_s
-      and 'MaxFilter(15)' not in generator_s)
-check('S14 docs describe the seamless doll, hand pivot and hidden cursor',
-      'белых шв' in readme_s or 'белыми швами' in readme_s)
+check('S13 generator: human layout, slate fill, ORIGINAL white per-limb ring',
+      'HUMAN_LAYOUT' in generator_s
+      and 'DOLL_RGB = (42, 56, 60)' in generator_s
+      and 'MinFilter(JOINT_ERODE)' in generator_s
+      and 'MaxFilter(OUTLINE_RING)' in generator_s
+      and 'transparent sprite' not in generator_s
+      and 'MaxFilter(15)' not in generator_s
+      and '255 if p > 96 else 0' in generator_s)
+check('S14 docs describe human proportions, restored outline, hover, no minigame text',
+      'человеческ' in all_docs.lower()
+      and 'бел' in all_docs.lower() and 'обводк' in all_docs.lower()
+      and 'наведен' in all_docs.lower()
+      and 'hide_minigame_text' in all_docs
+      and 'без белой обводки' not in all_docs
+      and 'полностью прозрачный `_edge`' not in all_docs)
 check('S23 WoundView dark backdrop is suppressed only while the HUD is open',
       'zc_woundsystem_compat_hide_woundview_backdrop' in layout_s
       and 'WoundSystemHealthHUDOpen == true' in layout_s)
-check('S24 limb sprites get a white tint so slate does not render black',
+check('S24 white tint is for *_fill.png ONLY (outline hover stays C:U-owned)',
       'zc_woundsystem_compat_unitmenu_tint' in layout_s
       and 'origSetDrawColor(255, 255, 255, a or 255)' in layout_s
-      and 'IsDollLimbMaterial' in layout_s)
+      and 'IsDollLimbMaterial' in layout_s
+      and 'lower:find("_fill", 1, true)' in layout_s
+      and 'DollMiddleKind' not in layout_s)
 check('S25 archive hand is pinned to the real cursor (state + draw)',
       'zc_woundsystem_compat_hand_pin_cursor' in layout_s
       and 'PinNativeHandToCursor' in layout_s
@@ -105,6 +127,48 @@ check('S26 archive hand stays default; status icons/texts are left alone',
       '"zc_woundsystem_compat_handanim", "1"' in layout_s
       and 'HGNotificationsThink' not in layout_s
       and 'SetCursor, panel, "blank"' in layout_s)
+check('S27 the rejected native-doll experiment is fully rolled back',
+      'cvNativeDoll' not in layout_s
+      and 'native_doll' not in layout_s
+      and 'DollMiddleKind' not in layout_s
+      and '"native"' not in layout_s)
+check('S28 minigame text convar defaults on, filter is shared by all games',
+      '"zc_woundsystem_compat_hide_minigame_text", "1"' in layout_s
+      and 'function WSZC.InstallMinigameTextFilter()' in layout_s
+      and 'MINIGAME_TEXT_BASES' in layout_s)
+check('S29 font filter is scoped to minigame CHROME fonts only',
+      'function WSZC.IsMinigameTextFont(font)' in layout_s
+      and 'font:match("^(.-)_%d+$")' in layout_s
+      and 'WSZC.MinigameTextHidden() and WSZC.IsMinigameTextFont(font)' in layout_s
+      and 'WoundSystemAEDStatus = true' not in layout_s
+      and 'BerserkFont = true' not in layout_s
+      and 'ZB_ProotOSMedium = true' not in layout_s)
+check('S30 DrawHeader keeps the icon but blanks text + top bar',
+      'clip._WSZCOrigDrawHeader' in layout_s
+      and 'clean.title, clean.value, clean.guide' in layout_s
+      and 'clean.panelAlpha = 0' in layout_s
+      and 'clip["_WSZCOrig" .. name] = orig' in layout_s
+      and '{"DrawExitGuide", "DrawBackdrop"}' in layout_s)
+check('S31 black minigame board is suppressed by material name only',
+      'MINIGAME_BOARD_MARKER = "minigameshrapnel"' in layout_s
+      and 'function WSZC.IsMinigameBoardMaterial(name)' in layout_s
+      and 'WSZC.IsMinigameBoardMaterial(WSZC._DrawMaterialName)' in layout_s)
+check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
+      'function WSZC.FindCULimbs' not in layout_s
+      and 'local function FindCULimbs()' in layout_s
+      and 'cachedCULimbs' in layout_s
+      and 'WSZC.ClearCULimbsCache' in layout_s
+      and 'hook.Add("PreDrawHUD", "WSZC_UnitmenuDollRetry"' in layout_s
+      and 'HUDPaintBackground' in layout_s)
+check('S33 HUMAN_LAYOUT has human proportions and symmetric pairs',
+      "'thigh_R':   (695, 922" in generator_s
+      and "'crus_R':    (695, 1168" in generator_s
+      and "'head':      (750, 190" in generator_s
+      and "'arm_R':     (530, 413" in generator_s
+      and "'arm_L':     (970, 413" in generator_s)
+check('S34 docs no longer claim the rejected transparent-edge build',
+      'без белой обводки' not in all_docs
+      and 'прозрачный `_edge`' not in all_docs)
 
 # Lua syntax (luaparser is optional).
 try:
@@ -141,6 +205,7 @@ try:
     limb_dir = CONN / 'materials/wszc/unitmenu/limbs'
     body = Image.new('L', (1500, 1500), 0)
     edges = Image.new('L', (1500, 1500), 0)
+    edge_boxes, edge_white = 0, 0
     for limb, (cx, cy, w, h) in geom.items():
         cx, cy, w, h = float(cx), float(cy), int(w), int(h)
         box = (round(cx - w / 2), round(cy - h / 2))
@@ -148,34 +213,56 @@ try:
         edge = Image.open(limb_dir / (limb + '_edge.png')).convert('RGBA')
         assert fill.size == (w, h) and edge.size == (w, h), (limb, fill.size, edge.size, w, h)
         fa, ea = fill.getchannel('A'), edge.getchannel('A')
+        if ea.getbbox() is not None:
+            edge_boxes += 1
+        ep = edge.load()
+        for yy in range(0, h, 3):
+            for xx in range(0, w, 3):
+                px = ep[xx, yy]
+                if px[3] > 200 and px[:3] == (255, 255, 255):
+                    edge_white += 1
         flayer, elayer = Image.new('L', (1500, 1500), 0), Image.new('L', (1500, 1500), 0)
         flayer.paste(fa, box)
         elayer.paste(ea, box)
         body = ImageChops.lighter(body, flayer)
         edges = ImageChops.lighter(edges, elayer)
-    mask = body.point(lambda p: 255 if p > 127 else 0)
-    check('S17 NO white outline: every _edge.png is fully transparent',
-          edges.getbbox() is None)
+    check('S17 ORIGINAL white outline restored: 15 opaque white _edge.png',
+          edge_boxes == 15 and edge_white > 100 and edges.getbbox() is not None)
     thorax = Image.open(limb_dir / 'thorax_fill.png').convert('RGBA')
     r, g, b, a = thorax.getpixel((thorax.width // 2, thorax.height // 2))
-    check('S18 limbs are dark slate, not pure black',
+    check('S18 limbs keep the existing dark slate, not pure black',
           a > 200 and (r, g, b) == (42, 56, 60))
-    # Thin transparent joint lines: a transparent pixel with opaque silhouette
-    # 8 px above AND below it is a seam, not the outer background.
+    # Thin transparent joint gaps between neighbouring fills.  The white
+    # outline ring is a SEPARATE sprite, so the fill mask still shows seams.
+    mask = body.point(lambda p: 255 if p > 127 else 0)
     px = mask.load()
     seam_pixels = 0
     for y in range(170, 1470, 2):
         for x in range(130, 1340, 2):
             if px[x, y] == 0 and y > 8 and y < 1492 and px[x, y - 8] > 127 and px[x, y + 8] > 127:
                 seam_pixels += 1
-    check('S19 thin joint lines are present (%d px)' % seam_pixels, seam_pixels > 20)
+    check('S19 thin joint gaps are present (%d px)' % seam_pixels, seam_pixels > 20)
+    # Human proportions in the generated Lua geometry.
+    g = {k: tuple(float(v) for v in vals) for k, vals in geom.items()}
+    head_top = g['head'][1] - g['head'][3] / 2
+    torso_bottom = g['abdomen'][1] + g['abdomen'][3] / 2
+    leg_top = g['thigh_R'][1] - g['thigh_R'][3] / 2
+    leg_bottom = g['foot_R'][1] + g['foot_R'][3] / 2
+    torso_h, leg_h = torso_bottom - head_top, leg_bottom - leg_top
+    check('S20 legs are at least as long as head+torso (human proportions)',
+          leg_h >= 0.85 * torso_h
+          and g['thorax'][2] > g['head'][2]
+          and g['thigh_R'][2] < g['thorax'][2]
+          and abs(g['arm_R'][0] + g['arm_L'][0] - 1500) < 1
+          and abs(g['thigh_R'][0] + g['thigh_L'][0] - 1500) < 1
+          and abs(g['foot_R'][1] - g['foot_L'][1]) < 1)
     mats = [p for p in (CONN / 'materials').rglob('*') if p.is_file()]
-    check('S20 connector ships 647 UI materials', len(mats) == 647)
+    check('S21 connector ships 647 UI materials', len(mats) == 647)
     checksums = (CONN / 'MATERIALS.sha256').read_text(encoding='utf-8').splitlines()
-    check('S21 MATERIALS.sha256 has 614 entries',
+    check('S22 MATERIALS.sha256 has 614 source entries',
           len([l for l in checksums if l.strip() and not l.startswith('#')]) == 614)
 except ImportError:
-    print('SKIP S17-S21 Pillow unavailable')
+    print('SKIP S17-S22 Pillow unavailable')
 
 # ------------------------------------------------------------------- ZIPs ---
 def validate_zips():
@@ -200,13 +287,16 @@ def validate_zips():
     shas = re.findall(r'woundsystem_zcity_compat/lua/[^\s]+\.lua\s+([0-9a-f]{64})', manifest)
     assert len(shas) == 11
     assert all(hashlib.sha256(d).hexdigest() in shas for r, d in conn_files.items() if r.endswith('.lua'))
-    assert 'HandRectForCursor' in full['garrysmod/addons/woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua'].decode('utf-8')
+    shipped_layout = full['garrysmod/addons/woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua'].decode('utf-8')
+    assert 'HandRectForCursor' in shipped_layout
+    assert 'WSZC.InstallMinigameTextFilter()' in shipped_layout
+    assert 'IsMinigameBoardMaterial' in shipped_layout
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
     assert len(full) == 2765
     return True
 
 
-check_raises_free('S22 FULL_ZIP_OK / COMPAT_ZIP_OK / MANIFEST_OK / MIRROR_OK', validate_zips)
+check_raises_free('S35 FULL_ZIP_OK / COMPAT_ZIP_OK / MANIFEST_OK / MIRROR_OK', validate_zips)
 
 # --------------------------------------------------------------- runtime ----
 try:
@@ -261,15 +351,20 @@ WoundSystemHealthHUDOpen = false
 input = { IsMouseDown = function() return false end, IsKeyDown = function() return false end }
 net = { Receive = function() end, Start = function() end, SendToServer = function() end }
 MOUSE_LEFT, MOUSE_RIGHT, KEY_ESCAPE = 107, 108, 70
+clipCalls, textCalls = {}, {}
 WoundSystem = { MinigameClip = {
                     Scale = function() return 1000 / 1080 end,
                     GetRect = function() return 260, 40, 760, 760, 18 end,
                     Begin = function() return false end, End = function() end,
-                    DrawExitGuide = function() end },
+                    DrawHeader = function(d) table.insert(clipCalls, { kind = "header", d = d }) end,
+                    DrawExitGuide = function() table.insert(clipCalls, { kind = "exit" }) end,
+                    DrawBackdrop = function(d) table.insert(clipCalls, { kind = "backdrop" }) end },
                 Client = { RequestInventoryMove = function() end }, HealthGUI = {} }
 WoundSystemHealthHUDOpen = false
 WoundSystemInventorySlots, WoundSystemDragState, WoundSystemWorldDrag = {}, {}, {}
-draw = { SimpleText = function() end, SimpleTextOutlined = function() end,
+draw = { SimpleText = function(t, f) table.insert(textCalls, { t = t, f = f }) end,
+         SimpleTextOutlined = function(t, f) table.insert(textCalls, { t = t, f = f }) end,
+         DrawText = function(t, f) table.insert(textCalls, { t = t, f = f }) end,
          RoundedBox = function() end }
 Color = function(r, g, b, a) return { r = r, g = g, b = b, a = a } end
 surfaceCalls = {}
@@ -319,7 +414,7 @@ WSZC = { WSZCMinigameActive = function() return false end }
     hook._t["Think"]["WSZC_CUInventoryLayout"]()
     hook._t["Think"]["WSZC_FullscreenClipInit"]()
     return WSZC.InstallMaterialTracker() and WSZC.ApplyFullscreenClip()
-       and WSZC.InstallNativeHandOverride()
+       and WSZC.InstallNativeHandOverride() and WSZC.InstallMinigameTextFilter()
 end)()
 ''')
 
@@ -481,14 +576,19 @@ end)()
        and convars["zc_woundsystem_compat_hand_pivot_x"]._v == "0.16"
        and convars["zc_woundsystem_compat_hand_pivot_y"]._v == "0.45"
        and convars["zc_woundsystem_compat_unitmenu_doll"]._v == "1"
+       and convars["zc_woundsystem_compat_hide_minigame_text"]._v == "1"
 end)()
 ''')
 
-    rt('R16 geometry table has all 15 limbs', '''
+    rt('R16 geometry table has 15 human-proportioned limbs', '''
 (function()
     local n = 0
     for _ in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do n = n + 1 end
-    return n == 15 and WSZC_UNITMENU_LIMB_GEOMETRY.head.w > 0
+    local g = WSZC_UNITMENU_LIMB_GEOMETRY
+    return n == 15 and g.head.cy < g.thorax.cy and g.thorax.cy < g.thigh_R.cy
+       and g.thigh_R.cy < g.crus_R.cy and g.crus_R.cy < g.foot_R.cy
+       and g.thorax.w > g.head.w and g.thigh_R.w < g.thorax.w
+       and g.arm_R.cx + g.arm_L.cx == 1500
 end)()
 ''')
 
@@ -510,23 +610,24 @@ end)()
 end)()
 ''')
 
-    rt('R18 limb draw colour forced white, other materials untouched', '''
+    rt('R18 *_fill tinted white; *_edge keeps C:U hover colour; icons untouched', '''
 (function()
     WSZC.InstallMaterialTracker()
     surfaceCalls = {}
     surface.SetMaterial(Material("wszc/unitmenu/limbs/head_fill.png"))
     surface.SetDrawColor(0, 0, 0, 255)
+    surface.SetMaterial(Material("wszc/unitmenu/limbs/head_edge.png"))
+    surface.SetDrawColor(60, 70, 80, 255)
     surface.SetMaterial(Material("casunknown-images/icons/fracturedbone.png"))
     surface.SetDrawColor(12, 34, 56, 255)
-    local first, second
+    local cols = {}
     for _, c in ipairs(surfaceCalls) do
-        if c.kind == "color" then
-            if not first then first = c else second = c end
-        end
+        if c.kind == "color" then cols[#cols + 1] = c end
     end
-    return first ~= nil and second ~= nil
-       and first.r == 255 and first.g == 255 and first.b == 255 and first.a == 255
-       and second.r == 12 and second.g == 34 and second.b == 56
+    return #cols == 3
+       and cols[1].r == 255 and cols[1].g == 255 and cols[1].b == 255
+       and cols[2].r == 60 and cols[2].g == 70 and cols[2].b == 80
+       and cols[3].r == 12 and cols[3].g == 34 and cols[3].b == 56
 end)()
 ''')
 
@@ -549,7 +650,6 @@ end)()
 end)()
 ''')
 
-
     rt('R20 hand_pin_cursor 0 restores C:U\'s own hand position', '''
 (function()
     convars["zc_woundsystem_compat_hand_pin_cursor"]._v = "0"
@@ -563,13 +663,163 @@ end)()
 end)()
 ''')
 
-    rt('R21 new defaults: archive hand, pinned, hidden backdrop, slate tint', '''
+    rt('R21 defaults: archive hand, pinned, hidden backdrop, slate fill, no minigame text', '''
 (function()
     return convars["zc_woundsystem_compat_handanim"]._v == "1"
        and convars["zc_woundsystem_compat_hand_pin_cursor"]._v == "1"
        and convars["zc_woundsystem_compat_hide_woundview_backdrop"]._v == "1"
        and convars["zc_woundsystem_compat_unitmenu_tint"]._v == "1"
        and convars["zc_woundsystem_compat_hide_minigame_cursor"]._v == "1"
+       and convars["zc_woundsystem_compat_hide_minigame_text"]._v == "1"
+end)()
+''')
+
+    rt('R22 IsMinigameTextFont matches chrome fonts + _scale suffix only', '''
+(function()
+    return WSZC.IsMinigameTextFont("RetroTooltipTitle") == true
+       and WSZC.IsMinigameTextFont("RetroTooltipTitle_150") == true
+       and WSZC.IsMinigameTextFont("RetroMinigameGuide_200") == true
+       and WSZC.IsMinigameTextFont("RetroTooltipDesc") == true
+       and WSZC.IsMinigameTextFont("WoundSystemAEDStatus") == false
+       and WSZC.IsMinigameTextFont("BerserkFont") == false
+       and WSZC.IsMinigameTextFont("HuyFont") == false
+       and WSZC.IsMinigameTextFont("ZB_ProotOSMedium") == false
+       and WSZC.IsMinigameTextFont(nil) == false
+end)()
+''')
+
+    rt('R23 MinigameTextHidden is true only with convar AND an active game', '''
+(function()
+    local outside = WSZC.MinigameTextHidden() == false
+    WoundSystemShrapnelMinigame = { active = true }
+    local inside = WSZC.MinigameTextHidden() == true
+    convars["zc_woundsystem_compat_hide_minigame_text"]._v = "0"
+    local off = WSZC.MinigameTextHidden() == false
+    convars["zc_woundsystem_compat_hide_minigame_text"]._v = "1"
+    WoundSystemShrapnelMinigame = { active = false }
+    return outside and inside and off
+end)()
+''')
+
+    rt('R24 DrawHeader blanks text/bar but KEEPS the icon; exit + backdrop are no-ops', '''
+(function()
+    WSZC.InstallMinigameTextFilter()
+    clipCalls = {}
+    local icon = Material("casunknown-images/icons/shrapnel.png")
+    WoundSystem.MinigameClip.DrawHeader({
+        title = "Shrapnel extraction (1/5)", value = "1/5",
+        guide = "Pull the shrapnel out slowly.", panelAlpha = 200, mat = icon })
+    WoundSystem.MinigameClip.DrawExitGuide()
+    WoundSystem.MinigameClip.DrawBackdrop({ alpha = 200 })
+    local hdr = clipCalls[1]
+    local kept = hdr and hdr.kind == "header" and hdr.d.title == ""
+        and hdr.d.value == "" and hdr.d.guide == "" and hdr.d.panelAlpha == 0
+        and hdr.d.mat == icon
+    local noChrome = #clipCalls == 1
+    -- convar 0 restores all three original functions verbatim
+    convars["zc_woundsystem_compat_hide_minigame_text"]._v = "0"
+    clipCalls = {}
+    WoundSystem.MinigameClip.DrawExitGuide()
+    WoundSystem.MinigameClip.DrawBackdrop({ alpha = 200 })
+    local restored = #clipCalls == 2 and clipCalls[1].kind == "exit"
+        and clipCalls[2].kind == "backdrop"
+    convars["zc_woundsystem_compat_hide_minigame_text"]._v = "1"
+    return kept and noChrome and restored
+end)()
+''')
+
+    rt('R25 ZCity notification / AED status text survives, chrome text is suppressed', '''
+(function()
+    WSZC.InstallMinigameTextFilter()
+    WoundSystemShrapnelMinigame = { active = true }
+    textCalls = {}
+    draw.SimpleText("Fuck, I just puked blood", "BerserkFont", 10, 10, Color(255,0,0))
+    draw.SimpleText("ANALYZING...", "WoundSystemAEDStatus", 10, 20, Color(255,255,255))
+    draw.SimpleText("HP 68%", "ZB_ProotOSMedium", 10, 30, Color(255,255,255))
+    draw.SimpleText("Shrapnel extraction", "RetroTooltipTitle_150", 10, 40, Color(255,255,255))
+    draw.SimpleTextOutlined("Press RMB/ESC to exit", "RetroTooltipTitle", 10, 50, Color(255,255,255))
+    WoundSystemShrapnelMinigame = { active = false }
+    local fonts = {}
+    for _, c in ipairs(textCalls) do fonts[#fonts + 1] = c.f end
+    return #textCalls == 3 and fonts[1] == "BerserkFont"
+       and fonts[2] == "WoundSystemAEDStatus" and fonts[3] == "ZB_ProotOSMedium"
+end)()
+''')
+
+    rt('R26 IsMinigameBoardMaterial matches only the stretched black board', '''
+(function()
+    return WSZC.IsMinigameBoardMaterial("casunknown-images/shrapnelminigame/minigameShrapnel.png") == true
+       and WSZC.IsMinigameBoardMaterial("casunknown-images/syringeminigame/minigameshrapnel.png") == true
+       and WSZC.IsMinigameBoardMaterial("casunknown-images/shrapnelminigame/shrapnelpiece.png") == false
+       and WSZC.IsMinigameBoardMaterial("casunknown-images/shrapnelminigame/handGraspIdle1.png") == false
+       and WSZC.IsMinigameBoardMaterial("casunknown-images/bandageminigame/bandageOuter.png") == false
+       and WSZC.IsMinigameBoardMaterial("casunknown-images/icons/fracturedbone.png") == false
+       and WSZC.IsMinigameBoardMaterial(nil) == false
+end)()
+''')
+
+    rt('R27 only the black board rect is skipped; shrapnel piece still draws', '''
+(function()
+    WoundSystemShrapnelMinigame = { active = true }
+    surfaceCalls = {}
+    surface.SetMaterial(Material("casunknown-images/shrapnelminigame/minigameShrapnel.png"))
+    surface.DrawTexturedRect(0, 700, 1000, 600)
+    surface.SetMaterial(Material("casunknown-images/shrapnelminigame/shrapnelpiece.png"))
+    surface.DrawTexturedRect(500, 400, 40, 200)
+    local rects = 0
+    for _, c in ipairs(surfaceCalls) do if c.kind == "rect" then rects = rects + 1 end end
+    convars["zc_woundsystem_compat_hide_minigame_text"]._v = "0"
+    surfaceCalls = {}
+    surface.SetMaterial(Material("casunknown-images/shrapnelminigame/minigameShrapnel.png"))
+    surface.DrawTexturedRect(0, 700, 1000, 600)
+    local offRects = 0
+    for _, c in ipairs(surfaceCalls) do if c.kind == "rect" then offRects = offRects + 1 end end
+    convars["zc_woundsystem_compat_hide_minigame_text"]._v = "1"
+    WoundSystemShrapnelMinigame = { active = false }
+    return rects == 1 and offRects == 1
+end)()
+''')
+
+    rt('R28 ApplyDoll writes human geometry and keeps a restore snapshot', '''
+(function()
+    local mats, limbs = {}, {}
+    for id, g in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do
+        mats[id] = { fill = Material("wszc/unitmenu/limbs/" .. id .. "_fill.png"),
+                     edge = Material("wszc/unitmenu/limbs/" .. id .. "_edge.png"),
+                     cx = g.cx, cy = g.cy, w = g.w, h = g.h }
+        limbs[#limbs + 1] = { id = id, matM = Material("cu/m"), matO = Material("cu/o"),
+                              ox = 0, oy = 0, size = 2, sourceW = 64, sourceH = 64,
+                              texturePadding = 1, flip = true }
+    end
+    local k = 0.24
+    WSZC.ApplyUnitmenuDoll(limbs, mats, k)
+    local head
+    for _, l in ipairs(limbs) do if l.id == "head" then head = l end end
+    local gh = WSZC_UNITMENU_LIMB_GEOMETRY.head
+    return #limbs == 15 and head ~= nil
+       and head.matM == mats.head.fill and head.matO == mats.head.edge
+       and math.abs(head.ox - (gh.cx - 750) * k) < 0.001
+       and math.abs(head.oy - (gh.cy - 750) * k) < 0.001
+       and head.size == k and head.sourceW == gh.w and head.sourceH == gh.h
+       and head.texturePadding == 0 and head.flip == false
+       and head._WSZCUnitmenuOriginal.matM ~= nil
+end)()
+''')
+
+    rt('R29 FindCULimbs falls back to a differently-named HUD hook', '''
+(function()
+    WSZC.ClearCULimbsCache()
+    local fake = {}
+    for i = 1, 15 do
+        fake[i] = { id = "limb" .. i, matM = Material("cu/m"), matO = Material("cu/o"),
+                    ox = i, oy = -i, size = 2 }
+    end
+    local function otherHook() return fake[1] end
+    hook.Add("HUDPaint", "WSZCTestOtherHook", otherHook)
+    local found = WSZC.FindCULimbs()
+    hook.Remove("HUDPaint", "WSZCTestOtherHook")
+    WSZC.ClearCULimbsCache()
+    return found ~= nil and #found == 15 and found[1].id == "limb1"
 end)()
 ''')
 

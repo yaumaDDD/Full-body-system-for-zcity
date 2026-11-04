@@ -27,6 +27,8 @@ local cvFullscreenNative = CreateClientConVar("zc_woundsystem_compat_fullscreen_
     "1 = also stretch native C:U shrapnel / dislocation / AED minigames over the whole screen")
 local cvHandScale = CreateClientConVar("zc_woundsystem_compat_hand_cursor_scale", "0.45", true, false,
     "Size of the on-screen hand in WSZC bandage/syringe minigames (0.2 .. 1)", 0.2, 1)
+local cvHideMinigameText = CreateClientConVar("zc_woundsystem_compat_hide_minigame_text", "1", true, false,
+    "1 = remove every header / instruction / exit-hint text and dark panel in all minigames")
 
 --- Multiplier for the huge C:U hand sprites (512x1260 source images).
 function WSZC.HandCursorScale()
@@ -93,6 +95,103 @@ function WSZC.NativeMinigameActive()
         if type(mg) == "table" and mg.active == true then return true end
     end
     return false
+end
+
+--- True only while a minigame is actually running.  Used by the text filter
+--- so ZCity/C:U HUD text outside minigames is never touched.
+function WSZC.MinigameTextHidden()
+    if not cvHideMinigameText:GetBool() then return false end
+    if WSZC.WSZCMinigameActive and WSZC.WSZCMinigameActive() then return true end
+    if WSZC.NativeMinigameActive and WSZC.NativeMinigameActive() then return true end
+    return false
+end
+
+--- Only C:U's minigame CHROME fonts are suppressed (header / guide / exit
+--- hint).  Status labels are explicitly preserved: ZCity notifications use
+--- BerserkFont / HuyFont / SmallHuyFont / ZB_ProotOSMedium, C:U status labels
+--- use TechScanner* / CrunchyTech*, AED uses WoundSystemAEDStatus, and the red
+--- death text uses its own font.  WoundSystemGetFont() appends "_<scale>" to
+--- these base names at runtime, so we strip that suffix before matching.
+local MINIGAME_TEXT_BASES = {
+    RetroTooltipTitle = true, RetroTooltipDesc = true,
+    RetroMinigameGuide = true,
+}
+function WSZC.IsMinigameTextFont(font)
+    if type(font) ~= "string" then return false end
+    local base = font:match("^(.-)_%d+$") or font
+    return MINIGAME_TEXT_BASES[base] == true
+end
+
+--- Both C:U shrapnel/syringe and the WSZC syringe draw the SAME stretched
+--- `minigameshrapnel.png` as a huge solid-black board.  With our full-screen
+--- minigame scale it covers the whole lower half of the monitor (the owner
+--- asked for those black panels to go).  This is a *backdrop*, not a game
+--- sprite: shrapnel pieces, the hand, the tweezers, bandageOuter.png and all
+--- Icons.* keep their own materials and are never suppressed.
+local MINIGAME_BOARD_MARKER = "minigameshrapnel"
+function WSZC.IsMinigameBoardMaterial(name)
+    if type(name) ~= "string" then return false end
+    local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
+    return lower:find(MINIGAME_BOARD_MARKER, 1, true) ~= nil
+end
+
+--- Every C:U / WSZC minigame draws its chrome through three shared Clip
+--- functions.  We do NOT edit any addon file:
+---   * DrawHeader -> re-called with an empty title / value / guide and
+---     panelAlpha 0.  That removes "Shrapnel extraction (1/5)", the three
+---     instruction lines and the black top bar, while KEEPING the minigame
+---     icon (the owner explicitly forbade deleting icons).
+---   * DrawExitGuide -> no-op ("Press RMB/ESC to exit").
+---   * DrawBackdrop  -> no-op (the black full-screen panel).
+--- The shrapnel pieces, wound board, bone, white fracture icons, red drops,
+--- status labels and ZCity notifications are all drawn by other calls and stay.
+---
+--- A font-scoped text wrapper is the second line of defence: AED's local
+--- DrawCenteredStatusText calls draw.SimpleText directly with
+--- WoundSystemAEDStatus.  We only ever swallow MINIGAME fonts, never ZCity's.
+local clipTextWrapped, drawTextWrapped = false, false
+function WSZC.InstallMinigameTextFilter()
+    local clip = WoundSystem and WoundSystem.MinigameClip
+    if type(clip) == "table" and not clipTextWrapped then
+        if type(clip.DrawHeader) == "function" then
+            local orig = clip.DrawHeader
+            clip._WSZCOrigDrawHeader = orig
+            clip.DrawHeader = function(data)
+                if not cvHideMinigameText:GetBool() then return orig(data) end
+                local clean = {}
+                if type(data) == "table" then
+                    for k, v in pairs(data) do clean[k] = v end
+                end
+                clean.title, clean.value, clean.guide = "", "", ""
+                clean.panelAlpha = 0
+                return orig(clean)
+            end
+        end
+        for _, name in ipairs({"DrawExitGuide", "DrawBackdrop"}) do
+            if type(clip[name]) == "function" then
+                local orig = clip[name]
+                clip["_WSZCOrig" .. name] = orig
+                clip[name] = function(...)
+                    if cvHideMinigameText:GetBool() then return end
+                    return orig(...)
+                end
+            end
+        end
+        clipTextWrapped = true
+    end
+    if type(draw) == "table" and not drawTextWrapped then
+        for _, name in ipairs({"SimpleText", "SimpleTextOutlined", "DrawText"}) do
+            if type(draw[name]) == "function" then
+                local orig = draw[name]
+                draw[name] = function(text, font, ...)
+                    if WSZC.MinigameTextHidden() and WSZC.IsMinigameTextFont(font) then return end
+                    return orig(text, font, ...)
+                end
+            end
+        end
+        drawTextWrapped = true
+    end
+    return clipTextWrapped
 end
 
 --- Is the full-screen layout requested, and is the render context ready?
@@ -261,11 +360,20 @@ local function IsDollDrawMaterial(name)
 end
 WSZC.IsDollDrawMaterial = IsDollDrawMaterial
 
---- Only the 15 limb sprites need the white tint.  Status icons and the
---- action-point textures keep C:U's own colours.
+--- Only the archive doll's FILL sprites need a white draw colour: C:U
+--- multiplies the middle sprite by `finalMiddle` (normally pure black), so a
+--- slate `_fill.png` would otherwise render pure black.  The owner explicitly
+--- asked to keep the doll's colour and NOT to introduce new colour overrides.
+---
+--- The outline sprites (`*_edge.png`) are deliberately NOT in this list: C:U
+--- must keep full control of `finalOutline` (white -> black on hover), so the
+--- ORIGINAL white outline and the native hover reaction stay exactly as they
+--- were.  C:U's alpha is preserved in both cases.
 local function IsDollLimbMaterial(name)
     if type(name) ~= "string" then return false end
-    return name:lower():gsub("\\", "/"):find("wszc/unitmenu/limbs/", 1, true) ~= nil
+    local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
+    return lower:find("wszc/unitmenu/limbs/", 1, true) ~= nil
+        and lower:find("_fill", 1, true) ~= nil
 end
 WSZC.IsDollLimbMaterial = IsDollLimbMaterial
 
@@ -612,6 +720,7 @@ hook.Add("Think", "WSZC_CUInventoryLayout", function()
     -- The material tracker must exist even when the hide convars are off: it
     -- is what keeps the doll / status icons out of HiddenRegion().
     WSZC.InstallMaterialTracker()
+    WSZC.InstallMinigameTextFilter()
     if not (cvHideInventory:GetBool() or cvHideUnitPanel:GetBool()) then return end
     InstallDrawWrappers()
     -- If C:U's HUDPaint hook is missing/renamed, fall back to a whole-frame
@@ -783,14 +892,17 @@ local function IsCULimbsTable(t)
 end
 
 --- hook.Add("HUDPaint", "WoundDollAndPanel") may have been replaced by our own
---- hudWrapper, so walk the upvalue chain (bounded, cycle-safe) to reach the
---- original C:U closure that owns `Limbs`.
+--- hudWrapper, C:U may re-register its hook under a different identifier, or
+--- an admin HUD addon may wrap it again.  Walk the upvalue chain (bounded,
+--- cycle-safe) of EVERY HUD hook to reach the C:U closure that owns `Limbs`.
+--- The result is cached: C:U builds `Limbs` once at load time, so re-walking
+--- every frame would be pure overhead.
+local cachedCULimbs
 local function FindCULimbs()
+    if cachedCULimbs and IsCULimbsTable(cachedCULimbs) then return cachedCULimbs end
     if not (debug and debug.getupvalue and hook and hook.GetTable) then return nil end
     local hooks = hook.GetTable()
-    local hud = type(hooks) == "table" and hooks.HUDPaint or nil
-    local fn = type(hud) == "table" and hud.WoundDollAndPanel or nil
-    if type(fn) ~= "function" then return nil end
+    if type(hooks) ~= "table" then return nil end
     local seen = {}
     local function walk(f, depth)
         if type(f) ~= "function" or depth > 4 or seen[f] then return nil end
@@ -800,6 +912,20 @@ local function FindCULimbs()
             local name, value = debug.getupvalue(f, i)
             if not name then break end
             if type(value) == "table" and IsCULimbsTable(value) then return value end
+            if type(value) == "table" then
+                -- Some C:U builds keep `Limbs` inside a GUI/state namespace.
+                -- pcall: a third-party table may expose a broken __pairs.
+                local nestedFound
+                pcall(function()
+                    for _, nested in pairs(value) do
+                        if type(nested) == "table" and IsCULimbsTable(nested) then
+                            nestedFound = nested
+                            break
+                        end
+                    end
+                end)
+                if nestedFound then return nestedFound end
+            end
             if type(value) == "function" then
                 local found = walk(value, depth + 1)
                 if found then return found end
@@ -808,9 +934,55 @@ local function FindCULimbs()
         end
         return nil
     end
-    return walk(fn, 0)
+    local hud = hooks.HUDPaint
+    -- The named hook first (cheap, and it is the one our hudWrapper replaces).
+    if type(hud) == "table" and type(hud.WoundDollAndPanel) == "function" then
+        local found = walk(hud.WoundDollAndPanel, 0)
+        if found then cachedCULimbs = found return found end
+    end
+    -- Fallback: C:U re-registered the hook, or another addon sits in front.
+    for _, event in ipairs({"HUDPaint", "HUDPaintBackground", "PreDrawHUD"}) do
+        local bucket = hooks[event]
+        if type(bucket) == "table" then
+            for _, fn in pairs(bucket) do
+                local found = walk(fn, 0)
+                if found then cachedCULimbs = found return found end
+            end
+        end
+    end
+    -- Last resort: some C:U builds publish their state namespaces globally
+    -- (WoundSystemClientState / WoundSystem.HealthGUI).  `Limbs` is normally
+    -- private, but a copy or a GUI-table reference may be reachable here.
+    local roots = {
+        _G.WoundSystemClientState,
+        type(_G.WoundSystem) == "table" and _G.WoundSystem.HealthGUI or nil,
+        type(_G.WoundSystem) == "table" and _G.WoundSystem.ClientState or nil,
+    }
+    for i = 1, #roots do
+        local root = roots[i]
+        if type(root) == "table" then
+            if IsCULimbsTable(root) then cachedCULimbs = root return root end
+            for _, nested in pairs(root) do
+                if type(nested) == "table" and IsCULimbsTable(nested) then
+                    cachedCULimbs = nested return nested
+                end
+            end
+        end
+    end
+    -- Broadest fallback: C:U may have moved the doll into a non-HUD hook.
+    -- `seen` keeps the walk cycle-safe; only reached when all fast paths fail.
+    for _, bucket in pairs(hooks) do
+        if type(bucket) == "table" then
+            for _, fn in pairs(bucket) do
+                local found = walk(fn, 0)
+                if found then cachedCULimbs = found return found end
+            end
+        end
+    end
+    return nil
 end
 WSZC.FindCULimbs = FindCULimbs
+WSZC.ClearCULimbsCache = function() cachedCULimbs = nil end
 
 local dollPatched = false
 
@@ -900,11 +1072,30 @@ function WSZC.InstallMaterialTracker()
         return origSetMaterial(mat)
     end
 
-    -- C:U multiplies the doll's middle sprite by `finalMiddle`, which is
-    -- normally pure black (muscle=100) and turns red only for damage.  A slate
-    -- PNG multiplied by black would still be pure black, so force a white tint
-    -- for limb materials only.  The alpha C:U supplies (fade-in, hover,
-    -- dismembered state) is preserved.
+    -- The stretched `minigameshrapnel.png` board is the big black lower panel
+    -- (its top row is a white line) in shrapnel / syringe minigames.  Skip
+    -- ONLY that one draw call, while a minigame is active and the hide convar
+    -- is on.  C:U sets the material immediately before DrawRectInt, so the
+    -- shrapnel piece, hand, tweezers, bandageOuter and Icons.* (which all set
+    -- their own material) are untouched.  This wrapper is installed first so
+    -- the later draw/hand wrappers chain through it normally.
+    if type(surface.DrawTexturedRect) == "function" then
+        local origBoardRect = surface.DrawTexturedRect
+        surface.DrawTexturedRect = function(x, y, w, h, ...)
+            if WSZC.MinigameTextHidden()
+                and WSZC.IsMinigameBoardMaterial(WSZC._DrawMaterialName) then
+                return
+            end
+            return origBoardRect(x, y, w, h, ...)
+        end
+    end
+
+    -- C:U multiplies the doll's middle sprite by `finalMiddle`, normally
+    -- pure black.  Our archive `_fill.png` is already dark slate, so it needs
+    -- a white tint to keep that colour.  Only the fills are overridden; the
+    -- `_edge.png` outlines keep C:U's `finalOutline`, so the original white
+    -- outline and its hover reaction (white -> black) are preserved.
+    -- C:U's alpha is preserved.
     if type(surface.SetDrawColor) == "function" then
         origSetDrawColor = surface.SetDrawColor
         surface.SetDrawColor = function(r, g, b, a)
@@ -1123,4 +1314,24 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
         WSZC.RestoreUnitmenuDoll()
     end
     if cvHandanim:GetBool() then WSZC.InstallNativeHandOverride() end
+end)
+
+-- C:U registers `WoundDollAndPanel` at file load; on some clients another HUD
+-- addon (or an autorefresh) installs the hook AFTER our first Think.  Re-try the
+-- doll patch immediately before the HUD is drawn, but at most once a second and
+-- only while the patch has not yet taken.  ApplyDoll is idempotent (it saves
+-- _WSZCUnitmenuOriginal once), so replaying it cannot drift the geometry.
+WSZC.NextDollRetry = 0
+hook.Add("PreDrawHUD", "WSZC_UnitmenuDollRetry", function()
+    if dollPatched or not cvUnitmenuDoll:GetBool() then return end
+    local now = CurTime and CurTime() or 0
+    if now < (WSZC.NextDollRetry or 0) then return end
+    WSZC.NextDollRetry = now + 1
+    local mats = BuildUnitmenuMaterials()
+    if not mats then return end
+    local limbs = FindCULimbs()
+    if limbs then
+        ApplyDoll(limbs, mats, math.Clamp(cvDollScale:GetFloat(), 0.1, 0.8))
+        dollPatched = true
+    end
 end)
