@@ -34,3 +34,16 @@
 Подробности установки (включая список подписок Мастерской и обязательный
 `Simple Custom Shaders`), таблица источников шрапнели, таблица предметов,
 конвары и ограничения: [`woundsystem_zcity_compat/README.md`](woundsystem_zcity_compat/README.md).
+
+## Готовые архивы
+
+* **`zcity_full_pack.zip`** — пересобранный полный пакет: распакованная структура
+  `garrysmod/addons/` со всеми аддонами (ZCity, C:U, Organs+, Hemogen, Eye Gore,
+  Gore V2, WIP-текстуры интерфейса) и коннектором, плюс `garrysmod/cfg/zcity_binds.cfg`,
+  `README_INSTALL.md`, `WORKSHOP_IDS.txt`, `ZCity_binds.md`, `MANIFEST.txt`.
+* **`woundsystem_zcity_compat.zip`** — только аддон-коннектор **с исходным Lua-кодом**
+  (8 файлов), `addon.json`, `README.md` и `SOURCE_INDEX.md`. Копируется одной
+  папкой в `garrysmod/addons/`.
+
+Все клавиши и команды ZCity: [`ZCity_binds.md`](ZCity_binds.md) и
+[`zcity_binds.cfg`](zcity_binds.cfg).
