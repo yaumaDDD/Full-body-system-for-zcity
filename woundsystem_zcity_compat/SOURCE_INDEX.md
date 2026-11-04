@@ -77,18 +77,22 @@ GMod. Исходные ZIP-аддоны не изменяются: всё пат
 
 | Требование | Реализация |
 |---|---|
-| Мини-игра вправления костей вручную в WoundView | Родная `WoundSystemDislocationMinigame` (C:U `cl_dislocation.lua` + `Sessions.Dislocation` в `sv_health.lua`), кнопка `FIX DISLOCATION` из `WoundSystemDrawLimbActionPoint()`. `WSZC.SyncDislocation()`/`WSZC.RestoreBones()` в `sv_..._organism.lua` связывают `state.dislocated` с `org.*dislocation`; успех снимает флаг всей группы (`DISLOC_FLAGS`), пишет `org.painadd + 10` и `ply.fullsend`, а не откатывается shadow. Свежий вывих получает `state.dislocationTimer = 100`, прогресс сессии не перезаписывается |
+| Мини-игра вправления костей вручную в WoundView | Родная `WoundSystemDislocationMinigame` (C:U `cl_dislocation.lua` + `Sessions.Dislocation` в `sv_health.lua`), кнопка `FIX DISLOCATION` из `WoundSystemDrawLimbActionPoint()`. `WSZC.SyncDislocation()`/`WSZC.RestoreBones()` в `sv_..._organism.lua` связывают `state.dislocated` с `org.*dislocation`; успех снимает флаг всей группы (`DISLOC_FLAGS`), пишет `org.painadd + 10` и `ply.fullsend`, а не откатывается shadow. Свежий вывих получает `state.dislocationTimer = WSZC.DislocationStartTimer()` (по умолчанию 35), прогресс сессии не перезаписывается |
 | Вывих не теряется в ragdoll | `RestoreShrapnelSoon()` дополнительно зовёт `WSZC.RestoreBones()`; `SyncShrapnel()` теперь ВСЕГДА обновляет `ply._WSZCLimbsRef` (раньше `RestoreShrapnel` выходил раньше при пустом `org.wszc_shrapnel`, из-за чего игрок без осколков вечно выглядел «новым ragdoll» и вправление откатывалось) |
 | Мини-игра проходима при боли | `WSZC.DislocationActive()` читает `WSZC.CUSessions.Dislocation[ply]`; на время сессии `body.avgPain` ограничен 60 (C:U `DislocationPainBlock = 75`), `ply.organism.pain` не меняется. `WSZC.MinigameActive()` на клиенте и `WSZC_MinigameServerLock` на сервере тоже знают про нативную сессию: курсор, frozen angles, нулевое движение |
 | Переломы «как в ZCity» | `Fractured()` читает `org.<limb> >= 0.85` и `org.brokenribs > 0`; `PushShadow` пишет только `state.broken`/`state.boneHealTimer`. Создание — ванильный `sv_bone.lua`, регенерация — `sv_pain.lua`, лечение — ZCity SWEP → `WSZC.ApplyMedicalDelta()`. Своей мини-игры и своей симуляции костей нет |
 | Убрать инвентарь C:U | `cl_..._layout.lua`: прокси `WoundSystemInventorySlots` возвращает `{type="empty"}` для `1..5`, игнорирует запись в них и честно хранит слот `6`; `RequestInventoryMove` → no-op; снимаются `WoundSystem_WorldItemInput/WorldItemCheck/WorldItemDraw/BodyUseHeldItemInput`, гасится `WoundSystemDragState`. Конвар `zc_woundsystem_compat_hide_cu_inventory` |
-| Убрать панель unit | `WSZC.InstallCUHudFilter()` оборачивает хук `WoundDollAndPanel`; `WSZC.CUHudHiddenRegion()` + обёртки `draw.SimpleText`, `surface.DrawTexturedRect( Rotated )`, `surface.DrawRect`, `WoundSystemQueueLocaleTooltip`/`slot_*` direct-tooltip глушат зону `UNI-HEALTH` (515×845 в базе 1080p) и 5 прямоугольников слотов. Кукла, иконки, action-кнопки и курсор вне этих зон рисуются как прежде. Конвар `zc_woundsystem_compat_hide_unit_panel` |
+| Убрать панель unit и инвентарь (runtime-фикс) | `WSZC.InstallCUHudFilter()` заменяет хук `WoundDollAndPanel` через `hook.Add(...)` (запись в `hook.GetTable()` была несостоятельна на сборках с копией таблицы); `WSZC.CUHudHiddenRegion()` + обёртки `draw.SimpleText`, `draw.RoundedBox`, `surface.DrawTexturedRect( Rotated )`, `surface.DrawRect`, **`surface.DrawOutlinedRect`**, `WoundSystemQueueLocaleTooltip`/`slot_*` direct-tooltip глушат зону `UNI-HEALTH` и 5 слотов. Зоны считаются с `woundsys_ui_scale` (0.6..1.6) и не глушат полноэкранный фон. `PreDrawHUD`/`PostDrawHUD` — запасной контур, включается только если обёртку хука установить не удалось (иначе фильтр на весь кадр задел бы HUD ZCity). WoundView полностью не рисуется, пока активна мини-игра. Конвары `zc_woundsystem_compat_hide_unit_panel`, `zc_woundsystem_compat_hide_cu_inventory` |
+| Скрыть предметы в руках | `PreDrawViewModel` / `PreDrawPlayerHands` возвращают `true`, Think один раз переключает `SetNoDraw` на viewmodel, пока `WSZC.MinigameActive()`. |
+| Уменьшить вправление | `WSZC.WSZCMinigameActive()` / `WSZC.NativeMinigameActive()` разделяют полноэкранный клип (только WSZC бинт/шприц) и нативный клип C:U × `zc_woundsystem_compat_native_minigame_zoom 0.75`; `WSZC.DislocationStartTimer()` = 35 вместо 100 (`DislocationStartSpread = 5` → кость не улетает за верх экрана); `WSZC.AnyDislocation()` капит `avgPain` до старта сессии. |
+| Стабилизировать руку/курсор | `WSZC.StabilizeHandPhysics()` обнуляет `pain`/`shakeX`/`shakeY` и ограничивает `maxLength=45` в копиях `sh_handphysics.lua`; `WSZC.HandCursorScale()` = 0.45 умножает спрайт 512×1260 в `wszc_cl_bandage.lua` / `wszc_cl_syringe.lua`; `WSZC.MinigameActive()` теперь знает все нативные мини-игры C:U (курсор + лок камеры). |
 
 Валидация: все 10 Lua-файлов проходят `luaparser`, `addon.json` — JSON-парсер,
-headless-тесты `TEST_OK 11/11` (базовые фиксы), `TEST_OK 6/6` (full-screen),
-`TEST_OK 20/20` (FX/кровь/курсор/камера/бинды), `TEST_OK 11/11` (источники
-шрапнели/reset-guard), `TEST_OK 7/7` (ragdoll-сохранение, стекло, осложнения),
-`TEST_OK 8/8` (вывихи/переломы/ragdoll-восстановление/боль/серверный лок) и
-`TEST_OK 8/8` (скрытие инвентаря и панели unit, сохранение WoundView, слот `6`,
-активная dislocation-сессия) — всего **71 тест**.
+headless-тесты `TEST_OK 11/11` (базовые фиксы), `TEST_OK 8/8` (full-screen и
+нативный клип), `TEST_OK 20/20` (FX/кровь/курсор/камера/бинды), `TEST_OK 11/11`
+(источники шрапнели/reset-guard), `TEST_OK 7/7` (ragdoll-сохранение, стекло,
+осложнения), `TEST_OK 10/10` (вывихи/переломы/ragdoll-восстановление/боль/
+серверный лок/стартовое смещение) и `TEST_OK 14/14` (скрытие инвентаря и панели
+unit, `DrawOutlinedRect`, `hook.Add`, `PreDrawHUD`, viewmodel, нативные сессии) —
+всего **81 тест**.
 Живой GMod-сервер не запускался.

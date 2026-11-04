@@ -131,6 +131,40 @@
   кнопки `FIX DISLOCATION` / `REMOVE SHRAPNEL`, tooltips и курсор сохранены.
   Откат: `zc_woundsystem_compat_hide_unit_panel 0`.
 
+* **Повторные live-скриншоты: скрытие доведено до реального рантайма.**
+  Прежний фильтр писал обёртку хука прямо в таблицу `hook.GetTable()` (на
+  части сборок это копия) и не перехватывал `surface.DrawOutlinedRect` — поэтому
+  рамки слотов и `UNI-HEALTH` оставались видны. Теперь замена идёт через
+  `hook.Add("HUDPaint", "WoundDollAndPanel", ...)`, дополнительно глушатся
+  `DrawOutlinedRect` и `draw.RoundedBox`. Если хук C:U переименован/отсутствует,
+  включается запасной контур `PreDrawHUD`/`PostDrawHUD` на весь кадр HUD
+  (только в этом случае, чтобы не задевать HUD ZCity). Геометрия зон читает
+  `woundsys_ui_scale`, поэтому скрытие не «съезжает» при изменённом масштабе
+  интерфейса.
+* **Предметы в руках больше не торчат из мини-игры**: на время любой мини-игры
+  C:U/WSZC скрывается viewmodel и руки игрока (`PreDrawViewModel`,
+  `PreDrawPlayerHands`, `SetNoDraw` на viewmodel), а WoundView не рисуется
+  поверх оверлея — раньше кукла и надпись `FIX DISLOCATION` наслаивались на
+  кость, из-за чего казалось, что «вправлений много и они слишком высоко».
+* **Размер и доступность вправления**: full-screen `Clip.GetRect()` теперь
+  применяется **только** к нашим бинту/шприцу; нативные `dislocation` /
+  `shrapnel` C:U получают исходный квадрат 760 px, уменьшенный конваром
+  `zc_woundsystem_compat_native_minigame_zoom 0.75`. Стартовое смещение кости
+  снижено со 100 до `zc_woundsystem_compat_dislocation_start 35`: кость
+  остаётся на экране, досягаема курсором и вправляется за короткое
+  перетаскивание, а не за десятки ударов. `avgPain` ограничен 60 всё время,
+  пока вывих существует (раньше только во время сессии), иначе C:U блокировала
+  первый же удар при боли > 75.
+* **Рука и курсор**: pain-shake из `sh_handphysics.lua` (`shakeX 120` /
+  `shakeY 40`) обнулён в обеих наших мини-играх, максимальный шаг пружины
+  ограничен, а спрайт руки 512×1260 уменьшен конваром
+  `zc_woundsystem_compat_hand_cursor_scale 0.45`. Нативные мини-игры C:U
+  теперь тоже входят в `WSZC.MinigameActive()`: курсор удерживается, камера и
+  движение зафиксированы и в dislocation/shrapnel.
+* **Перед проверкой**: распакуйте именно этот `zcity_full_pack.zip` (или
+  `woundsystem_zcity_compat.zip` поверх него) и **перезапустите клиент и
+  сервер** — Lua-обёртки хуков не подхватываются «на горячую» сменой ZIP.
+
 Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
 и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.
 

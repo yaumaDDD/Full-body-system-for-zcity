@@ -51,6 +51,12 @@
 | Переломы видны в WoundView, но считаются/лечатся ZCity (`sv_bone.lua`) | включается вместе с `zc_woundsystem_compat_shadow 1` |
 | Инвентарь C:U скрыт, слот `6` для ZCity SWEP'ов остаётся | `zc_woundsystem_compat_hide_cu_inventory 1` |
 | Панель `UNI-HEALTH` / unit внутри WoundView скрыта | `zc_woundsystem_compat_hide_unit_panel 1` |
+| Рамки слотов и `UNI-HEALTH` скрыты и при нестандартном масштабе UI | `zc_woundsystem_compat_hide_cu_inventory 1`, `zc_woundsystem_compat_hide_unit_panel 1` (фильтр через `hook.Add`; `PreDrawHUD` — запасной контур) |
+| Предмет / viewmodel в руках скрыт в мини-игре | включается вместе с `zc_woundsystem_compat_minigames 1` |
+| WoundView не наслаивается поверх мини-игры | включается вместе с `zc_woundsystem_compat_minigames 1` |
+| Нативная мини-игра вправления меньше исходного квадрата C:U | `zc_woundsystem_compat_native_minigame_zoom 0.75` (диапазон `0.4..1.2`) |
+| Кость вправления рядом с суставом и на экране | `zc_woundsystem_compat_dislocation_start 35` (диапазон `10..100`) |
+| Рука не трясётся и уменьшена | `zc_woundsystem_compat_hand_cursor_scale 0.45` (диапазон `0.2..1`) |
 
 Панель травм, HUD и протокол шрапнели C:U при этом остаются — отключаются только
 визуальные эффекты, декоративная кровь, инвентарь C:U и левый сканер

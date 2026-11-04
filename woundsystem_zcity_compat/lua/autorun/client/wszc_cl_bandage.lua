@@ -85,6 +85,9 @@ if not istable(HandPhysics) then
         end
     }
 end
+-- Kill the pain-driven mouse shake: with ZCity's pain values the hand used to
+-- oscillate so hard that the bandage roll could not be grabbed.
+if WSZC and WSZC.StabilizeHandPhysics then WSZC.StabilizeHandPhysics(HandPhysics) end
 local DevMinigameCfg = include("woundsystem/client/minigames/minigame_dev_config.lua") or {}
 
 -- bandage uses its own hand physics (restore original logic)
@@ -495,8 +498,12 @@ local function EnsureOverlay()
         local screenX = cx + (MG.handPos.x * baseScale)
         local screenY = cy - (MG.handPos.y * baseScale)
         
-        local handDrawW = SRC_HAND_W * baseScale * CFG.HandCursorScale
-        local handDrawH = SRC_HAND_H * baseScale * CFG.HandCursorScale
+        -- 512x1260 source images at baseScale 2.04 were taller than the
+        -- screen.  The client convar lets the user dial the hand down without
+        -- shrinking the bandage board itself.
+        local handScale = CFG.HandCursorScale * ((WSZC and WSZC.HandCursorScale and WSZC.HandCursorScale()) or 1)
+        local handDrawW = SRC_HAND_W * baseScale * handScale
+        local handDrawH = SRC_HAND_H * baseScale * handScale
         local handPivotX = 0.4
         local handPivotY = 0.1
         local handX = screenX - (handDrawW * handPivotX) + ((DevMinigameCfg.bandageHandOffsetX or 0) * baseScale)

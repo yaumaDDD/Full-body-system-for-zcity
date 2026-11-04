@@ -7,6 +7,8 @@ if not (WoundSystem and WoundSystem.MinigameClip) and file.Exists("woundsystem/c
     include("woundsystem/client/minigames/sh_handphysics.lua")
 end
 local HandPhysics = include("woundsystem/client/minigames/sh_handphysics.lua")
+-- Same pain-shake suppression as the bandage minigame (see layout file).
+if WSZC and WSZC.StabilizeHandPhysics then WSZC.StabilizeHandPhysics(HandPhysics) end
 
 local function DrawRectInt(x, y, w, h)
     surface.DrawTexturedRect(math.Round(tonumber(x) or 0), math.Round(tonumber(y) or 0), math.Round(tonumber(w) or 0), math.Round(tonumber(h) or 0))
@@ -277,8 +279,10 @@ local function RebuildBoardMetrics()
         MG.boardH = 1384 * scale
     end
 
-    MG.handDrawW = SRC_HAND_W * MG.scale * MiniNumber("handScale", DEFAULT_MINIGAME.handScale)
-    MG.handDrawH = SRC_HAND_H * MG.scale * MiniNumber("handScale", DEFAULT_MINIGAME.handScale)
+    local handScale = MiniNumber("handScale", DEFAULT_MINIGAME.handScale)
+        * ((WSZC and WSZC.HandCursorScale and WSZC.HandCursorScale()) or 1)
+    MG.handDrawW = SRC_HAND_W * MG.scale * handScale
+    MG.handDrawH = SRC_HAND_H * MG.scale * handScale
     UpdateHandDrawPosition()
 end
 

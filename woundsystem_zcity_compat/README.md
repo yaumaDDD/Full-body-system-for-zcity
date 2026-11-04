@@ -276,6 +276,11 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа и сохраняет структуру ZCity (`otrub`/`fake`/`canmove`); `0` — исходный ZCity reset. |
 | `zc_woundsystem_compat_fullscreen_minigame` | этот аддон (client) | `1` — мини-игры бинта/шприца на весь экран; `0` — исходный квадрат ~760 px C:U. |
 | `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `1.0` — базовый размер мини-игры; диапазон `0.7..1.8`. |
+| `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | `0.75` — размер НАТИВНЫХ мини-игр C:U (вправление, осколки, AED) относительно квадрата 760 px; диапазон `0.4..1.2`. Full-screen сюда не применяется. |
+| `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | `0.45` — множитель спрайта руки 512×1260 в мини-играх бинта/шприца; диапазон `0.2..1`. |
+| `zc_woundsystem_compat_dislocation_start` | этот аддон (server) | `35` — стартовое смещение кости в мини-игре вправления (было 100); диапазон `10..100`. Меньше = кость на экране и меньше ударов. |
+| `zc_woundsystem_compat_hide_cu_inventory` | этот аддон (client) | `1` — скрыть 5 слотов C:U, их рамки, drag&drop и подбор мировых предметов; виртуальный слот `6` остаётся. |
+| `zc_woundsystem_compat_hide_unit_panel` | этот аддон (client) | `1` — скрыть левый сканер `UNI-HEALTH v2.03` внутри WoundView. |
 | `zc_woundsystem_compat_clamp_adrenaline` | этот аддон (client) | `1` — клампить `org.adrenaline` ≤2 и `org.painkiller` ≤1, чтобы камера ZCity не давала FOV-взрыв. |
 | `zc_woundsystem_compat_organism_debug` | этот аддон | `1` — диагностика обёрток, шрапнели и медицинских дельт. |
 | `zc_woundsystem_bridge` | ZCity | `1` — мост включён; `0` — полностью legacy `organism`. |
@@ -298,7 +303,13 @@ SWEP. В authority-режиме каждая такая доза дополни�
    экран и выражает оффсеты шприца/«переднего слоя» в долях высоты, а
    `wszc_cl_bandage.lua` увеличивает artwork в 1.2 раза. Симуляционные
    координаты и физика (`ScreenToSim`/`SimToScreen`) не менялись — только
-   проекция на экран. Откат: `zc_woundsystem_compat_fullscreen_minigame 0`.
+   проекция на экран. **Важно:** с этого релиза полноэкранный `GetRect()`
+   включается только когда активна наша WSZC-сессия бинта/шприца
+   (`WSZC.WSZCMinigameActive()`). Раньше он применялся и к родным мини-играм
+   C:U, из-за чего `MG.scale` в `cl_dislocation.lua` вырастал примерно вдвое,
+   кость уезжала за верх экрана, а спрайты руки/кости перекрывали всё окно.
+   Нативные игры получают исходный квадрат × `native_minigame_zoom`.
+   Откат: `zc_woundsystem_compat_fullscreen_minigame 0`.
 
 2. **«Not completed - nothing was applied».** Сообщение приходит из локального
    `Nothing()` внутри `onClose` в `sv_woundbridge.lua` (ZCity), когда игрок
@@ -499,8 +510,9 @@ ragdoll резолвится в т.ч. через `NWEntity("ply")`.
   `dislocated true → false`, которого мы не писали
   (`_WSZCExpectedDislocation`), снимает флаг ZCity всей группы, добавляет
   `org.painadd + 10` и ставит `ply.fullsend`;
-- `PushShadow` выставляет `state.dislocationTimer = 100` у свежего вывиха и
-  **не трогает** прогресс во время активной сессии; после успеха — `0`;
+- `PushShadow` выставляет `state.dislocationTimer = WSZC.DislocationStartTimer()`
+  (по умолчанию 35) у свежего вывиха и **не трогает** прогресс во время
+  активной сессии; после успеха — `0`;
 - `WSZC.DislocationActive()` читает `WSZC.CUSessions.Dislocation[ply]` (upvalue
   `Sessions` из `sv_health.lua`). Пока сессия открыта, `body.avgPain`
   ограничен 60: в C:U `DislocationPainBlock = 75`, а ZCity сразу добавляет
@@ -539,6 +551,63 @@ SWEP'ов. `WoundSystem.Client.RequestInventoryMove` становится no-op,
 reload). Два конвара отката: `zc_woundsystem_compat_hide_cu_inventory`,
 `zc_woundsystem_compat_hide_unit_panel`.
 
+**Что исправлено после live-скриншотов.** В `3d7c793` обёртка писалась прямо в
+`hook._t["HUDPaint"]["WoundDollAndPanel"]`; на сборках, где `hook.GetTable()`
+возвращает защитную копию, это ничего не меняло, поэтому сканер оставался на
+экране. Кроме того, рамки пяти слотов рисуются `surface.DrawOutlinedRect`
+(`cl_health_gui.lua:4899`), а фильтр перехватывал только залитые прямоугольники
+— пустые квадраты были видны даже при работающем прокси инвентаря. Сейчас:
+
+- `hook.Add("HUDPaint", "WoundDollAndPanel", wrapper)` — поддерживаемая замена
+  хука; чтение оригинальной функции всё ещё идёт через `hook.GetTable()`;
+- обёрнуты `surface.DrawOutlinedRect` и `draw.RoundedBox`; установщик больше не
+  требует существования `WoundSystemQueueLocaleTooltip` — опциональные
+  C:U-глобалы патчатся отдельно, с повтором раз в секунду;
+- `HiddenRegion()` учитывает `woundsys_ui_scale` и пропускает по-настоящему
+  полноэкранные квады (тёмный фон WoundView);
+- `PreDrawHUD` / `PostDrawHUD` — запасной контур на весь кадр HUD, если C:U
+  перерегистрировала хук под другим именем и `InstallHudFilter()` вернул
+  `false` (`WSZC.CUHudUseFallback`). В штатном режиме он выключен, чтобы не
+  глушить элементы HUD ZCity, попадающие в те же области экрана;
+- пока активна любая мини-игра, `WoundDollAndPanel` вообще не вызывается: кукла
+  и `FIX DISLOCATION` больше не наслаиваются на кость.
+
+**Предметы в руках.** `cl_..._minigames.lua` добавляет `PreDrawViewModel` и
+`PreDrawPlayerHands` (возврат `true`) плюс однократное `SetNoDraw(true)` на
+viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шприц,
+шина) больше не рисует своё 3D-содержимое поверх 2D мини-игры; после закрытия
+`SetNoDraw(false)` возвращается.
+
+**Размер вправления, число и высота целей.** `cl_dislocation.lua` считает
+`MG.scale` из ширины клипа, а сервер кладёт кость на
+`DislocationFinish + timer * DislocationStartSpread (5)` в случайном направлении
+±60°. При `timer = 100` и полноэкранном клипе кость уходила на ~660 sim-единиц
+вверх и оказывалась за верхом экрана; интерфейс выглядел «огромным», а
+дотянуться до кости было нельзя. Теперь:
+
+- `WSZC.WSZCMinigameActive()` отделяет наши сессии от
+  `WSZC.NativeMinigameActive()`; только первые получают полный экран. Нативные
+  получают исходный квадрат C:U, дополнительно уменьшенный
+  `zc_woundsystem_compat_native_minigame_zoom = 0.75`;
+- `WSZC.DislocationStartTimer()` = `zc_woundsystem_compat_dislocation_start`
+  (по умолчанию 35) вместо жёстких 100 — кость рядом с суставом, одно короткое
+  перетаскивание вместо десятков «вправлений»;
+- `WSZC.AnyDislocation(org)` капит теневой `avgPain` до 60 всё время, пока флаг
+  вывиха стоит (C:U проверяет `DislocationPainBlock = 75` и на старте сессии, а
+  не только во время неё);
+- `WSZC.MinigameActive()` включает ВСЕ нативные мини-игры C:U, поэтому курсор,
+  заморозка камеры и запрет движения действуют и в dislocation/shrapnel/AED.
+
+**Рука и курсор.** `sh_handphysics.lua` добавляет к цели мыши шум боли
+(`pain * shakeX/shakeY`, до ±120 px по X), а спрайт руки 512×1260 при
+`BaseScale() = 1.7 * 1.2` был выше экрана — отсюда «рука сходит с ума» и
+невозможность взяться за бинт. `WSZC.StabilizeHandPhysics()` обнуляет
+`pain`/`shakeX`/`shakeY`, ограничивает `maxLength = 45`, а
+`WSZC.HandCursorScale()` (конвар, 0.45) уменьшает сам спрайт в
+`wszc_cl_bandage.lua` и `wszc_cl_syringe.lua`. Курсор продолжает
+переутверждаться каждые 0.15 с через `SetScreenClickerOwned(true)` +
+`gui.EnableScreenClicker(true)`.
+
 ## Ограничения
 
 - Режим `authority 1` не обещает полной 1:1 vanilla-эквивалентности Organs+:
@@ -575,10 +644,14 @@ reload). Два конвара отката: `zc_woundsystem_compat_hide_cu_inve
  (authority-режим, inspect, мини-игры, шрапнель/`took=false`, адреналин,
  per-limb bleeding, full-screen clip, фильтр FX/крови, курсор, лок камеры и
  движения, источники шрапнели, reset-guard, ragdoll/стекло/осложнения:
- `TEST_OK 11/11`, `TEST_OK 6/6`, `TEST_OK 20/20`, `TEST_OK 11/11`,
- `TEST_OK 7/7`, `TEST_OK 8/8` (кости/лок сессии), `TEST_OK 8/8` (инвентарь,
- панель unit, WoundView и активная dislocation-сессия)); на живом
- GMod-сервере не прогонялось.
+ `TEST_OK 11/11`, `TEST_OK 8/8` (full-screen + нативный клип + физика руки),
+ `TEST_OK 20/20`, `TEST_OK 11/11`, `TEST_OK 7/7`, `TEST_OK 10/10`
+ (кости/лок сессии/смещение), `TEST_OK 14/14` (инвентарь, `DrawOutlinedRect`,
+ `hook.Add`, `PreDrawHUD`, viewmodel, нативные сессии) — всего **81 тест**);
+ на живом GMod-сервере ассистентом не прогонялось. Пользовательские
+ live-скриншоты после `3d7c793` показали, что предыдущие headless-тесты
+ `H1/H3/H5/H6` не доказывали скрытие в реальном клиенте; исправления выше
+ сделаны по ним, но собственной live-проверки не было.
 
 ## Файлы
 

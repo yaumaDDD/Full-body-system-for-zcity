@@ -31,6 +31,10 @@ function WSZC.MinigameActive()
     -- lock, camera freeze and cursor watchdog cover it too.
     local dislocation = WoundSystemDislocationMinigame
     if dislocation and dislocation.active == true then return true end
+    -- Also cover the other native C:U games (shrapnel, AED, ...): they use the
+    -- same cursor owner and camera/movement lock.  The layout helper is loaded
+    -- first alphabetically, but stay defensive for hot reloads.
+    if WSZC.NativeMinigameActive and WSZC.NativeMinigameActive() then return true end
     return false
 end
 
@@ -139,9 +143,47 @@ hook.Add("CreateMove", "WSZC_MinigameFreezeView", function(cmd)
     if ang and cmd and cmd.SetViewAngles then cmd:SetViewAngles(ang) end
 end)
 
+-- "Items in hands are still visible": the ZCity SWEP viewmodel (bandage roll,
+-- syringe, splint, ...) kept rendering over the 2D minigame.  Returning true
+-- from PreDrawViewModel / PreDrawPlayerHands suppresses ONLY the viewmodel,
+-- not the world or the player's ragdoll/third-person body.
+hook.Add("PreDrawViewModel", "WSZC_MinigameHideViewModel", function(vm, ply, wep)
+    if not WSZC.MinigameActive() then return end
+    if ply and LocalPlayer and ply ~= LocalPlayer() then return end
+    return true
+end)
+hook.Add("PreDrawPlayerHands", "WSZC_MinigameHideHands", function(hands, ply, wep)
+    if not WSZC.MinigameActive() then return end
+    if ply and LocalPlayer and ply ~= LocalPlayer() then return end
+    return true
+end)
+
 -- If ZCity's radial menu is still closing, SetScreenClickerOwned(true) can be
 -- refused by C:U ("external menu open").  Keep re-asserting the cursor while a
 -- WSZC minigame is live; this also defeats the C:U watchdog described above.
+-- Native C:U games (dislocation / shrapnel / AED) do not send our WSZC open
+-- packet, so freeze the camera for them too.  The helpers are idempotent.
+hook.Add("Think", "WSZC_MinigameViewWatch", function()
+    if WSZC.MinigameActive() then
+        FreezeMinigameView()
+    else
+        ReleaseMinigameView()
+    end
+end)
+
+-- Belt and braces for the viewmodel: some ZCity SWEPs draw their held item
+-- through a custom render hook that ignores PreDrawViewModel.  SetNoDraw on
+-- the viewmodel entity is applied once on each state change, never per frame.
+hook.Add("Think", "WSZC_MinigameViewModelVisibility", function()
+    local hidden = WSZC.MinigameActive() and true or false
+    if hidden == WSZC._ViewModelHidden then return end
+    WSZC._ViewModelHidden = hidden
+    local ply = LocalPlayer and LocalPlayer() or nil
+    if not (IsValid and IsValid(ply) and ply.GetViewModel) then return end
+    local vm = ply:GetViewModel()
+    if IsValid(vm) then vm:SetNoDraw(hidden) end
+end)
+
 hook.Add("Think", "WSZC_MinigameCursorWatch", function()
     PatchCUMinigameActive()
     if not WSZC.MinigameActive() then return end

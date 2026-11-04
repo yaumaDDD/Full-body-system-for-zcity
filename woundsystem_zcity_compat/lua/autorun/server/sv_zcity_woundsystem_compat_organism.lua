@@ -69,6 +69,9 @@ local cvShotgunOnly = CreateConVar("zc_woundsystem_compat_shrapnel_only_shotgun_
 local cvPreserveReset = CreateConVar("zc_woundsystem_compat_preserve_reset_structure", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "On 'reset organism' keep ZCity unconscious/ragdoll structure instead of standing the player up", 0, 1)
+local cvDislocationStart = CreateConVar("zc_woundsystem_compat_dislocation_start", "35",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Starting bone displacement (0..100) for the C:U manual reduction minigame; lower = fewer hits and a bone that stays on screen", 10, 100)
 local cvDebug = CreateConVar("zc_woundsystem_compat_organism_debug", "0",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Print organism-authority diagnostics", 0, 1)
@@ -513,6 +516,17 @@ local DISLOC_FLAGS = {
     rlegdislocation = { "thigh_R", "crus_R", "foot_R" },
 }
 
+--- C:U multiplies this by DislocationStartSpread = 5 to place the bone away
+--- from the socket.  At 100 the bone lands up to ~660 sim units above the
+--- finish point and is literally off the top of the screen ("why are they so
+--- high, I can't click the bone"), and the reduction needs a huge number of
+--- hits.  35 keeps one short, reachable drag.
+local function DislocationStartTimer()
+    local v = cvDislocationStart and cvDislocationStart:GetFloat() or 35
+    return math.Clamp(v, 10, 100)
+end
+WSZC.DislocationStartTimer = DislocationStartTimer
+
 -- ZCity writes a full break as org[key] = 1.  Regeneration (sv_pain.lua) and
 -- ZCity medical SWEPs then bring it back down; 0.85 keeps the fracture icon
 -- visible while the bone is still essentially broken.
@@ -523,6 +537,15 @@ local function Fractured(org, limbId, map)
     return (tonumber(org[map and map.dmg]) or 0) >= FRACTURE_DAMAGE
 end
 WSZC.Fractured = Fractured -- exported for headless tests
+
+--- True when the organism has at least one joint out of its socket.
+function WSZC.AnyDislocation(org)
+    if type(org) ~= "table" then return false end
+    for flag in pairs(DISLOC_FLAGS) do
+        if org[flag] == true then return true end
+    end
+    return false
+end
 
 --- True while C:U's native manual-reduction minigame session is open.
 function WSZC.DislocationActive(ply)
@@ -552,7 +575,7 @@ function WSZC.RestoreBones(ply)
             if type(state) == "table" then
                 local out = map.dis and org[map.dis] == true or false
                 state.dislocated = out
-                state.dislocationTimer = out and 100 or 0
+                state.dislocationTimer = out and DislocationStartTimer() or 0
                 state.broken = Fractured(org, limbId, map)
                 state.boneHealTimer = math.Clamp((1 -
                     (tonumber(org[map.dmg]) or 0)) * 100, 0, 100)
@@ -1120,8 +1143,12 @@ local function PushShadow(ply, org)
     -- A fresh ZCity dislocation already adds +35 painadd, so without this cap
     -- the manual reduction minigame would be unwinnable.  It is a temporary
     -- analgesia for the session only; the organism keeps its real pain.
+    -- The block is evaluated at session START too, not only while it runs, so
+    -- cap the shadow pain for the whole time a joint is dislocated.
     local avgPain = math.max(tonumber(org.pain) or 0, 0)
-    if WSZC.DislocationActive(ply) then avgPain = math.min(avgPain, 60) end
+    if WSZC.DislocationActive(ply) or WSZC.AnyDislocation(org) then
+        avgPain = math.min(avgPain, 60)
+    end
     bodySet("avgPain", avgPain)
     bodySet("heartRate", tonumber(org.pulse) or 70)
     bodySet("shock", math.Clamp((tonumber(org.shock) or 0) / 0.7, 0, 100))
@@ -1225,7 +1252,7 @@ local function PushShadow(ply, org)
                     -- letting the player move the bone by hand.
                     if out then
                         if (tonumber(state.dislocationTimer) or 0) <= 0 then
-                            limbSet("dislocationTimer", 100)
+                            limbSet("dislocationTimer", DislocationStartTimer())
                         end
                     else
                         limbSet("dislocationTimer", 0)
