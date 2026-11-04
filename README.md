@@ -47,9 +47,10 @@
 
 ## Исправления этой сборки
 
-* Мини-игры бинтования и шприца теперь **на весь экран**: runtime-патч
-  `WoundSystem.MinigameClip.GetRect()` + пересчёт board/оффсетов
-  (`zc_woundsystem_compat_fullscreen_minigame 0` — откат).
+* Все мини-игры (бинт/шприц **и нативные C:U shrapnel / dislocation / AED**)
+  теперь **на весь экран**: runtime-патч `WoundSystem.MinigameClip.GetRect()`
+  + согласованный `Clip.Scale()` (`zc_woundsystem_compat_fullscreen_minigame 0`
+  или `zc_woundsystem_compat_fullscreen_native 0` — откат).
 * Убрана надпись «Not completed - nothing was applied» при закрытии мини-игры
   без дозы (`zc_woundsystem_compat_hide_empty_notice 0` — вернуть).
 * Исправлен «адреналиновый» FOV-взрыв: C:U `0..100` → ZCity `0..2`,
@@ -230,6 +231,53 @@
   фона в папки `dislocationminigame`, `shrapnelminigame`, `syringeminigame`
   плюс `hemothoraxfill_red`. Итог проверяется assert'ом: ни одного
   неразрешённого материала. Полный список с хэшами — `MATERIALS.sha256`.
+
+### По live-скриншотам №2: слоты, мини-игры на весь экран, бег после ресета
+
+**Белые пустые квадраты слотов.** В прошлой сборке `IsDollDrawMaterial()`
+пропускал через `HiddenRegion()` ВСЕ примитивы, пока «текущим» числился
+материал лимба. Рамки 5 слотов — это `surface.DrawOutlinedRect` **без**
+`surface.SetMaterial`, поэтому они унаследовали последний материал куклы и
+стали видимыми (скриншоты 3/4). Разделили фильтр:
+
+* `HiddenRegionRaw()` — геометрия зон; используется для `DrawOutlinedRect`,
+  `DrawRect`, `draw.RoundedBox`, `DrawLine`, `DrawPoly`. Рамки слотов и чёрная
+  подложка `REMOVE SHRAPNEL` снова гасятся.
+* `HiddenRegion()` — `HiddenRegionRaw()` + whitelist материала; используется
+  только для текстур (`DrawTexturedRect`, `DrawTexturedRectUV`,
+  `DrawTexturedRectRotated`) и текста (`draw.SimpleText`,
+  `draw.SimpleTextOutlined`). Лимбы, иконки статусов, `uiPoint` и сама надпись
+  `REMOVE SHRAPNEL` / `FIX DISLOCATION` остаются видимыми.
+* `CUDeathVisualsHidden` по-прежнему имеет высший приоритет в обеих функциях.
+
+**Мини-игры на весь экран при выборе.** Раньше full-screen `Clip.GetRect()`
+давался только нашим bandage/syringe, а нативные C:U (shrapnel, dislocation,
+AED) наоборот **уменьшались** до `760 * 0.75 = 570 px` — на скриншоте 2 виден
+именно этот маленький квадрат. Теперь
+`zc_woundsystem_compat_fullscreen_native 1` (по умолчанию) даёт
+`0, 0, ScrW(), ScrH(), 0` и для них. Чтобы игровое поле не осталось крошечным
+внутри большого чёрного фона, перехвачен и `Clip.Scale()`:
+`WSZC.NativeFullscreenK()` умножает его на
+`clamp(min(ScrW, ScrH) / (820 * base), 1, 2.2)`. И shrapnel, и dislocation
+строят `MG.scale`, борд, спрайты, `SimToScreen`/`ScreenToSim` и хитбоксы из
+`Clip.Scale()`, поэтому всё увеличивается **согласованно** и остаётся
+играбельным. Откат: `zc_woundsystem_compat_fullscreen_native 0` возвращает
+прежний 570 px квадрат и старый `zc_woundsystem_compat_native_minigame_zoom`.
+
+**Бег после травмы и «Reset organism».** `RESET_KEEP` сохранял не только
+«лежачую» структуру, но и `canmove`, `stun`, `consciousness`, `brain` — то есть
+штрафы движения от травмы переживали ресет, и ZCity / `HG_MovementCalc_2`
+навсегда оставляли скорость ходьбы. Теперь сохраняются только `otrub`,
+`needotrub`, `fake`, `needfake`, `alive`, `otrub_start`, `unconscious`
+(персонаж по-прежнему не встаёт сам), чтобы снова можно было быстро бегать, а `WSZC.ClearMovementPenalties()`
+явно снимает `canmove=false`, `stun`, `pain` и числовые повреждения в
+`org.legs`. Вызывается во всех трёх путях: `hg.organism.Clear` стоя,
+`hg.organism.Clear` лёжа и `WB.ResetOrganism`.
+
+**Скриншот 5.** «I don't want to experience this EVER AGAIN!» — это
+статусное сообщение ZCity (`sh_status_messages.lua:219`), а не экран смерти
+C:U; красные капли на груди/животе — иконки кровотечения WoundView. Компат их
+не рисует и не глушит, это штатный ZCity/C:U HUD.
 
 ### По live-скриншотам: кукла, фильтр HUD, осколки от стекла
 

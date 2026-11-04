@@ -22,7 +22,9 @@ local cvZoom = CreateClientConVar("zc_woundsystem_compat_minigame_zoom", "1", tr
 local cvClamp = CreateClientConVar("zc_woundsystem_compat_clamp_adrenaline", "1", true, false,
     "1 = clamp the shadow organism's adrenaline/painkiller so ZCity camera FX stay sane")
 local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_zoom", "0.75", true, false,
-    "Size of native C:U shrapnel / dislocation minigames (0.4 .. 1.2)", 0.4, 1.2)
+    "Size of native C:U minigames when fullscreen_native is 0 (0.4 .. 1.2)", 0.4, 1.2)
+local cvFullscreenNative = CreateClientConVar("zc_woundsystem_compat_fullscreen_native", "1", true, false,
+    "1 = also stretch native C:U shrapnel / dislocation / AED minigames over the whole screen")
 local cvHandScale = CreateClientConVar("zc_woundsystem_compat_hand_cursor_scale", "0.45", true, false,
     "Size of the on-screen hand in WSZC bandage/syringe minigames (0.2 .. 1)", 0.2, 1)
 
@@ -98,6 +100,23 @@ function WSZC.MinigameFullscreen()
     return cvFullscreen:GetBool() == true and ScrW ~= nil and ScrH ~= nil and ScrW() > 0 and ScrH() > 0
 end
 
+--- Full-screen for C:U's own games too.  The old build deliberately kept
+--- them in a 760 px square (and even shrank it 0.75x); the owner explicitly
+--- asked for EVERY minigame to stretch to the whole screen on selection.
+function WSZC.MinigameFullscreenNative()
+    return WSZC.MinigameFullscreen() and cvFullscreenNative:GetBool() == true
+end
+
+--- Scale factor that makes the native board (820 px clip at 1080p) cover the
+--- shorter screen edge.  Both C:U shrapnel and dislocation derive every draw
+--- rect, SimToScreen/ScreenToSim and hitbox from Clip.Scale(), so scaling that
+--- ONE value keeps the game playable instead of merely enlarging the backdrop.
+function WSZC.NativeFullscreenK(base)
+    base = math.max(tonumber(base) or 1, 0.01)
+    local edge = math.min(ScrW(), ScrH())
+    return math.Clamp(edge / (820 * base), 1, 2.2)
+end
+
 --- One scale used by BOTH minigames (replaces the many `Clip.Scale()` copies).
 function WSZC.MinigameScale()
     local clip = WoundSystem and WoundSystem.MinigameClip
@@ -106,28 +125,31 @@ function WSZC.MinigameScale()
 end
 
 local patchedClip, patchedOriginal, clipWrapper
+local patchedScaleOriginal, scaleWrapper
 
 --- Idempotent, re-applyable: C:U may rebuild its MinigameClip table on hot reload.
 function WSZC.ApplyFullscreenClip()
     local clip = WoundSystem and WoundSystem.MinigameClip
     if type(clip) ~= "table" or type(clip.GetRect) ~= "function" then return false end
-    if clip == patchedClip and clip.GetRect == clipWrapper then return true end
+    if clip == patchedClip and clip.GetRect == clipWrapper
+        and (type(clip.Scale) ~= "function" or clip.Scale == scaleWrapper) then return true end
 
     local original = (clip == patchedClip and patchedOriginal) or clip.GetRect
     if original == clipWrapper then return true end -- nothing to do
     patchedClip, patchedOriginal = clip, original
 
     clipWrapper = function()
-        if WSZC.MinigameFullscreen() and WSZC.WSZCMinigameActive() then
+        if WSZC.MinigameFullscreen()
+            and (WSZC.WSZCMinigameActive()
+                or (WSZC.MinigameFullscreenNative() and WSZC.NativeMinigameActive())) then
             -- x, y, w, h, corner radius.  Radius 0 makes Clip.Begin() fall back
             -- to a full-screen scissor rect instead of a stencil-masked square.
             return 0, 0, ScrW(), ScrH(), 0
         end
         local x, y, w, h, radius = original()
-        if WSZC.NativeMinigameActive() then
-            -- C:U's own games additionally get a smaller clip: their bone and
-            -- hand sprites are authored for a 760 px square, and at full size
-            -- the dislocation bone sits too high to click.
+        if WSZC.NativeMinigameActive() and not WSZC.MinigameFullscreenNative() then
+            -- Only when fullscreen_native is OFF: their bone and hand sprites
+            -- are authored for a 760 px square, so keep the old shrink.
             local z = math.Clamp(cvNativeZoom:GetFloat(), 0.4, 1.2)
             local nw, nh = w * z, h * z
             return x + (w - nw) * 0.5, y + (h - nh) * 0.5, nw, nh, radius * z
@@ -135,6 +157,22 @@ function WSZC.ApplyFullscreenClip()
         return x, y, w, h, radius
     end
     clip.GetRect = clipWrapper
+
+    -- C:U shrapnel / dislocation build their board, sprites, SimToScreen and
+    -- ScreenToSim from Clip.Scale().  Growing ONLY the clip would leave a
+    -- tiny game in the middle of a big black screen; growing this value too
+    -- keeps every hitbox in step with what the player sees.
+    if type(clip.Scale) == "function" and clip.Scale ~= scaleWrapper then
+        patchedScaleOriginal = clip.Scale
+        scaleWrapper = function()
+            local base = patchedScaleOriginal()
+            if WSZC.MinigameFullscreenNative() and WSZC.NativeMinigameActive() then
+                return base * WSZC.NativeFullscreenK(base)
+            end
+            return base
+        end
+        clip.Scale = scaleWrapper
+    end
     return true
 end
 
@@ -231,10 +269,9 @@ WSZC.MaterialName = MaterialName
 
 --- Geometry copied from cl_health_gui.lua (WoundDollAndPanel, 1080p base).
 --- Everything is expressed in ScrH()/1080 so it follows the game's own scale.
-local function HiddenRegion(x, y, w, h)
+local function HiddenRegionRaw(x, y, w, h)
     if WSZC.CUDeathVisualsHidden == true then return true end
     if not WSZC.CUHudFiltered then return false end
-    if IsDollDrawMaterial(WSZC._DrawMaterialName) then return false end
     if type(x) ~= "number" or type(y) ~= "number" then return false end
     w = tonumber(w) or 0
     h = tonumber(h) or 0
@@ -281,7 +318,22 @@ local function HiddenRegion(x, y, w, h)
             size + margin * 2, size + margin * 2) then return true end
     return false
 end
+
+--- Textured primitives and text use the material whitelist: C:U sets the
+--- material right before drawing a limb / status icon / uiPoint, and the
+--- "REMOVE SHRAPNEL" label is drawn immediately after uiPoint with no new
+--- SetMaterial.  Outline / filled-rect / line / poly primitives must NOT use
+--- it: the five inventory slot frames are DrawOutlinedRect calls with NO
+--- SetMaterial at all, so with a whitelist they inherited the last limb
+--- texture and became visible again as empty white squares.  The action-point
+--- black backing is also a filled rect -> hidden, while its text stays.
+local function HiddenRegion(x, y, w, h)
+    if WSZC.CUDeathVisualsHidden == true then return true end
+    if IsDollDrawMaterial(WSZC._DrawMaterialName) then return false end
+    return HiddenRegionRaw(x, y, w, h)
+end
 WSZC.CUHudHiddenRegion = HiddenRegion -- exported for headless tests
+WSZC.CUHudHiddenRegionRaw = HiddenRegionRaw
 
 local savedHudFn, hudWrapper
 local drawWrappersInstalled = false
@@ -317,7 +369,7 @@ local function InstallDrawWrappers()
 
         local origRect = surface.DrawRect
         surface.DrawRect = function(x, y, w, h, ...)
-            if HiddenRegion(x, y, w, h) then return end
+            if HiddenRegionRaw(x, y, w, h) then return end
             return origRect(x, y, w, h, ...)
         end
 
@@ -327,7 +379,7 @@ local function InstallDrawWrappers()
         if type(surface.DrawOutlinedRect) == "function" then
             local origOutline = surface.DrawOutlinedRect
             surface.DrawOutlinedRect = function(x, y, w, h, ...)
-                if HiddenRegion(x, y, w, h) then return end
+                if HiddenRegionRaw(x, y, w, h) then return end
                 return origOutline(x, y, w, h, ...)
             end
         end
@@ -335,7 +387,7 @@ local function InstallDrawWrappers()
         if type(draw.RoundedBox) == "function" then
             local origRound = draw.RoundedBox
             draw.RoundedBox = function(r, x, y, w, h, ...)
-                if HiddenRegion(x, y, w, h) then return end
+                if HiddenRegionRaw(x, y, w, h) then return end
                 return origRound(r, x, y, w, h, ...)
             end
         end
@@ -359,8 +411,8 @@ local function InstallDrawWrappers()
             surface.DrawLine = function(x1, y1, x2, y2, ...)
                 x1, y1 = tonumber(x1) or 0, tonumber(y1) or 0
                 x2, y2 = tonumber(x2) or 0, tonumber(y2) or 0
-                if HiddenRegion(x1, y1) or HiddenRegion(x2, y2)
-                    or HiddenRegion((x1 + x2) * 0.5, (y1 + y2) * 0.5) then return end
+                if HiddenRegionRaw(x1, y1) or HiddenRegionRaw(x2, y2)
+                    or HiddenRegionRaw((x1 + x2) * 0.5, (y1 + y2) * 0.5) then return end
                 return origLine(x1, y1, x2, y2, ...)
             end
         end
@@ -378,7 +430,7 @@ local function InstallDrawWrappers()
                             maxY = (maxY == nil) and v.y or math.max(maxY, v.y)
                         end
                     end
-                    if minX and HiddenRegion(minX, minY, maxX - minX, maxY - minY) then return end
+                    if minX and HiddenRegionRaw(minX, minY, maxX - minX, maxY - minY) then return end
                 end
                 return origPoly(verts, ...)
             end

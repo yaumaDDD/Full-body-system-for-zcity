@@ -1543,10 +1543,15 @@ end
 -- structure (unconscious / fake-ragdoll state), i.e. never auto-stand.
 -- Only the "down / unconscious" structure is preserved.  Wounds, blood,
 -- organs, health etc. are still cleared -- that is what "reset" is for.
+-- ONLY the "still down" structure is preserved.  The previous list also
+-- carried canmove / stun / consciousness / brain over from the injured state;
+-- after a reset those stayed at their wounded values, so ZCity (and the
+-- HG_MovementCalc_2 hooks) kept the player at walking speed forever.  A reset
+-- must clear wounds AND lift movement penalties while still not standing the
+-- character up by itself.
 local RESET_KEEP = {
     "otrub", "needotrub", "fake", "needfake",
-    "canmove", "alive", "stun", "consciousness",
-    "brain", "otrub_start", "unconscious",
+    "alive", "otrub_start", "unconscious",
 }
 
 local function SnapshotZCityStructure(org)
@@ -1555,9 +1560,28 @@ local function SnapshotZCityStructure(org)
     return snap
 end
 
+--- Explicitly lift the speed / sprint penalties: some ZCity builds do not
+--- reinitialise these fields in hg.organism.Clear(), they just leave them as
+--- they were.  Without this a healed character still cannot sprint.
+local function ClearMovementPenalties(org)
+    if type(org) ~= "table" then return end
+    if org.canmove == false then org.canmove = true end
+    if type(org.stun) == "number" and org.stun > 0 then org.stun = 0 end
+    if type(org.pain) == "number" and org.pain > 0 then org.pain = 0 end
+    if type(org.legs) == "table" then
+        -- ZCity / Organs+ keep per-leg damage here; a reset wipes wounds, so
+        -- the movement limiter must not keep the old broken-leg value.
+        for _, key in ipairs({ "l", "r", "left", "right", "L", "R" }) do
+            if type(org.legs[key]) == "number" and org.legs[key] > 0 then org.legs[key] = 0 end
+        end
+    end
+end
+WSZC.ClearMovementPenalties = ClearMovementPenalties
+
 local function RestoreZCityStructure(org, snap)
     if type(org) ~= "table" or type(snap) ~= "table" then return end
     for key, value in pairs(snap) do org[key] = value end
+    ClearMovementPenalties(org)
     local owner = org.owner
     if IsValid(owner) then owner.fullsend = true end
     if hg then
@@ -1587,8 +1611,12 @@ function WSZC.InstallResetStructureGuard()
         local down = (IsValid(owner) and IsValid(owner.FakeRagdoll))
             or org.otrub == true or org.fake == true
         -- A normal Player Spawn has no ragdoll / unconscious state: let the
-        -- stock clear run untouched there.
-        if not down then return originalClear(org, ...) end
+        -- stock clear run and then make sure sprint is available again.
+        if not down then
+            local a, b, c = originalClear(org, ...)
+            ClearMovementPenalties(org)
+            return a, b, c
+        end
         local snap = SnapshotZCityStructure(org)
         local a, b, c = originalClear(org, ...)
         RestoreZCityStructure(org, snap)
@@ -1613,6 +1641,7 @@ function WSZC.InstallResetStructureGuard()
             local ok, res = pcall(originalReset, ent, ...)
             wb.RestoreRagdoll = originalRestore
             if snap then RestoreZCityStructure(org, snap) end
+            ClearMovementPenalties(org)
             if not ok then
                 Warn("WB.ResetOrganism failed: " .. tostring(res))
                 return false

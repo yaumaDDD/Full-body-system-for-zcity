@@ -74,6 +74,9 @@
 иконки `status/*` и кадры `homigrad/handanim`. Управление: 
 `zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.24),
 `zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_handanim_scale` (0.55).
+Мини-игры раскрываются на весь экран: `zc_woundsystem_compat_fullscreen_minigame` (1),
+`zc_woundsystem_compat_fullscreen_native` (1); откат на 570 px —
+`zc_woundsystem_compat_native_minigame_zoom` (0.75) при `fullscreen_native 0`.
 Клавиши, хитбоксы лимбов и логика мини-игр не меняются.
 
 Все материалы интерфейса (647 файлов: `casunknown-images/*`, `woundsystem/*`,
