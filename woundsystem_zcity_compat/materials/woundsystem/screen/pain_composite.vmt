@@ -1,0 +1,54 @@
+screenspace_general
+{
+    "$pixshader" "woundsystem_pain_ps20b"
+
+    "$basetexture" "_rt_FullFrameFB"
+    "$texture1" "casunknown-images/screen/painimage"
+    "$texture2" "casunknown-images/screen/painnoise"
+    "$texture3" "casunknown-images/screen/paingrain"
+
+    "$ignorez" "1"
+    "$vertexcolor" "1"
+    "$vertextransform" "1"
+    "$fix_fb" "32768"
+
+    "<dx90"
+    {
+        "$no_draw" "1"
+    }
+
+    "$copyalpha" "1"
+    "$alpha_blend_color_overlay" "0"
+    "$alpha_blend" "1"
+    "$linearwrite" "1"
+    "$linearread_basetexture" "1"
+    "$linearread_texture1" "1"
+    "$linearread_texture2" "1"
+    "$linearread_texture3" "1"
+
+    "$c0_x" "0"
+    "$c0_y" "0"
+    "$c0_z" "1"
+    "$c0_w" "1"
+    "$c1_x" "0"
+    "$c1_y" "0"
+    "$c1_z" "0"
+    "$c1_w" "0"
+    "$c2_x" "0"
+    "$c2_y" "0"
+    "$c2_z" "0"
+    "$c2_w" "0"
+    "$c3_x" "0.10835"
+    "$c3_y" "0.82661"
+    "$c3_z" "1"
+    "$c3_w" "0.01766"
+
+    "Proxies"
+    {
+        "Equals"
+        {
+            "srcVar1" "$fix_fb"
+            "resultVar" "$flags2"
+        }
+    }
+}

@@ -58,6 +58,7 @@
 | Кость вправления рядом с суставом и на экране | `zc_woundsystem_compat_dislocation_start 35` (диапазон `10..100`) |
 | Рука не трясётся и уменьшена | `zc_woundsystem_compat_hand_cursor_scale 0.45` (диапазон `0.2..1`) |
 | Кукла WoundView собрана из 15 слоёв `unitmenu/limbs` архива + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, размер `zc_woundsystem_compat_unitmenu_scale 0.28` (диапазон `0.1..0.8`) |
+| Все 647 UI-материалов внутри сборки (без ERROR и ручного копирования) | `woundsystem_zcity_compat/materials/` + зеркало в `casualties_unknown_health_system_beta/materials/`, генератор `tools/pack_ui_materials.py` |
 | Рука в мини-играх — кадры `homigrad/handanim` из архива (ладонь/кулак) | `zc_woundsystem_compat_handanim 1`, размер `zc_woundsystem_compat_handanim_scale 0.55` (диапазон `0.2..1.5`) |
 | Зелёные полосы/лёгкие/ЭКГ сканера слева скрыты | `zc_woundsystem_compat_hide_unit_panel 1` (глушатся `DrawTexturedRectUV`, `DrawLine`, `DrawPoly`) |
 | Экран смерти C:U не рисуется, но ЛКМ респавнит | включается вместе с `zc_woundsystem_compat_disable_cu_fx 1`; хук обёрнут, а не удалён |
@@ -65,10 +66,12 @@
 | Если респавн не сработал | подождите 1 с после смерти и нажмите ЛКМ; откат визуала C:U — `zc_woundsystem_compat_disable_cu_fx 0` |
 
 Ассеты для куклы и руки берутся из архива `для переделывания интерфейса.zip`
-(`origin/main`). Нарезанные PNG уже лежат в `woundsystem_zcity_compat/materials/wszc/unitmenu/`,
-поэтому кукла работает даже без WIP-аддона; кадры руки читаются из
-`human_hands_for_z_city_casualties_medical_system_heavy_wip`, который уже есть в full pack.
-Скрипт пересборки — `tools/build_unitmenu_materials.py`. Ни один файл внутри
+(`origin/main`). Нарезанные PNG лежат в `woundsystem_zcity_compat/materials/wszc/unitmenu/`,
+кадры руки — в `.../materials/homigrad/handanim/` (оба набора внутри коннектора,
+WIP-аддон больше не обязателен), а весь `casunknown-images/*` — рядом с ними и
+дублируется в папку C:U. Скрипты пересборки —
+`tools/build_unitmenu_materials.py` и `tools/pack_ui_materials.py`, список с
+хэшами — `woundsystem_zcity_compat/MATERIALS.sha256`. Ни один Lua-файл внутри
 исходных ZIP-аддонов не изменён.
 
 Панель травм, HUD и протокол шрапнели C:U при этом остаются — отключаются только
@@ -102,10 +105,14 @@ ZCity сам вызывает `resource.AddWorkshop` при `hg_loadcontent 1`:
 `+host_workshop_collection <ID>` вместе с `-authkey`, либо в `workshop.vdf`.
 Без них клиенты увидят ERROR-модели и `missing material`.
 
-**Про C:U — важное исключение.** В пакет уже положена папка
-`casualties_unknown_health_system_beta` из репозитория (Lua, 3 шрифта,
-3 шейдера). Это **не полный** аддон: в ZIP нет `materials/` и `sound/`, которые
-перечислены в `sv_resources.lua`. Поэтому нужно одно из двух:
+**Про C:U — важное исключение.** В исходном ZIP репозитория лежат только Lua,
+3 шрифта и 3 шейдера — `materials/` и `sound/` там нет. Сборка **уже добавила**
+все UI-материалы (647 файлов) и в `woundsystem_zcity_compat/materials/`, и в
+`casualties_unknown_health_system_beta/materials/`: WoundView, лимбы, иконки,
+экраны и мини-игры больше не показывают ERROR, вручную ничего перекидывать не
+надо, `woundsys_resource_downloads 1` для них не требуется. Остаются только
+звуки C:U (в архивах их нет) и шейдеры `3440271589`; за ними — один из двух
+вариантов:
 
 * **Вариант А (рекомендуется, точная версия):** оставить папку из пакета и
   отдельно докачать контент C:U на сервер, включив

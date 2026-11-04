@@ -76,6 +76,13 @@
 `zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_handanim_scale` (0.55).
 Клавиши, хитбоксы лимбов и логика мини-игр не меняются.
 
+Все материалы интерфейса (647 файлов: `casunknown-images/*`, `woundsystem/*`,
+лимбы C:U, кадры руки, .vtf/.vmt) теперь лежат в
+`woundsystem_zcity_compat/materials/` и продублированы в папку C:U внутри
+full pack. Больше не нужно вручную переносить текстуры из других аддонов или
+Мастерской, чтобы убрать ERROR: распакуйте сборку и перезапустите игру.
+Проверка покрытия — `tools/pack_ui_materials.py`, список — `MATERIALS.sha256`.
+
 **После смерти:** LMB по экрану отправляет `WoundSystem_PlayerRespawnRequest`
 (обработчик живёт в хуке `WoundSystem_DeathScreenDisplay` из C:U; компат гасит
 только его отрисовку, но не ввод). Запрос обрабатывается серверным

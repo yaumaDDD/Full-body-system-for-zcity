@@ -209,10 +209,27 @@
   `zc_woundsystem_compat_unitmenu_scale 0.28`,
   `zc_woundsystem_compat_handanim 1`,
   `zc_woundsystem_compat_handanim_scale 0.55`. Исходные ZIP-аддоны не
-  правятся; если WIP-аддон с `homigrad/handanim` отсутствует, рука остаётся
-  родной C:U (кукла при этом работает — её PNG лежат в компате). Если сборка
-  GMod закрывает `debug.getupvalue`, остаётся родная кукла C:U: логика
-  WoundView, мини-игр и респавна в любом случае не меняется.
+  правятся; кадры `homigrad/handanim` теперь тоже лежат в самом коннекторе,
+  поэтому WIP-аддон и чужие файлы больше не нужны. Если сборка GMod закрывает
+  `debug.getupvalue`, остаётся родная кукла C:U: логика WoundView, мини-игр и
+  респавна в любом случае не меняется.
+
+* **Все материалы UI теперь внутри сборки — перекидывать ничего не нужно.**
+  Исходный `casualites unknown.zip` содержит только Lua (71 файл) и **вообще не
+  имеет `materials/`**, поэтому WoundView, сканер, иконки предметов, лимбы
+  `middle/*` / `outlines/*` и мини-игры рисовались ERROR-текстурами. Добавленный
+  архив `для того чтобы все работало вместе материалы для UI.zip` (362 файла:
+  весь `casunknown-images/*`, `woundsystem/*`, `.vtf/.vmt`) вместе с кадрами из
+  первого архива (216 PNG) теперь распакован `tools/pack_ui_materials.py` в
+  `woundsystem_zcity_compat/materials/` — **647 файлов**, и тем же скриптом
+  сборки продублирован в `casualties_unknown_health_system_beta/materials/`
+  внутри full pack. Упаковщик сам читает оба архива из `origin/main`, сверяет
+  все 125 путей материалов, на которые ссылается C:U/WSZC Lua, и создаёт 36
+  недостающих алиасов: 25 с точным регистром (в архиве имена в lowercase, а Lua
+  просит camelCase — на Linux-клиенте это ERROR) и 11 переносов спрайтов руки/
+  фона в папки `dislocationminigame`, `shrapnelminigame`, `syringeminigame`
+  плюс `hemothoraxfill_red`. Итог проверяется assert'ом: ни одного
+  неразрешённого материала. Полный список с хэшами — `MATERIALS.sha256`.
 
 Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
 и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.

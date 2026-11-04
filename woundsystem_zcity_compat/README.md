@@ -148,10 +148,16 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 `hg_loadcontent 1`: `3657897364` (main content), `3257937532` (distac content),
 `3389728250` (Glide), `3389795738` (GTAV helicopters). На выделенном сервере эти
 ID должны быть в `workshop.vdf` / `+host_workshop_collection`, иначе клиенты
-увидят ERROR-модели и `missing material` в консоли. В ZIP C:U лежат только Lua,
-3 шрифта и 3 скомпилированных шейдера — звуков и материалов там нет;
-`woundsys_resource_downloads 1` помогает лишь когда файлы реально есть на
-сервере.
+увидят ERROR-модели и `missing material` в консоли. В исходном ZIP C:U лежат только Lua, 3 шрифта и 3 скомпилированных шейдера —
+звуков и материалов там нет. **В этой сборке это исправлено**: 647 UI-материалов
+(`casunknown-images/*`, `woundsystem/*`, родные лимбы `middle/`+`outlines/`,
+кадры руки, .vtf/.vmt) упакованы в `woundsystem_zcity_compat/materials/` и
+зеркально в `casualties_unknown_health_system_beta/materials/` full pack.
+`tools/pack_ui_materials.py` разрешает все 125 ссылок на материалы из C:U/WSZC
+Lua (36 алиасов: регистр, перенос спрайтов мини-игр, `_red`-вариант) и
+assert'ом запрещает пропуски. Звуки C:U по-прежнему отсутствуют; подписка
+`3728573930` нужна только ради звуков/шейдеров, и её нельзя ставить одновременно
+с папкой C:U.
 
 `zcity organs +`, `project hemogen blood`, `simple eye gore`, `zcitygore` для
 системы **не обязательны**: компат к ним не обращается. При установке
@@ -655,10 +661,40 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  UV/линии/полигоны, `hook.Add`, `PreDrawHUD`, viewmodel, нативные сессии) и
  `TEST_OK 11/11` (экран смерти/респавн/dead-context guard/Think-очистка) и
  `TEST_OK 21/21` (кукла из архива, `Limbs` upvalue, иконки статусов, кадры руки,
- нативный оверрайд, PNG/геометрия) — всего **116 тестов**); на живом GMod-сервере ассистентом не прогонялось.
+ нативный оверрайд, PNG/геометрия) и `TEST_OK 14/14` (647 материалов,
+ покрытие всех 125 ссылок C:U Lua, алиасы регистра/переноса, .vtf/.vmt,
+ зеркало в папку C:U, `MATERIALS.sha256`) — всего **130 тестов**); на живом GMod-сервере ассистентом не прогонялось.
  Пользовательские live-скриншоты после `3d7c793` и `e70bfb5` показали, что
  предыдущие headless-тесты не доказывали скрытие в реальном клиенте;
  исправления выше сделаны по ним, но собственной live-проверки не было.
+
+## Самодостаточные материалы UI
+
+Исходный `casualites unknown.zip` (71 Lua, 3 шрифта, 3 шейдера) не содержит
+`materials/` — именно поэтому интерфейс показывал ERROR и приходилось вручную
+перекидывать текстуры из других файлов. `tools/pack_ui_materials.py` берёт оба
+архива из `origin/main` и раскладывает в `woundsystem_zcity_compat/materials/`:
+
+| Источник | Что даёт |
+|---|---|
+| `для переделывания интерфейса.zip` | 216 PNG: `zcity_delta/unitmenu/*`, `homigrad/handanim/*` (9 кадров руки), `bleedanim`, `limbs`, 159 moodles, traits, smiley |
+| `для того чтобы все работало вместе материалы для UI.zip` | 362 файла: весь `casunknown-images/*` (18 старых лимбов `middle/`+`outlines/` с `_padded`, 43 иконки, 66 экранов, 43 предмета, мини-игры), `woundsystem/*`, 7 `.vtf`, 6 `.vmt` |
+| генератор `tools/build_unitmenu_materials.py` | 33 PNG нарезанной куклы (`wszc/unitmenu/`) |
+
+Итого **647 файлов**. Плюс 36 алиасов, которые создаёт упаковщик: 25 точных
+camelCase-копий (архив в lowercase, Linux-клиент регистрозависим) и 11
+переносов — C:U ищет `handgraspidle1.png` / `minigameshrapnel.png` в папках
+`dislocationminigame`, `shrapnelminigame`, `syringeminigame`, а архив держит их
+только в `bandageminigame`; отдельно `screen/hemothoraxfill_red.png`.
+14 PNG-дублей `(1)`, `(2)`, `(3)` из корня второго архива побайтово проверены и
+пропущены. Скрипт сборки `zcity_full_pack.zip` зеркалирует те же 647 файлов в
+`garrysmod/addons/casualties_unknown_health_system_beta/materials/`, поэтому
+аддон C:U тоже полный. Lua исходных аддонов не меняется.
+
+Проверить в игре: откройте WoundView (`T`) — кукла, фон, иконки предметов и
+статусов должны быть без розовых ERROR-квадратов; в консоли не должно быть
+`missing material`. Если ERROR остался, сначала убедитесь, что распакована
+именно эта сборка и клиент+сервер перезапущены.
 
 ## Файлы
 

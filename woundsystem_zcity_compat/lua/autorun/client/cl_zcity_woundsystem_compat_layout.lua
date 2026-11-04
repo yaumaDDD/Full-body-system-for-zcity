@@ -598,8 +598,11 @@ local function BuildUnitmenuIcons()
 end
 WSZC.BuildUnitmenuIcons = BuildUnitmenuIcons
 
---- The hand frames live in the WIP addon that is already part of the full
---- pack.  If it is missing we silently keep C:U's original hand sprites.
+--- The hand frames are bundled into THIS addon under materials/homigrad/
+--- handanim/ by tools/pack_ui_materials.py, together with the full
+--- casunknown-images/ set.  The connector no longer depends on the WIP
+--- addon, on Workshop materials or on files copied in by hand.  If the
+--- frames are ever missing we silently keep C:U's original hand sprites.
 local function UnitmenuHandMaterials()
     if not cvHandanim:GetBool() then return nil end
     if handMatsChecked then return handIdleMat end
