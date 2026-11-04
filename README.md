@@ -109,6 +109,27 @@
   `InputMouseApply` больше не возвращает `true` (это убивало `gui.MousePos()`),
   `+attack`/`+attack2` пропускаются к UI, курсор удерживается без проверки
   `vgui.CursorVisible()`, а watchdog больше не роняет его между пакетами.
+* **Вывихи вправляются вручную из WoundView**: нативная C:U мини-игра
+  `WoundSystemDislocationMinigame` (перетаскивание кости в сустав) подключена к
+  кнопке `FIX DISLOCATION`. Истина — ZCity `org.larmdislocation` /
+  `org.rarmdislocation` / `org.llegdislocation` / `org.rlegdislocation`:
+  вывих не теряется в ragdoll, успешное вправление снимает флаг всей группы,
+  добавляет `org.painadd` и не откатывается 4 Гц «тенью». На время сессии
+  камера/движение зафиксированы, а `avgPain` ограничен, иначе C:U блокировала
+  каждый удар по кости при боли > 75.
+* **Переломы остаются «как в ZCity»**: C:U только рисует иконку `state.broken`
+  в WoundView по `org.larm/rarm/lleg/rleg >= 1` и `org.brokenribs > 0`.
+  Отдельной мини-игры, своей симуляции костей и своих таймеров нет — создание,
+  регенерация и лечение идут ванильными `sv_bone.lua` / `sv_pain.lua` и
+  медицинскими SWEP'ами ZCity.
+* **Инвентарь C:U убран из WoundView**: 5 слотов `1..5`, drag&drop, подбор
+  мировых медпредметов (`E`/`F`) и tooltips слотов отключены; скрытый
+  виртуальный слот `6` для мини-игр от ZCity SWEP'ов сохранён. Бинды слотов
+  остаются за ZCity. Откат: `zc_woundsystem_compat_hide_cu_inventory 0`.
+* **Панель UNI-HEALTH («unit») убрана**: левый сканер `UNI-HEALTH v2.03`
+  внутри окна осмотра больше не рисуется; сам WoundView, кукла, иконки лимбов,
+  кнопки `FIX DISLOCATION` / `REMOVE SHRAPNEL`, tooltips и курсор сохранены.
+  Откат: `zc_woundsystem_compat_hide_unit_panel 0`.
 
 Подробности и таблица причин: [`woundsystem_zcity_compat/SOURCE_INDEX.md`](woundsystem_zcity_compat/SOURCE_INDEX.md)
 и раздел «Исправления по скриншотам» в `woundsystem_zcity_compat/README.md`.

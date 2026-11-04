@@ -473,6 +473,11 @@ local function SyncShrapnel(ply, org)
 
     if ply._WSZCLimbsRef ~= limbs then
         WSZC.RestoreShrapnel(ply)
+        -- RestoreShrapnel() returns early when there are no fragments, so it
+        -- cannot be the only place that records the table identity.  Without
+        -- this, a player with a dislocation but no shrapnel would look like a
+        -- "fresh ragdoll" on EVERY tick and the reduction would be undone.
+        ply._WSZCLimbsRef = limbs
     end
 
     for limbId, state in pairs(limbs) do
@@ -488,13 +493,129 @@ end
 WSZC.SyncShrapnel = SyncShrapnel
 local PullShrapnel = SyncShrapnel -- keep the old internal name working
 
+---------------------------------------------------------------------------
+-- Bones: dislocations / fractures stay in the ZCity organism
+---------------------------------------------------------------------------
+-- ZCity's vanilla sv_bone.lua is the ONLY source of truth for bones:
+--   org.larmdislocation / org.rarmdislocation / org.llegdislocation /
+--   org.rlegdislocation = true  -> joint out of the socket
+--   org.larm / org.rarm / org.lleg / org.rleg >= 1 -> the bone is broken
+--   org.brokenribs > 0 -> fractured ribs (thorax)
+-- C:U only draws the WoundView icons and runs the manual reduction minigame.
+-- The three C:U limbs of one arm/leg share ONE ZCity flag, exactly like
+-- WB.Sync()'s AnyDislocated() did.  A successful reduction on any of them
+-- clears the whole ZCity group.
+
+local DISLOC_FLAGS = {
+    larmdislocation = { "arm_L", "forearm_L", "hand_L" },
+    rarmdislocation = { "arm_R", "forearm_R", "hand_R" },
+    llegdislocation = { "thigh_L", "crus_L", "foot_L" },
+    rlegdislocation = { "thigh_R", "crus_R", "foot_R" },
+}
+
+-- ZCity writes a full break as org[key] = 1.  Regeneration (sv_pain.lua) and
+-- ZCity medical SWEPs then bring it back down; 0.85 keeps the fracture icon
+-- visible while the bone is still essentially broken.
+local FRACTURE_DAMAGE = 0.85
+
+local function Fractured(org, limbId, map)
+    if limbId == "thorax" and (tonumber(org.brokenribs) or 0) > 0 then return true end
+    return (tonumber(org[map and map.dmg]) or 0) >= FRACTURE_DAMAGE
+end
+WSZC.Fractured = Fractured -- exported for headless tests
+
+--- True while C:U's native manual-reduction minigame session is open.
+function WSZC.DislocationActive(ply)
+    local sessions = WSZC.CUSessions
+    return type(sessions) == "table" and type(sessions.Dislocation) == "table"
+        and sessions.Dislocation[ply] ~= nil
+end
+
+--- Restore bone state from ply.organism after C:U InitPlayer() replaced the
+--- PlayerLimbs table (ragdoll / spawn).  Called from RestoreShrapnelSoon().
+function WSZC.RestoreBones(ply)
+    if not (Authority() and IsValid(ply)) then return false end
+    local org = ply.organism
+    if type(org) ~= "table" then return false end
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply)
+    if type(limbs) ~= "table" then return false end
+
+    ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
+    for limbId, map in pairs(LIMB_ORG) do
+        if map.dmg then
+            local state = limbs[limbId]
+            if type(state) ~= "table" and h.GetLimbState then
+                local ok, created = pcall(h.GetLimbState, ply, limbId)
+                if ok then state = created end
+            end
+            if type(state) == "table" then
+                local out = map.dis and org[map.dis] == true or false
+                state.dislocated = out
+                state.dislocationTimer = out and 100 or 0
+                state.broken = Fractured(org, limbId, map)
+                state.boneHealTimer = math.Clamp((1 -
+                    (tonumber(org[map.dmg]) or 0)) * 100, 0, 100)
+                ply._WSZCExpectedDislocation[limbId] = out
+                if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
+            end
+        end
+    end
+    return true
+end
+
+--- Bidirectional sync.  On a NEW PlayerLimbs table we restore from the
+--- organism.  On the SAME table, a `dislocated -> false` change that we did
+--- not write came from C:U (the manual reduction minigame, or its heal timer)
+--- and must clear the ZCity flag.  Without this the 4 Hz shadow would put the
+--- joint straight back into its socket and the minigame could never succeed.
+function WSZC.SyncDislocation(ply, org, limbs, newLimbTable)
+    if type(limbs) ~= "table" then return false end
+    ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
+
+    if newLimbTable then
+        return WSZC.RestoreBones(ply)
+    end
+
+    local changed = false
+    for flag, names in pairs(DISLOC_FLAGS) do
+        if org[flag] == true then
+            local reduced = false
+            for _, id in ipairs(names) do
+                local state = limbs[id]
+                if type(state) == "table"
+                    and ply._WSZCExpectedDislocation[id] == true
+                    and state.dislocated ~= true then
+                    reduced = true
+                    break
+                end
+            end
+            if reduced then
+                org[flag] = false
+                -- ZCity's own fixlimb()/FixDislocatedGroup() charge pain for a
+                -- reduction; keep that structure instead of C:U happiness.
+                org.painadd = (tonumber(org.painadd) or 0) + 10
+                ply.fullsend = true
+                changed = true
+            end
+        end
+    end
+    return changed
+end
+
 -- ZCity's `hg.Fake` / `hg.FakeUp` fire when the character drops into / gets
 -- up from the unconscious ragdoll.  Re-assert the fragments immediately and
 -- once more after every ragdoll hook has run (C:U may reset limbs there).
 local function RestoreShrapnelSoon(ply)
     if not (Authority() and IsValid(ply) and ply.IsPlayer and ply:IsPlayer()) then return end
-    timer.Simple(0, function() WSZC.RestoreShrapnel(ply) end)
-    timer.Simple(0.3, function() WSZC.RestoreShrapnel(ply) end)
+    timer.Simple(0, function()
+        WSZC.RestoreShrapnel(ply)
+        WSZC.RestoreBones(ply)
+    end)
+    timer.Simple(0.3, function()
+        WSZC.RestoreShrapnel(ply)
+        WSZC.RestoreBones(ply)
+    end)
 end
 hook.Add("Fake", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
 hook.Add("FakeUp", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
@@ -980,6 +1101,10 @@ local function PushShadow(ply, org)
     local body, limbs = h.GetBody(ply), h.GetLimbs(ply)
     if type(body) ~= "table" or type(limbs) ~= "table" then return end
 
+    -- Capture this BEFORE PullShrapnel() refreshes ply._WSZCLimbsRef: a new
+    -- C:U PlayerLimbs table means ragdoll/spawn, not a real reduction.
+    local newLimbTable = (ply._WSZCLimbsRef ~= limbs)
+
     local now = CurTime and CurTime() or 0
     if (ply._WSZCShadowNext or 0) > now then return end
     ply._WSZCShadowNext = now + 0.25 -- 4 Hz is plenty for a HUD
@@ -991,7 +1116,13 @@ local function PushShadow(ply, org)
     end
 
     bodySet("bloodVolume", math.Clamp((tonumber(org.blood) or 5000) / 5000 * 100, 0, 200))
-    bodySet("avgPain", math.max(tonumber(org.pain) or 0, 0))
+    -- C:U blocks every bone hit while avgPain > DislocationPainBlock (75).
+    -- A fresh ZCity dislocation already adds +35 painadd, so without this cap
+    -- the manual reduction minigame would be unwinnable.  It is a temporary
+    -- analgesia for the session only; the organism keeps its real pain.
+    local avgPain = math.max(tonumber(org.pain) or 0, 0)
+    if WSZC.DislocationActive(ply) then avgPain = math.min(avgPain, 60) end
+    bodySet("avgPain", avgPain)
     bodySet("heartRate", tonumber(org.pulse) or 70)
     bodySet("shock", math.Clamp((tonumber(org.shock) or 0) / 0.7, 0, 100))
     bodySet("consciousness", math.Clamp((tonumber(org.consciousness) or 1) * 100, 0, 100))
@@ -1027,6 +1158,7 @@ local function PushShadow(ply, org)
 
     local pain, bleed = math.max(tonumber(org.pain) or 0, 0), math.max(tonumber(org.bleed) or 0, 0)
     local woundMap = (cvLimbBleed and cvLimbBleed:GetBool()) and LimbBleedMap(ply, org) or nil
+    WSZC.SyncDislocation(ply, org, limbs, newLimbTable)
     for limbId, state in pairs(limbs) do
         if type(state) == "table" then
             local cuBleed = math.max(tonumber(state.bleed) or 0, 0)
@@ -1079,7 +1211,27 @@ local function PushShadow(ply, org)
                 local dmg = math.Clamp(tonumber(org[map.dmg]) or 0, 0, 1)
                 limbSet("muscle", math.Clamp((1 - dmg) * 100, 0, 100))
                 if map.amp then limbSet("dismembered", org[map.amp] == true) end
-                if map.dis then limbSet("dislocated", org[map.dis] == true) end
+                -- Fractures are pure ZCity state (org.<limb> >= 1, brokenribs).
+                -- C:U only draws the icon; no C:U fracture simulation runs.
+                limbSet("broken", Fractured(org, limbId, map))
+                limbSet("boneHealTimer", math.Clamp((1 - dmg) * 100, 0, 100))
+                if map.dis then
+                    local out = org[map.dis] == true
+                    limbSet("dislocated", out)
+                    -- C:U's WoundSystem_DislocationStart() uses this as the
+                    -- bone's starting distance.  A fresh ZCity dislocation
+                    -- would otherwise arrive with timer = 0 (already reduced)
+                    -- and complete on the first input packet without ever
+                    -- letting the player move the bone by hand.
+                    if out then
+                        if (tonumber(state.dislocationTimer) or 0) <= 0 then
+                            limbSet("dislocationTimer", 100)
+                        end
+                    else
+                        limbSet("dislocationTimer", 0)
+                    end
+                    ply._WSZCExpectedDislocation[limbId] = out
+                end
             end
             if limbChanged then dirtyLimbs[limbId] = true end
         end

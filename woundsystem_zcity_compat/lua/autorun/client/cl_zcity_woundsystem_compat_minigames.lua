@@ -26,6 +26,11 @@ function WSZC.MinigameActive()
     local bandage, syringe = WSZCBandageMinigame, WSZCSyringeMinigame
     if bandage and bandage.IsActive and bandage.IsActive() then return true end
     if syringe and syringe.IsActive and syringe.IsActive() then return true end
+    -- C:U's native manual bone reduction (WoundView -> FIX DISLOCATION).
+    -- It owns the cursor and reads gui.MousePos(); include it so the movement
+    -- lock, camera freeze and cursor watchdog cover it too.
+    local dislocation = WoundSystemDislocationMinigame
+    if dislocation and dislocation.active == true then return true end
     return false
 end
 

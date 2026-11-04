@@ -13,8 +13,9 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 выступает только как:
 
 - **UI** — панель осмотра травм `WoundSystem.OpenHealthHUD()` (self-only);
-- **мини-игры** — bandage/syringe для «живых» ZCity-предметов и родная игра
-  извлечения осколков;
+- **мини-игры** — bandage/syringe для «живых» ZCity-предметов, родная игра
+  извлечения осколков и родная игра **ручного вправления вывихов**
+  (`WoundSystemDislocationMinigame`, кнопка `FIX DISLOCATION`);
 - **показатели** — `BodyState`/`PlayerLimbs` в C:U синхронизируются как
   *теневая проекция* ZCity-организма (никогда наоборот);
 - **протокол шрапнели** — единое целочисленное поле `state.shrapnel`.
@@ -105,7 +106,8 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 Вход в мини-игру — кнопка «Проверить травмы» → родная панель C:U → точка
 `REMOVE SHRAPNEL`. Инструмент не требуется: `slotIdx = 0`, `hasTweezers = false`,
 игра идёт «руками» (ветка `not MG.hasTweezers`), `ConsumeToolDurability` не
-вызывается. Инвентарь C:U не интегрируется с ZCity SWEP'ами.
+вызывается. Инвентарь C:U скрыт, ZCity SWEP'ы используют скрытый слот `6`.
+Аналогично точка `FIX DISLOCATION` открывает ручное вправление вывиха.
 
 ## Установка
 
@@ -221,8 +223,10 @@ SWEP. В authority-режиме каждая такая доза дополни�
 - Родные C:U сессии bandage/syringe тоже учитываются в `HasExternalMinigame`
   и закрываются при `StopExternalMinigame`, чтобы две мини-игры не открылись
   поверх друг друга.
-- AED / dislocation мини-игры не используются: у ZCity для них нет `spec.mg`.
-  Shrapnel-мини-игра, наоборот, **родная C:U** и открывается из панели осмотра.
+- AED не используется: у ZCity для него нет `spec.mg`. Shrapnel-мини-игра и
+  dislocation-мини-игра вправления костей, наоборот, **родные C:U** и
+  открываются из панели осмотра; их результат двусторонне синхронизируется с
+  `ply.organism` (см. раздел ниже).
 
 ## Кнопка проверки травм в круговом селекторе
 
@@ -235,8 +239,11 @@ SWEP. В authority-режиме каждая такая доза дополни�
 `ZCity_WoundBridge_Inspect_WSZC`; его идентификатор сортируется после штатного в
 `SortedPairs()`, поэтому двух кнопок не бывает.
 
-- Открывается именно родная панель здоровья/ран C:U, со своим HUD, инвентарём и
-  мини-играми. Второго меню, HUD и инвентаря не создаётся.
+- Открывается именно родная панель здоровья/ран C:U, со своим HUD и
+  мини-играми. Второго меню и HUD не создаётся; **инвентарь `1..5` и левый
+  сканер `UNI-HEALTH` («панель unit») скрыты** runtime-фильтром отрисовки,
+  потому что слоты и SWEP'ы привязаны в ZCity. Скрытый виртуальный слот `6`
+  для ZCity SWEP'ов оставлен.
 - Кнопка видна только живому `LocalPlayer()` при готовом аддоне: `WSZC_Ready`,
   `zc_woundsystem_bridge 1`, `woundsys_enabled 1`,
   `zc_woundsystem_compat_inspect_button 1`. Гейт на `WB.IsEnabled()` убран
@@ -347,7 +354,9 @@ CAS3-музыка, тиннитус, asystole, pain/death/growl-звуки, HEV,
 и «gunshot hearing» (`woundsys_audio_master 0`, `woundsys_music_enabled 0`,
 `woundsys_tinnitus_volume 0`, …). **Сохраняются** панель ран `WoundDollAndPanel`,
 `WoundSystem_UIRegistry`, обработка ввода панели и владелец курсора — C:U
-продолжает работать как UI, мини-игры и протокол шрапнели. Оригиналы хуков
+продолжает работать как UI, мини-игры и протокол шрапнели. Обёртка
+`WoundDollAndPanel` в `cl_..._layout.lua` только скрывает инвентарь и сканер
+`UNI-HEALTH`; саму панель она не снимает. Оригиналы хуков
 лежат в `WSZC.CUFxSaved`, поэтому `zc_woundsystem_compat_disable_cu_fx 0`
 полностью возвращает эффекты. Фильтр повторяется каждую секунду, потому что
 C:U пересоздаёт `EYEVIEW_CalcView` из своего `Think`.
@@ -436,7 +445,7 @@ no-op (иначе отложенный таймер поднял бы игрок
 сравнивает ссылку на таблицу: если она новая, `WSZC.RestoreShrapnel()`
 восстанавливает осколки ИЗ `ply.organism` (создавая недостающий limb через
 `H.GetLimbState`), если та же — честно принимает результат извлечения из
-shrapnel-мини-игры. Хуки `Fake` / `FakeUp` / `HG_OnWakeOtrub`额外 переутверждают
+shrapnel-мини-игры. Хуки `Fake` / `FakeUp` / `HG_OnWakeOtrub` дополнительно переутверждают
 состояние на следующем кадре (дополнительно).
 
 **Стекло в ragdoll.** Раньше glass-обработчик висел `pre`-функцией на ZCity
@@ -467,6 +476,69 @@ ragdoll резолвится в т.ч. через `NWEntity("ply")`.
 `vgui.CursorVisible()`, а `WSZC_MinigameClientWatch` больше не роняет курсор
 между сетевыми пакетами.
 
+## Вывихи, переломы, инвентарь C:U и панель unit
+
+**Вывихи — ручная мини-игра в WoundView.** У приложенной версии C:U уже есть
+`lua/woundsystem/client/minigames/cl_dislocation.lua`: рука тянет смещённую кость
+к суставу (`boneX/boneY` → `DislocationFinishX/Y`), сервер ведёт
+`Sessions.Dislocation` и на успехе пишет `state.dislocated = false`,
+`state.dislocationTimer = 0`. Кнопка `FIX DISLOCATION` рисуется самой C:U в
+`WoundSystemDrawLimbActionPoint()`, когда `state.dislocated == true`. Проблема
+была не в UI, а в авторитете: `PushShadow` каждые 0.25 с перезаписывал
+`state.dislocated` из ZCity, поэтому вправление мгновенно откатывалось, а
+свежий вывих приходил с `dislocationTimer = 0` (кость уже «на месте» — успех
+на первом же пакете ввода, без ручного движения).
+
+Теперь в `sv_zcity_woundsystem_compat_organism.lua`:
+
+- `DISLOC_FLAGS` мапит один флаг ZCity на три C:U лимба (как `AnyDislocated()`
+  в `WB.Sync`): `larmdislocation` → `arm_L/forearm_L/hand_L` и т.д.;
+- `WSZC.SyncDislocation()` на НОВОЙ таблице `PlayerLimbs` (ragdoll/спавн)
+  вызывает `WSZC.RestoreBones()` — вывихи и переломы восстанавливаются из
+  организма и не теряются; на ТОЙ ЖЕ таблице изменение
+  `dislocated true → false`, которого мы не писали
+  (`_WSZCExpectedDislocation`), снимает флаг ZCity всей группы, добавляет
+  `org.painadd + 10` и ставит `ply.fullsend`;
+- `PushShadow` выставляет `state.dislocationTimer = 100` у свежего вывиха и
+  **не трогает** прогресс во время активной сессии; после успеха — `0`;
+- `WSZC.DislocationActive()` читает `WSZC.CUSessions.Dislocation[ply]` (upvalue
+  `Sessions` из `sv_health.lua`). Пока сессия открыта, `body.avgPain`
+  ограничен 60: в C:U `DislocationPainBlock = 75`, а ZCity сразу добавляет
+  `painadd + 35`, иначе каждый удар по кости блокировался бы. Реальная боль в
+  `ply.organism` не меняется;
+- клиентский `WSZC.MinigameActive()` и серверный `WSZC_MinigameServerLock`
+  знают про нативную сессию: курсор, заморозка камеры и запрет
+  движения/выстрела действуют и в этой мини-игре.
+
+**Переломы — только ZCity.** Ванильный `sv_bone.lua` создаёт перелом как
+`org.larm/rarm/lleg/rleg = 1`, рёбра — `org.brokenribs > 0`, `sv_pain.lua`
+медленно регенерирует кость, а ZCity медицинские SWEP'ы через
+`WSZC.ApplyMedicalDelta()` уменьшают `org.<limb>`. C:U получает лишь
+`state.broken` и `state.boneHealTimer` как **отображение**: отдельной
+мини-игры вправления перелома и своей симуляции костей нет. Порог иконки —
+`0.85` (кость фактически сломана).
+
+**Инвентарь C:U скрыт, слот `6` жив.** `cl_..._layout.lua` подменяет глобал
+`WoundSystemInventorySlots` прокси: слоты `1..5` всегда `{type="empty"}`,
+запись в них игнорируется, а запись/чтение `6` уходит в реальную таблицу —
+именно туда `SetVirtualSlot()` кладёт инструмент для bandage/syringe от ZCity
+SWEP'ов. `WoundSystem.Client.RequestInventoryMove` становится no-op, снимаются хуки
+`WoundSystem_WorldItemInput` / `WoundSystem_WorldItemCheck` /
+`WoundSystem_WorldItemDraw` / `WoundSystem_BodyUseHeldItemInput`, гасится
+`WoundSystemDragState`.
+
+**Панель unit.** Внутри окна осмотра C:U рисует левый сканер
+`UNI-HEALTH v2.03` (`mats.compback`, 475×810) и 5 слотов инвентаря.
+`WSZC.InstallCUHudFilter()` оборачивает хук `WoundDollAndPanel`, а
+`HiddenRegion()` на время его выполнения глушит `draw.SimpleText`,
+`surface.DrawTexturedRect( Rotated )`, `surface.DrawRect`,
+`WoundSystemQueueLocaleTooltip` и `slot_*` direct-tooltips в зонах сканера и
+слотов. Кукла, иконки лимбов, `FIX DISLOCATION` / `REMOVE SHRAPNEL`,
+`action_*` tooltips, курсор и все мини-игры остаются нетронутыми. Установщики
+идемпотентны и повторяются раз в секунду (C:U пересоздаёт хуки при hot
+reload). Два конвара отката: `zc_woundsystem_compat_hide_cu_inventory`,
+`zc_woundsystem_compat_hide_unit_panel`.
+
 ## Ограничения
 
 - Режим `authority 1` не обещает полной 1:1 vanilla-эквивалентности Organs+:
@@ -476,10 +548,18 @@ ragdoll резолвится в т.ч. через `NWEntity("ply")`.
  `Org Think "Main"` не обновлялись и в vanilla-ветке тоже могут не
  обновляться. Чистый vanilla без C:U достигается `zc_woundsystem_bridge 0`
  + `woundsys_enabled 0`, но тогда исчезают панель и мини-игры.
-- C:U-инвентарь не интегрируется с ZCity SWEP'ами: мини-игры лечения используют
- виртуальный слот и namespaced-протокол, а извлечение осколков идёт «руками».
+- C:U-инвентарь скрыт и не интегрируется с ZCity SWEP'ами: мини-игры лечения
+ используют скрытый виртуальный слот `6` и namespaced-протокол, извлечение
+ осколков и вправление вывихов идут «руками» из WoundView. Переломы отображаются
+ иконкой, но целиком считаются/лечатся ванильной ZCity.
 - Кнопка «Проверить травмы» открывает панель C:U только для себя: приложенная
  версия C:U не имеет UI осмотра другого игрока.
+- В C:U одна action-точка на лимб: если на конечности одновременно есть
+ осколки и вывих, приоритет остаётся у `REMOVE SHRAPNEL`; после извлечения
+ осколков появится `FIX DISLOCATION`. Радиальный пункт ZCity
+ `hg_fixdislocation` работает независимо от WoundView.
+- Скрытие инвентаря отключает и подбор мировых медпредметов C:U (`E`/`F`):
+ медицинские предметы берутся через SWEP'ы и инвентарь ZCity.
 - Показатели в панели C:U — теневая проекция (4 Гц), а не самостоятельная симуляция.
  Они могут отставать на доли секунды от `ply.organism`; авторитетом остаётся
  ZCity.
@@ -496,7 +576,9 @@ ragdoll резолвится в т.ч. через `NWEntity("ply")`.
  per-limb bleeding, full-screen clip, фильтр FX/крови, курсор, лок камеры и
  движения, источники шрапнели, reset-guard, ragdoll/стекло/осложнения:
  `TEST_OK 11/11`, `TEST_OK 6/6`, `TEST_OK 20/20`, `TEST_OK 11/11`,
- `TEST_OK 7/7`); на живом GMod-сервере не прогонялось.
+ `TEST_OK 7/7`, `TEST_OK 8/8` (кости/лок сессии), `TEST_OK 8/8` (инвентарь,
+ панель unit, WoundView и активная dislocation-сессия)); на живом
+ GMod-сервере не прогонялось.
 
 ## Файлы
 

@@ -636,7 +636,17 @@ end)
 -- is not frozen in mid-air.
 hook.Add("SetupMove", "WSZC_MinigameServerLock", function(ply, mv, cmd)
     local session = WSZC.MinigameSessions and WSZC.MinigameSessions[ply]
-    if not session then return end
+    -- C:U's NATIVE manual bone-reduction minigame (WoundView -> FIX
+    -- DISLOCATION) has its own sessions table; it must get the same movement /
+    -- camera lock as the WSZC bandage and syringe games.
+    local cuSessions = WSZC.CUSessions
+    local dislocation = type(cuSessions) == "table"
+        and type(cuSessions.Dislocation) == "table"
+        and cuSessions.Dislocation[ply] or nil
+    if not session and not dislocation then
+        if ply then ply._WSZCDislocationAngles = nil end
+        return
+    end
     if not (IsValid(ply) and ply:IsPlayer()) then return end
 
     if mv and mv.SetVelocity and mv.GetVelocity then
@@ -652,8 +662,19 @@ hook.Add("SetupMove", "WSZC_MinigameServerLock", function(ply, mv, cmd)
     if cmd.SetMouseY then cmd:SetMouseY(0) end
     -- Zeroing the mouse delta is not enough: GMod already applied it to
     -- ViewAngles before SetupMove.  Force the frozen angles back.
-    if session.frozenAngles and cmd.SetViewAngles then
+    if session and session.frozenAngles and cmd.SetViewAngles then
         cmd:SetViewAngles(session.frozenAngles)
+    end
+    if dislocation then
+        if not ply._WSZCDislocationAngles and ply.EyeAngles then
+            local ok, ang = pcall(ply.EyeAngles, ply)
+            if ok and ang then ply._WSZCDislocationAngles = ang end
+        end
+        if ply._WSZCDislocationAngles and cmd.SetViewAngles then
+            cmd:SetViewAngles(ply._WSZCDislocationAngles)
+        end
+    else
+        ply._WSZCDislocationAngles = nil
     end
 end)
 
