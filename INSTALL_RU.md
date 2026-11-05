@@ -68,7 +68,7 @@
 | WSZC мини-игры на весь экран; нативные C:U — в авторском размере | `zc_woundsystem_compat_fullscreen_minigame 1`, `zc_woundsystem_compat_fullscreen_native 0`, `zc_woundsystem_compat_native_minigame_zoom 1`. Растяжение нативных игр давало огромный обрезанный осколок и уводило нижнюю часть раны за экран |
 | Нет белых пустых слотов и чёрной подложки поверх куклы | `HiddenRegionRaw()` для `DrawOutlinedRect`/`DrawRect`/`RoundedBox`/`DrawLine`/`DrawPoly`; whitelist только для текстур и текста |
 | После «Reset organism» снова можно быстро бегать | `RESET_KEEP` больше не несёт `canmove/stun/consciousness/brain`; `WSZC.ClearMovementPenalties()` снимает штрафы движения во всех трёх путях ресета |
-| Кукла с человеческими пропорциями, как на эталонном фото | `tools/build_unitmenu_materials.py`: явный `HUMAN_LAYOUT` (маленькая голова, узкий короткий торс, тонкие руки T-pose, длинные узкие ноги, компактные целые стопы; размеры сняты с `Screenshot_3-6.png`), **стандартный чёрный `(0,0,0)`** `_fill` с эрозией 3 px + тонкая белая обводка **по форме каждого лимба** (`EDGE_PAD=6`, ноль белых пикселей на границах спрайтов). Анатомия наша, не родная C:U. `zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` **только** для `*_fill.png`; `*_edge.png` остаётся под `finalOutline` C:U, поэтому реакция на наведение (белый → чёрный) штатная |
+| Кукла с человеческими пропорциями, как на эталонном фото | `tools/build_unitmenu_materials.py`: явный `HUMAN_LAYOUT` (маленькая голова, узкий короткий торс, тонкие руки T-pose, длинные узкие ноги, компактные целые стопы; вертикальные швы сняты с нативной куклы `Screenshot_2-10.png`), **стандартный чёрный `(0,0,0)`** `_fill` с эрозией 3 px + тонкая белая обводка **по форме каждого лимба** (`EDGE_PAD=6`, ноль белых пикселей на границах спрайтов). Анатомия наша, не родная C:U. `zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` **только** для `*_fill.png`; `*_edge.png` остаётся под `finalOutline` C:U, поэтому реакция на наведение (белый → чёрный) штатная |
 | Лишний текст и чёрные панели убраны во всех мини-играх | `zc_woundsystem_compat_hide_minigame_text 1`: `WSZC.InstallMinigameTextFilter()` обнуляет `title/value/guide/panelAlpha` в `Clip.DrawHeader` (иконка остаётся), глушит `Clip.DrawExitGuide` и `Clip.DrawBackdrop`, точечно фильтрует chrome-шрифты (`RetroTooltipTitle*`, `RetroTooltipDesc*`, `RetroMinigameGuide*`) **и AED `WoundSystemAEDStatus`** (только пока мини-игра активна). `minigameshrapnel.png` — передний слой раны, **не удаляется**; все игровые спрайты защищены `WSZC.IsMinigameGameplaySprite()`. Уведомления ZCity, статусные надписи C:U (кроме AED), красный death-текст, капли, `Icons.*`, осколки и рука не трогаются; `0` — вернуть как было |
 | Рука мини-игры без инерции | `zc_woundsystem_compat_hand_pin_cursor 1` → реальный `gui.MousePos()` и синхронизация `MG.handScreenX/Y`; поворот `0`, курсор скрыт |
 | Светлый фон WoundView | `zc_woundsystem_compat_hide_woundview_backdrop 1` гасит полноэкранный `woundbg`/blackout только пока `WoundSystemHealthHUDOpen == true` |
@@ -171,3 +171,15 @@ ZCity + Organs+ не обещается: у `hg.send_organism` фиксиров�
 
 WIP-пак текстур интерфейса — опциональный: если он ломает HUD, просто удалите
 папку `human_hands_for_z_city_casualties_medical_system_heavy_wip`.
+
+## №9: шрапнель только в 4 отмеченных лимбах
+
+По `Screenshot_1-9.png` разрешены только `hand_R`, `hand_L`, `foot_R`,
+`foot_L` (обе кисти и обе стопы, обведённые красным). Все источники осколков
+сходятся в `WSZC.AddShrapnel` (`sv_zcity_woundsystem_compat_organism.lua`):
+`WSZC.ShrapnelSpawnLimb()` переводит попадание в любую другую конечность на
+ближайшую отмеченную той же стороны, `SHRAPNEL_MIN_PIECES=3` /
+`SHRAPNEL_MAX_PIECES=5` дают 3–5 осколков за попадание. Сохранность при
+ragdoll→standing, `RestoreBones`, `ReconcileSpawnShrapnel`, мини-игры и рука
+не тронуты. Геометрия куклы по `Screenshot_2-10.png` — только размеры и
+положение 15 лимбов.

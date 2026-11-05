@@ -368,6 +368,32 @@ end
 -- and the regeneration blocker can read it.  Neither table has a `source`.
 local DEFAULT_MAX_PIECES = 5
 
+-- Owner's Screenshot_1-9.png: shrapnel appears ONLY on the four limbs circled
+-- in red - both hands and both feet - and carries "4 - 5 - 3" fragments on the
+-- marked limb, i.e. 3..5 pieces.  This is purely a spawn-location / spawn-count
+-- rule: the persistency, ragdoll restore, bones and minigames are untouched.
+local SHRAPNEL_LIMBS = {
+    hand_R = true, hand_L = true,
+    foot_R = true, foot_L = true,
+}
+local SHRAPNEL_MIN_PIECES = 3
+local SHRAPNEL_MAX_PIECES = 5
+
+-- Fold a hit on any OTHER limb onto the nearest circled limb of the same side,
+-- so a chest/thigh/head hit can never place a fragment outside the four marks.
+function WSZC.ShrapnelSpawnLimb(limbId)
+    if type(limbId) ~= "string" then return "hand_R" end
+    if SHRAPNEL_LIMBS[limbId] then return limbId end
+    local side = (string.sub(limbId, -2) == "_L") and "_L" or "_R"
+    local lower = string.lower(limbId)
+    if string.find(lower, "foot", 1, true) or string.find(lower, "crus", 1, true)
+       or string.find(lower, "thigh", 1, true) or string.find(lower, "leg", 1, true) then
+        return "foot" .. side
+    end
+    return "hand" .. side
+end
+local ShrapnelSpawnLimb = WSZC.ShrapnelSpawnLimb
+
 local function MaxShrapnel()
     local c = Constants()
     local n = tonumber(c and c.ShrapnelPieceCount) or 0
@@ -391,16 +417,27 @@ function WSZC.AddShrapnel(ply, limbId, count, reason)
     count = math.floor(tonumber(count) or 0)
     if count <= 0 then return false end
 
+    -- "и только там": every producer (shotgun, blast, glass, ragdoll glass)
+    -- funnels through this function, so a single clamp here guarantees that
+    -- no fragment can ever appear on head/thorax/abdomen/arm/forearm/thigh/crus.
+    limbId = ShrapnelSpawnLimb(limbId)
+    -- "4 - 5 - 3 осколка на один лимб": instead of the old single pellet a hit
+    -- leaves 3, 4 or 5 fragments on the marked limb (glass / shotgun = 3, a
+    -- blast adds one per extra pellet = 4 or 5).  Deterministic, keeps the
+    -- damage scaling, and never exceeds the C:U piece cap.
+    local cap = math.min(SHRAPNEL_MAX_PIECES, MaxShrapnel())
+    count = math.Clamp(count + 2, math.min(SHRAPNEL_MIN_PIECES, cap), cap)
+
     local h = H()
     if h and h.InitPlayer and h.GetLimbs and not h.GetLimbs(ply) then pcall(h.InitPlayer, ply) end
 
-    limbId = limbId or "thorax"
     local state = ShrapnelState(ply, limbId)
     if not state then
-        -- Unknown limb id: fall back to something the C:U panel can draw.
-        state = ShrapnelState(ply, "thorax")
+        -- Unknown/not-yet-created limb id: fall back to a circled limb the
+        -- C:U panel can always draw.  Never fall back outside the four marks.
+        state = ShrapnelState(ply, "hand_R")
         if not state then return false end
-        limbId = "thorax"
+        limbId = "hand_R"
     end
 
     local before = math.floor(tonumber(state.shrapnel) or 0)

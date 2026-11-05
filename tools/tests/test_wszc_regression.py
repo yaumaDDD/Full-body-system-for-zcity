@@ -173,24 +173,45 @@ check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
       and 'WSZC.ClearCULimbsCache' in layout_s
       and 'hook.Add("PreDrawHUD", "WSZC_UnitmenuDollRetry"' in layout_s
       and 'HUDPaintBackground' in layout_s)
-check('S33 HUMAN_LAYOUT follows Screenshot_3-6 sizes and symmetric pairs',
-      "'head':      (750, 190, 126, 178)" in generator_s
-      and "'thorax':    (750, 395, 250, 232)" in generator_s
-      and "'abdomen':   (750, 649, 236, 276)" in generator_s
-      and "'arm_R':     (539, 376, 171, 104)" in generator_s
-      and "'arm_L':     (961, 376, 171, 104)" in generator_s
-      and "'forearm_R': (348, 376, 211, 104)" in generator_s
-      and "'forearm_L': (1152, 376, 211, 104)" in generator_s
-      and "'hand_R':    (190, 376, 107, 104)" in generator_s
-      and "'hand_L':    (1310, 376, 107, 104)" in generator_s
-      and "'thigh_R':   (690, 933, 115, 292)" in generator_s
-      and "'thigh_L':   (810, 933, 115, 292)" in generator_s
-      and "'crus_R':    (686, 1190, 84, 222)" in generator_s
-      and "'crus_L':    (814, 1190, 84, 222)" in generator_s
-      and "'foot_R':    (675, 1351, 80, 100)" in generator_s
-      and "'foot_L':    (825, 1351, 80, 100)" in generator_s
-      and 'Screenshot_3-6.png' in generator_s
-      and 'EDGE_WIDTH = 9' in generator_s)
+check('S33 HUMAN_LAYOUT follows Screenshot_2-10 native seams and symmetric pairs',
+      "'head':      (750, 121, 145, 235)" in generator_s
+      and "'thorax':    (750, 390, 288, 304)" in generator_s
+      and "'abdomen':   (750, 704, 271, 324)" in generator_s
+      and "'arm_R':     (507, 320, 197, 120)" in generator_s
+      and "'arm_L':     (993, 320, 197, 120)" in generator_s
+      and "'forearm_R': (288, 320, 243, 120)" in generator_s
+      and "'forearm_L': (1212, 320, 243, 120)" in generator_s
+      and "'hand_R':    (106, 320, 123, 120)" in generator_s
+      and "'hand_L':    (1394, 320, 123, 120)" in generator_s
+      and "'thigh_R':   (681, 1001, 132, 269)" in generator_s
+      and "'thigh_L':   (819, 1001, 132, 269)" in generator_s
+      and "'crus_R':    (676, 1254, 97, 237)" in generator_s
+      and "'crus_L':    (824, 1254, 97, 237)" in generator_s
+      and "'foot_R':    (664, 1435, 92, 126)" in generator_s
+      and "'foot_L':    (836, 1435, 92, 126)" in generator_s
+      and 'Screenshot_2-10.png' in generator_s
+      and 'EDGE_WIDTH = 9' in generator_s
+      and 'DOLL_RGB = (0, 0, 0)' in generator_s
+      and 'EDGE_PAD = 6' in generator_s)
+check('S42 shrapnel appears ONLY on the four red-circled limbs (both hands + both feet)',
+      'local SHRAPNEL_LIMBS = {' in organism_s
+      and 'hand_R = true, hand_L = true,' in organism_s
+      and 'foot_R = true, foot_L = true,' in organism_s
+      and 'function WSZC.ShrapnelSpawnLimb(limbId)' in organism_s
+      and 'limbId = ShrapnelSpawnLimb(limbId)' in organism_s
+      and 'state = ShrapnelState(ply, "hand_R")' in organism_s
+      and 'limbId = limbId or "thorax"' not in organism_s
+      and 'WSZC.AddShrapnel(ply, limbId, added, "damage")' in organism_s
+      and 'WSZC.AddShrapnel(ply, limbId, 1, "glass")' in organism_s)
+check('S43 marked limb gets 3..5 fragments, persistence/ragdoll untouched',
+      'SHRAPNEL_MIN_PIECES = 3' in organism_s
+      and 'SHRAPNEL_MAX_PIECES = 5' in organism_s
+      and 'count + 2' in organism_s
+      and 'math.min(SHRAPNEL_MAX_PIECES, MaxShrapnel())' in organism_s
+      and 'WSZC.ReconcileSpawnShrapnel' in organism_s
+      and 'hook.Add("Fake", "WSZC_ShrapnelRagdollKeep"' in organism_s
+      and 'hook.Add("FakeUp", "WSZC_ShrapnelRagdollKeep"' in organism_s
+      and 'RestoreBones' in organism_s)
 check('S34 docs no longer claim the rejected transparent-edge build',
       'без белой обводки' not in all_docs
       and 'прозрачный `_edge`' not in all_docs)
@@ -334,12 +355,14 @@ try:
     leg_top = g['thigh_R'][1] - g['thigh_R'][3] / 2
     leg_bottom = g['foot_R'][1] + g['foot_R'][3] / 2
     torso_h, leg_h = torso_bottom - head_top, leg_bottom - leg_top
-    # Screenshot_4-5 live feedback: the upper body was stretched and the legs
-    # compressed, so HUMAN_LAYOUT was iterated again (shorter head/thorax,
-    # longer thigh/crus).  Keep the human-proportion checks plus the shape
-    # relations visible in Screenshot_3-6.png, without freezing one ratio.
-    check('S20 limb sizes keep Screenshot_3-6 proportions (iterated for live)',
-          leg_h >= 0.85 * torso_h
+    # Screenshot_2-10.png is the native C:U UNIT-HEALTH V2.04 doll the owner
+    # asked to reproduce: its torso (218..592) and legs (592..865) give a
+    # leg/torso ratio of ~0.73, not the ~0.95 of the rejected Screenshot_4-5
+    # iteration.  Keep the shape/width/symmetry relations, but measure the
+    # ratio against the NEW reference seams.
+    check('S20 limb sizes follow Screenshot_2-10 native proportions',
+          leg_h >= 0.70 * torso_h
+          and leg_h <= 0.80 * torso_h
           and g['thorax'][2] > g['head'][2]
           and g['thigh_R'][2] < g['thorax'][2]
           and g['abdomen'][3] > g['thorax'][3]
