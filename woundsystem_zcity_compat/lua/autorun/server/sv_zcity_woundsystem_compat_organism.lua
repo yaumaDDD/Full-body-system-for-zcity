@@ -280,6 +280,19 @@ local function LimbFromBoneName(name)
 end
 
 --- Build { limbId = bleeding 0..100 } from the actual ZCity wound tables.
+-- These weights are shared by the shadow HUD, the bandage progress meter and
+-- the actual treatment below.  Keeping one scale prevents a situation where
+-- the UI says "100%" while a wound still has severity left in ply.organism.
+local NORMAL_WOUND_BLEED = 2.0
+local ARTERIAL_WOUND_BLEED = 3.0
+
+local function ArterialWoundLimb(ply, wound)
+    if type(wound) ~= "table" then return nil end
+    local artery = type(wound[7]) == "string" and string.lower(wound[7]) or nil
+    return (artery and (ARTERY_LIMB[artery] or NormalizeLimb((string.gsub(artery, "artery", "")))))
+        or LimbFromBoneName(BoneNameOf(ply, wound[4]))
+end
+
 local function LimbBleedMap(ply, org)
     local map = {}
     local function add(limbId, amount)
@@ -288,24 +301,316 @@ local function LimbBleedMap(ply, org)
         map[limbId] = (map[limbId] or 0) + amount
     end
 
-    for _, w in ipairs(org.wounds or {}) do
+    for _, w in pairs(org.wounds or {}) do
         if type(w) == "table" then
             local severity = math.max(tonumber(w[1]) or 0, 0)
-            add(LimbFromBoneName(BoneNameOf(ply, w[4])), severity * 2.0)
+            add(LimbFromBoneName(BoneNameOf(ply, w[4])), severity * NORMAL_WOUND_BLEED)
         end
     end
-    for _, w in ipairs(org.arterialwounds or {}) do
+    for _, w in pairs(org.arterialwounds or {}) do
         if type(w) == "table" then
             local severity = math.max(tonumber(w[1]) or 0, 0)
-            local artery = type(w[7]) == "string" and string.lower(w[7]) or nil
-            local limb = (artery and (ARTERY_LIMB[artery] or NormalizeLimb((string.gsub(artery, "artery", "")))))
-                or LimbFromBoneName(BoneNameOf(ply, w[4]))
-            add(limb, severity * 3.0)
+            add(ArterialWoundLimb(ply, w), severity * ARTERIAL_WOUND_BLEED)
         end
     end
     return map
 end
 WSZC.LimbBleedMap = LimbBleedMap -- exported for diagnostics / headless tests
+
+local function NormalBleedingOnLimb(ply, org, limbId)
+    limbId = NormalizeLimb(limbId) or limbId
+    local total = 0
+    for _, wound in pairs(org.wounds or {}) do
+        if type(wound) == "table"
+            and LimbFromBoneName(BoneNameOf(ply, wound[4])) == limbId then
+            total = total + math.max(tonumber(wound[1]) or 0, 0) * NORMAL_WOUND_BLEED
+        end
+    end
+    return total
+end
+
+local function ArterialBleedingOnLimb(ply, org, limbId)
+    limbId = NormalizeLimb(limbId) or limbId
+    local total = 0
+    for _, wound in pairs(org.arterialwounds or {}) do
+        if type(wound) == "table" and ArterialWoundLimb(ply, wound) == limbId then
+            total = total + math.max(tonumber(wound[1]) or 0, 0) * ARTERIAL_WOUND_BLEED
+        end
+    end
+    return total
+end
+
+--- Actual NORMAL bleeding that a bandage may treat.  Arterial bleeding is a
+--- separate rule: only a tourniquet can close it.  In authority mode never use
+--- the 4 Hz C:U shadow for this value; progress must describe real wounds.
+function WSZC.GetBandageBleeding(ply, limbId)
+    local org = IsValid(ply) and ply.organism or nil
+    if Authority() and type(org) == "table" then
+        return NormalBleedingOnLimb(ply, org, limbId)
+    end
+
+    local h = H()
+    local state = h and h.GetLimbState and h.GetLimbState(ply, limbId)
+    return type(state) == "table" and math.max(tonumber(state.bleed) or 0, 0) or 0
+end
+
+function WSZC.GetArterialBleeding(ply, limbId)
+    local org = IsValid(ply) and ply.organism or nil
+    if not (Authority() and type(org) == "table") then return 0 end
+    return ArterialBleedingOnLimb(ply, org, limbId)
+end
+
+local function CompactWoundTable(wounds)
+    if type(wounds) ~= "table" then return end
+    local entries = {}
+    for key, wound in pairs(wounds) do
+        if type(key) == "number" and type(wound) == "table"
+            and (tonumber(wound[1]) or 0) > 0 then
+            entries[#entries + 1] = { key = key, wound = wound }
+        end
+    end
+    table.sort(entries, function(a, b) return a.key < b.key end)
+    for key in pairs(wounds) do wounds[key] = nil end
+    for i, entry in ipairs(entries) do wounds[i] = entry.wound end
+end
+
+local function SyncBandagedWounds(ply, org, bandagedBones)
+    local owner = IsValid(org.owner) and org.owner or ply
+    local entities = { ply, owner, ply.FakeRagdoll }
+    if hg and hg.GetCurrentCharacter then
+        local ok, current = pcall(hg.GetCurrentCharacter, ply)
+        if ok then entities[#entities + 1] = current end
+    end
+
+    local seen = {}
+    for _, ent in ipairs(entities) do
+        if IsValid(ent) and not seen[ent] then
+            seen[ent] = true
+            ent.bandaged_limbs = ent.bandaged_limbs or {}
+            for bone in pairs(bandagedBones) do ent.bandaged_limbs[bone] = true end
+            if ent.SetNetVar then
+                pcall(ent.SetNetVar, ent, "wounds", org.wounds)
+                pcall(ent.SetNetVar, ent, "arterialwounds", org.arterialwounds)
+                pcall(ent.SetNetVar, ent, "bandaged_limbs", ent.bandaged_limbs)
+            end
+        end
+    end
+    ply.fullsend = true
+end
+
+--- Apply a C:U bandage dose to ordinary authoritative ZCity wounds.
+---
+--- C:U normally spends bandageSlowAmount in WoundSystem_LimbTick, reducing
+--- limb.bleed by 1.25/s.  That timer is deliberately disabled in authority
+--- mode, so merely mirroring the numeric C:U delta consumed the bandage but
+--- never treated org.wounds.  Convert the SAME total clotting budget into an
+--- immediate severity reduction on the selected limb instead.  Arterial
+--- wounds are deliberately EXCLUDED: only ApplyTourniquetToOrganism may close
+--- them.  The returned before/after values still include an untouched artery,
+--- so the C:U shadow and the generic medical delta cannot hide or duplicate it.
+---
+--- Returns treatedAmount, beforeBleed, afterBleed in LimbBleedMap units.
+function WSZC.ApplyBandageToOrganism(ctx, profile, effectFraction)
+    local ply = ctx and ctx.ply
+    local org = IsValid(ply) and ply.organism or nil
+    if not (Authority() and type(org) == "table" and type(profile) == "table") then
+        return 0, nil, nil
+    end
+
+    local limbId = NormalizeLimb(ctx.limbId) or ctx.limbId
+    local normalBefore = WSZC.GetBandageBleeding(ply, limbId)
+    local arterial = WSZC.GetArterialBleeding(ply, limbId)
+    local before = normalBefore + arterial
+    local effects = type(profile.effects) == "table" and profile.effects or {}
+    local fullBudget = math.max(tonumber(effects.bandageSlowAmount) or 0, 0)
+        + math.max(-(tonumber(effects.bleed) or 0), 0)
+    local budget = fullBudget * math.max(tonumber(effectFraction) or 0, 0)
+    if budget <= 0 then return 0, before, before end
+
+    local candidates = {}
+    for _, wound in pairs(org.wounds or {}) do
+        if type(wound) == "table" and (tonumber(wound[1]) or 0) > 0
+            and LimbFromBoneName(BoneNameOf(ply, wound[4])) == limbId then
+            candidates[#candidates + 1] = {
+                wound = wound,
+                weight = NORMAL_WOUND_BLEED,
+            }
+        end
+    end
+    table.sort(candidates, function(a, b)
+        return (tonumber(a.wound[1]) or 0) > (tonumber(b.wound[1]) or 0)
+    end)
+
+    local bandagedBones = {}
+    for _, candidate in ipairs(candidates) do
+        if budget <= 0.000001 then break end
+        local wound, weight = candidate.wound, candidate.weight
+        local severity = math.max(tonumber(wound[1]) or 0, 0)
+        local reduction = math.min(severity, budget / weight)
+        if reduction > 0 then
+            wound[1] = math.max(severity - reduction, 0)
+            budget = math.max(budget - reduction * weight, 0)
+            local bone = BoneNameOf(ply, wound[4])
+            if type(bone) == "string" and bone ~= "" then bandagedBones[bone] = true end
+        end
+    end
+
+    local normalAfter = WSZC.GetBandageBleeding(ply, limbId)
+    local after = normalAfter + arterial
+    local treated = math.max(normalBefore - normalAfter, 0)
+    if treated <= 0.000001 then return 0, before, after end
+
+    CompactWoundTable(org.wounds)
+    normalAfter = WSZC.GetBandageBleeding(ply, limbId)
+    after = normalAfter + arterial
+    treated = math.max(normalBefore - normalAfter, 0)
+
+    -- Update both authorities immediately.  ZCity's blood module will derive
+    -- the exact rate from the reduced severity on its next tick; this small
+    -- immediate adjustment simply avoids a one-tick delay in the HUD.
+    org.bleed = math.max((tonumber(org.bleed) or 0) - treated * 0.2, 0)
+    if type(ctx.limb) == "table" then
+        ctx.limb.bleed = after
+        -- WB.BestLimb skips isBandaged limbs.  C:U sets that flag merely
+        -- after enough bandageSlowAmount, which would make a partially
+        -- treated ZCity wound impossible to finish with a second roll.
+        -- Keep it eligible until the REAL bleeding is completely closed.
+        ctx.limb.isBandaged = after <= 0.0001
+    end
+    ply._WSZCExpectedBleed = ply._WSZCExpectedBleed or {}
+    ply._WSZCExpectedBleed[limbId] = after
+    SyncBandagedWounds(ply, org, bandagedBones)
+
+    Debug("bandage treated %s/%s: %.3f -> %.3f (-%.3f)",
+        tostring(ply), tostring(limbId), before, after, treated)
+    return treated, before, after
+end
+
+---------------------------------------------------------------------------
+-- Tourniquet: the ONLY treatment for arterial wounds
+---------------------------------------------------------------------------
+
+local TOURNIQUET_DOWNSTREAM = {
+    arm_R = { "arm_R", "forearm_R", "hand_R" },
+    forearm_R = { "forearm_R", "hand_R" }, hand_R = { "hand_R" },
+    arm_L = { "arm_L", "forearm_L", "hand_L" },
+    forearm_L = { "forearm_L", "hand_L" }, hand_L = { "hand_L" },
+    thigh_R = { "thigh_R", "crus_R", "foot_R" },
+    crus_R = { "crus_R", "foot_R" }, foot_R = { "foot_R" },
+    thigh_L = { "thigh_L", "crus_L", "foot_L" },
+    crus_L = { "crus_L", "foot_L" }, foot_L = { "foot_L" },
+}
+
+local function TotalMappedBleeding(map)
+    local total = 0
+    for _, value in pairs(map) do total = total + math.max(tonumber(value) or 0, 0) end
+    return total
+end
+
+local function SyncTourniquetWounds(ply, org, visualWound)
+    local owner = IsValid(org.owner) and org.owner or ply
+    local entities = { ply, owner, ply.FakeRagdoll }
+    if hg and hg.GetCurrentCharacter then
+        local ok, current = pcall(hg.GetCurrentCharacter, ply)
+        if ok then entities[#entities + 1] = current end
+    end
+
+    local seen = {}
+    for _, ent in ipairs(entities) do
+        if IsValid(ent) and not seen[ent] then
+            seen[ent] = true
+            ent.tourniquets = ent.tourniquets or {}
+            ent.tourniquets[#ent.tourniquets + 1] = {
+                visualWound[2], visualWound[3], visualWound[4],
+            }
+            if ent.SetNetVar then
+                pcall(ent.SetNetVar, ent, "wounds", org.wounds)
+                pcall(ent.SetNetVar, ent, "arterialwounds", org.arterialwounds)
+                pcall(ent.SetNetVar, ent, "Tourniquets", ent.tourniquets)
+            end
+        end
+    end
+
+    -- Keep ZCity's own visual/user list in sync as well.  No second damage or
+    -- healing system is introduced: this is the native tourniquet marker.
+    if hg then
+        hg.TourniquetGuys = hg.TourniquetGuys or {}
+        local found = false
+        for _, ent in ipairs(hg.TourniquetGuys) do
+            if ent == owner then found = true break end
+        end
+        if not found then hg.TourniquetGuys[#hg.TourniquetGuys + 1] = owner end
+        if SetNetVar then pcall(SetNetVar, "TourniquetGuys", hg.TourniquetGuys) end
+    end
+    ply.fullsend = true
+end
+
+--- Apply the native ZCity tourniquet rule to the affected limb and everything
+--- below it.  One arterial wound is closed per tourniquet, matching ZCity;
+--- ordinary wounds in the same downstream region are closed too.  Bandages
+--- never call this function and can never clear org.<limb>artery.
+function WSZC.ApplyTourniquetToOrganism(ctx)
+    local ply = ctx and ctx.ply
+    local org = IsValid(ply) and ply.organism or nil
+    if not (Authority() and type(org) == "table") then return 0, nil, nil end
+
+    local limbId = NormalizeLimb(ctx.limbId) or ctx.limbId
+    local affected = {}
+    for _, id in ipairs(TOURNIQUET_DOWNSTREAM[limbId] or { limbId }) do affected[id] = true end
+
+    local beforeMap = LimbBleedMap(ply, org)
+    local beforeTotal = TotalMappedBleeding(beforeMap)
+    local arteries, ordinary = {}, {}
+    for _, wound in pairs(org.arterialwounds or {}) do
+        if type(wound) == "table" and (tonumber(wound[1]) or 0) > 0
+            and affected[ArterialWoundLimb(ply, wound)] then
+            arteries[#arteries + 1] = wound
+        end
+    end
+    for _, wound in pairs(org.wounds or {}) do
+        if type(wound) == "table" and (tonumber(wound[1]) or 0) > 0
+            and affected[LimbFromBoneName(BoneNameOf(ply, wound[4]))] then
+            ordinary[#ordinary + 1] = wound
+        end
+    end
+    table.sort(arteries, function(a, b) return (a[1] or 0) > (b[1] or 0) end)
+
+    local visualWound = arteries[1] or ordinary[1]
+    if not visualWound then
+        local value = beforeMap[limbId] or 0
+        return 0, value, value
+    end
+
+    if arteries[1] then
+        local wound = arteries[1]
+        wound[1] = 0
+        if type(wound[7]) == "string" then org[wound[7]] = 0 end
+        if wound[7] == "arteria" and type(org.o2) == "table" then org.o2.regen = 0 end
+    end
+    for _, wound in ipairs(ordinary) do wound[1] = 0 end
+
+    CompactWoundTable(org.wounds)
+    CompactWoundTable(org.arterialwounds)
+    local afterMap = LimbBleedMap(ply, org)
+    local treated = math.max(beforeTotal - TotalMappedBleeding(afterMap), 0)
+    if treated <= 0.000001 then
+        local value = afterMap[limbId] or 0
+        return 0, value, value
+    end
+
+    org.bleed = math.max((tonumber(org.bleed) or 0) - treated * 0.2, 0)
+    local h = H()
+    ply._WSZCExpectedBleed = ply._WSZCExpectedBleed or {}
+    for id in pairs(affected) do
+        local state = h and h.GetLimbState and h.GetLimbState(ply, id)
+        if type(state) == "table" then state.bleed = afterMap[id] or 0 end
+        ply._WSZCExpectedBleed[id] = afterMap[id] or 0
+    end
+    SyncTourniquetWounds(ply, org, visualWound)
+
+    Debug("tourniquet treated %s/%s: -%.3f bleeding", tostring(ply), tostring(limbId), treated)
+    return treated, beforeMap[limbId] or 0, afterMap[limbId] or 0
+end
 
 ---------------------------------------------------------------------------
 -- Shrapnel minigame complications (pain + growing bleeding)

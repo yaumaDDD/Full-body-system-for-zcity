@@ -38,6 +38,7 @@ local NET_STRINGS = {
     "WSZC_BandageOpen",
     "WSZC_BandageClose",
     "WSZC_BandageInput",
+    "WSZC_BandageState",
     "WSZC_SyringeStart",
     "WSZC_SyringeOpen",
     "WSZC_SyringeState",
@@ -240,6 +241,46 @@ local function SendAck(ply, session, gameId, ackSeq)
     end)
 end
 
+local function CurrentBandageBleeding(session)
+    if WSZC.GetBandageBleeding then
+        local ok, value = pcall(WSZC.GetBandageBleeding, session.target, session.limbId)
+        if ok then return math.max(tonumber(value) or 0, 0) end
+    end
+    local h = WSZC.H
+    local state = h and h.GetLimbState and h.GetLimbState(session.target, session.limbId)
+    return type(state) == "table" and math.max(tonumber(state.bleed) or 0, 0) or 0
+end
+
+local function CurrentArterialBleeding(session)
+    if not WSZC.GetArterialBleeding then return 0 end
+    local ok, value = pcall(WSZC.GetArterialBleeding, session.target, session.limbId)
+    return ok and math.max(tonumber(value) or 0, 0) or 0
+end
+
+local function SendBandageState(ply, session)
+    if session.kind ~= "bandage" then return end
+    local initial = math.max(tonumber(session.initialBleed) or 0, 0)
+    local current = CurrentBandageBleeding(session)
+    local arterial = CurrentArterialBleeding(session)
+    local progress
+    if initial > 0.0001 then
+        progress = math.Clamp((initial - current) / initial, 0, 1)
+    else
+        progress = current <= 0.0001 and 1 or 0
+    end
+    session.lastBleed = current
+    session.lastArterialBleed = arterial
+    session.lastBleedProgress = progress
+
+    Send("WSZC_BandageState", ply, function()
+        net.WriteUInt(session.id, 24)
+        net.WriteFloat(initial)
+        net.WriteFloat(current)
+        net.WriteFloat(progress)
+        net.WriteFloat(arterial)
+    end)
+end
+
 local function SendSyringeState(ply, session, ackSeq)
     local condition = math.Clamp(
         math.max(session.startAmount - session.deferredUsed, 0) / math.max(session.maxDur, 0.0001),
@@ -397,6 +438,8 @@ local function StartMinigame(ply, data)
         local okAng, ang = pcall(ply.EyeAngles, ply)
         if okAng then frozenAngles = ang end
     end
+    local initialBleed = kind == "bandage"
+        and CurrentBandageBleeding({ target = target, limbId = limbId }) or 0
     local session = {
         id = id,
         kind = kind,
@@ -413,6 +456,9 @@ local function StartMinigame(ply, data)
         amount = startAmount,
         startAmount = startAmount,
         deferredUsed = 0,
+        initialBleed = initialBleed,
+        lastBleed = initialBleed,
+        lastBleedProgress = 0,
         onProgress = data.onProgress,
         onClose = data.onClose,
         data = data,
@@ -437,6 +483,7 @@ local function StartMinigame(ply, data)
             net.WriteString(profile.mode or "gauze")
             net.WriteUInt(session.slotIdx, 3)
         end)
+        SendBandageState(ply, session)
     else
         Send("WSZC_SyringeOpen", ply, function()
             net.WriteUInt(session.id, 24)
@@ -496,6 +543,18 @@ local function ProcessBandageInput(_, ply)
     if degrees <= 0 then return end
 
     session.lastAckSeq = inputSeq
+
+    -- An artery is not a bandage target.  Do not spend even a partial roll
+    -- when no ordinary bleeding remains; still ACK and refresh the state so
+    -- the client can show the persistent blood drop / TOURNIQUET prompt.
+    if WSZC.GetBandageBleeding and WSZC.OrganismAuthority
+        and WSZC.OrganismAuthority() and type(session.target.organism) == "table"
+        and CurrentBandageBleeding(session) <= 0.0001 then
+        SendBandageState(ply, session)
+        SendAck(ply, session, ACK_BANDAGE, inputSeq)
+        return
+    end
+
     local profile = BandageProfile(session.itemId, session.item)
     local perWrap = math.max(
         tonumber(profile.durabilityPerWrap) or Constants().BandageDurabilityPerWrap or 2,
@@ -516,6 +575,7 @@ local function ProcessBandageInput(_, ply)
         if WSZC.MinigameSessions[ply] ~= session then return end
     end
 
+    SendBandageState(ply, session)
     SendSlot(ply, session)
     SendAck(ply, session, ACK_BANDAGE, inputSeq)
 

@@ -569,12 +569,14 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         if snapOk then medicalBefore = snap end
     end
     local ok = false
+    local bandageEffectFraction = 0
 
     if minigame == "bandage" then
         local profile = BandageProfile(itemId, item)
         local perWrap = math.max(tonumber(profile.durabilityPerWrap) or (maxDurability / 12), 0.0001)
         local wrapFraction = used / perWrap
         local effectFraction = wrapFraction / math.max(tonumber(profile.effectDivisor) or 1, 1)
+        bandageEffectFraction = effectFraction
         ctx.wrapFraction = wrapFraction
         ctx.degreesMoved = wrapFraction * 360
         ctx.profile = profile
@@ -611,6 +613,29 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
     end
 
     if not ok then return false, 0 end
+
+    if minigame == "bandage" and WSZC.ApplyBandageToOrganism then
+        local treatOk, treated, _, afterBleed = pcall(
+            WSZC.ApplyBandageToOrganism, ctx, ctx.profile, bandageEffectFraction)
+        if not treatOk then
+            if WSZC.Warn then WSZC.Warn("bandage organism treatment failed: " .. tostring(treated)) end
+        elseif (tonumber(treated) or 0) > 0 and medicalBefore then
+            -- ApplyBandageToOrganism already changed the real wounds and the
+            -- immediate org.bleed value, and wrote the resulting value into
+            -- ctx.limb.bleed.  Zero this ONE snapshot delta so the generic
+            -- C:U -> organism mirror cannot subtract the same treatment twice.
+            medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
+        end
+    elseif itemId == "TOURNIQUET" and WSZC.ApplyTourniquetToOrganism then
+        local treatOk, treated, _, afterBleed = pcall(WSZC.ApplyTourniquetToOrganism, ctx)
+        if not treatOk then
+            if WSZC.Warn then WSZC.Warn("tourniquet organism treatment failed: " .. tostring(treated)) end
+        elseif (tonumber(treated) or 0) > 0 and medicalBefore then
+            -- The real arterial/ordinary wounds and org.bleed were updated by
+            -- the tourniquet itself; do not mirror the same bleed delta twice.
+            medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
+        end
+    end
 
     -- When called from inside WB.SwepHeal() the outer wrapper already measured
     -- the whole body delta; applying ours too would double the medicine.

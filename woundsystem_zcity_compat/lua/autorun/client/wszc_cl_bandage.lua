@@ -165,6 +165,12 @@ MG.lastSampleAt = MG.lastSampleAt or 0
 MG.lastSentAt = MG.lastSentAt or 0
 MG.inputSeq = MG.inputSeq or 0
 MG.ackSeq = MG.ackSeq or 0
+MG.bleedInitial = MG.bleedInitial or 0
+MG.bleedCurrent = MG.bleedCurrent or 0
+MG.arterialBleed = MG.arterialBleed or 0
+MG.bleedProgress = MG.bleedProgress or 0
+MG.bleedDisplayProgress = MG.bleedDisplayProgress or 0
+MG.bleedStateReceived = MG.bleedStateReceived or false
 
 local function GetVectorFromAngle(angle)
     local rad = angle * (math.pi / 180)
@@ -234,6 +240,12 @@ local function LocalReset()
     MG.lastSentAt = 0
     MG.inputSeq = 0
     MG.ackSeq = 0
+    MG.bleedInitial = 0
+    MG.bleedCurrent = 0
+    MG.arterialBleed = 0
+    MG.bleedProgress = 0
+    MG.bleedDisplayProgress = 0
+    MG.bleedStateReceived = false
     
     DestroyOverlay()
 end
@@ -392,6 +404,85 @@ local function DrawPie(x, y, radius, startAngle, endAngle, step)
     end
 end
 
+local PROGRESS_FONTS = {}
+local function ProgressFont()
+    local size = math.max(12, math.Round(18 * GetScale()))
+    local name = "WSZCBandageProgress" .. tostring(size)
+    if not PROGRESS_FONTS[name] then
+        surface.CreateFont(name, {
+            font = "Retro Gaming", size = size, weight = 600,
+            antialias = false, extended = true,
+        })
+        PROGRESS_FONTS[name] = true
+    end
+    return name
+end
+
+local function DrawProgressRing(x, y, radius, thickness, progress)
+    local function arc(startAngle, endAngle, color)
+        if endAngle <= startAngle then return end
+        surface.SetDrawColor(color.r, color.g, color.b, color.a or 255)
+        for angle = startAngle, endAngle - 0.0001, 5 do
+            local nextAngle = math.min(angle + 5, endAngle)
+            local a, b = math.rad(angle), math.rad(nextAngle)
+            local inner = radius - thickness
+            surface.DrawPoly({
+                { x = x + math.sin(a) * radius, y = y - math.cos(a) * radius },
+                { x = x + math.sin(b) * radius, y = y - math.cos(b) * radius },
+                { x = x + math.sin(b) * inner, y = y - math.cos(b) * inner },
+                { x = x + math.sin(a) * inner, y = y - math.cos(a) * inner },
+            })
+        end
+    end
+
+    draw.NoTexture()
+    arc(0, 360, Color(48, 48, 48, 220))
+    arc(0, math.Clamp(progress, 0, 1) * 360,
+        LerpColor(progress, Color(230, 230, 230, 255), Color(75, 225, 125, 255)))
+end
+
+local function DrawBleedProgress(cx, cy, innerSize)
+    local target = math.Clamp(tonumber(MG.bleedProgress) or 0, 0, 1)
+    MG.bleedDisplayProgress = Lerp(0.25, tonumber(MG.bleedDisplayProgress) or 0, target)
+    if math.abs(MG.bleedDisplayProgress - target) < 0.001 then
+        MG.bleedDisplayProgress = target
+    end
+    local progress = math.Clamp(MG.bleedDisplayProgress, 0, 1)
+    local radius = innerSize * 0.13
+    DrawProgressRing(cx, cy, radius, math.max(3, innerSize * 0.012), progress)
+
+    local percent = math.Round(progress * 100)
+    local arterial = math.max(tonumber(MG.arterialBleed) or 0, 0)
+    local normalStopped = (tonumber(MG.bleedInitial) or 0) <= 0.0001
+        or (tonumber(MG.bleedCurrent) or 0) <= 0.0001
+    local text = "STOP " .. tostring(percent) .. "%"
+    local textColor = progress >= 0.999 and Color(12, 80, 34, 255) or Color(24, 24, 24, 255)
+    if arterial > 0.0001 and normalStopped then
+        text = "TOURNIQUET"
+        textColor = Color(155, 22, 22, 255)
+    end
+    draw.SimpleText(text, ProgressFont(), cx, cy, textColor,
+        TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+end
+
+function MG.ApplyBleedState(payload)
+    if not MG.active or type(payload) ~= "table" or payload.sessionId ~= MG.sessionId then
+        return false
+    end
+    MG.bleedInitial = math.max(tonumber(payload.initialBleed) or 0, 0)
+    MG.bleedCurrent = math.max(tonumber(payload.currentBleed) or 0, 0)
+    MG.arterialBleed = math.max(tonumber(payload.arterialBleed) or 0, 0)
+    local progress = tonumber(payload.progress)
+    if progress == nil then
+        progress = MG.bleedInitial > 0.0001
+            and (MG.bleedInitial - MG.bleedCurrent) / MG.bleedInitial or 0
+    end
+    MG.bleedProgress = math.Clamp(progress, 0, 1)
+    if not MG.bleedStateReceived then MG.bleedDisplayProgress = MG.bleedProgress end
+    MG.bleedStateReceived = true
+    return true
+end
+
 local function EnsureOverlay()
     DestroyOverlay()
     if WSZC and WSZC.ApplyFullscreenClip then WSZC.ApplyFullscreenClip() end
@@ -467,7 +558,22 @@ local function EnsureOverlay()
         surface.DrawTexturedRectRotated(rollX, rollY, rollScaleSize, rollScaleSize, MG.bandageAngle * -3)
 
         local state = WoundSystemClientState and WoundSystemClientState.PlayerLimbs and WoundSystemClientState.PlayerLimbs[MG.limbId]
-        local bleedMat, bleedColor = GetBleedIcon(state)
+        local bleedState = state
+        if MG.bleedStateReceived then
+            -- The server packet refers to session.target, not necessarily to
+            -- LocalPlayer().  This also makes healing another player show the
+            -- target's real remaining bleed instead of the medic's own limb.
+            local artery = math.max(tonumber(MG.arterialBleed) or 0, 0)
+            bleedState = {
+                -- The percentage is normal-wound-only, but the blood-drop icon
+                -- represents the target's TOTAL remaining bleeding.  Never
+                -- hide an untreated artery behind a green bandaged icon.
+                bleed = MG.bleedCurrent + artery,
+                isBandaged = artery <= 0.0001
+                    and (MG.bleedProgress >= 0.999 or (state and state.isBandaged) or false),
+            }
+        end
+        local bleedMat, bleedColor = GetBleedIcon(bleedState)
         if bleedMat then
             local iconScale = 4.5 * GetScale()
             local iconW = bleedMat:Width() * iconScale
@@ -482,6 +588,10 @@ local function EnsureOverlay()
         surface.SetMaterial(matStick)
         surface.SetDrawColor(255, 255, 255, 153)
         surface.DrawTexturedRectRotated(cx, cy, stickSize, stickSize, -MG.bandageAngle)
+
+        -- A server-authoritative percentage, not totalDegreesWrapped: turns
+        -- spent on an already-closed wound must never fake further progress.
+        DrawBleedProgress(cx, cy, innerSize)
 
         if WoundSystem and WoundSystem.MinigameClip then
             WoundSystem.MinigameClip.End(clipActive)

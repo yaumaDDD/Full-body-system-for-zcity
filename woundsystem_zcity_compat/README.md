@@ -69,6 +69,18 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
    `ApplyItemToBody` и перенос полученной дельты обратно в `ply.organism`
    (`blood`, `pain`, `pulse`, `shock`, `brain`, `bleed`, `painkiller`,
    `adrenaline`, повреждение лимба). One-dose предметы остаются мгновенными.
+   Для бинта отключённый `WoundSystem_LimbTick` больше не является потерянным
+   звеном: его `bandageSlowAmount` преобразуется в уменьшение severity реальных
+   обычных `org.wounds` на выбранной конечности. Артериальные раны бинт не
+   изменяет; их останавливает **только жгут**, который очищает запись
+   `org.arterialwounds`, соответствующий artery-флаг и синхронизирует нативные
+   `wounds` / `arterialwounds` / `Tourniquets`. Net-пакет `WSZC_BandageState`
+   сообщает начальное/текущее обычное кровотечение, фактический процент его
+   остановки и отдельный остаток артериального. Мини-игра рисует `STOP N%` и
+   кольцо; при открытой артерии капля не скрывается, а после остановки обычных
+   ран появляется подсказка `TOURNIQUET`. При artery-only ране прочность бинта
+   не расходуется. `isBandaged` не блокирует повторный бинт, пока выбранная
+   конечность кровоточит.
 8. Не даёт C:U создать второй ragdoll: перехватывает её внутренний
    `ents.Create("prop_ragdoll")`, создаёт ZCity `hg.Fake`, зеркалит
    `body.unconsciousRagdoll` и защищает ZCity-ragdoll от удаления при wake.
@@ -201,7 +213,8 @@ ZCity вызывает `WoundSystem.Health.StartExternalMinigame()` только
 | `weapon_medkit_sh` режим `2` | **мгновенно** (MORPHINE oneshot) |
 | `weapon_medkit_sh` режим `3` | **мгновенно** (BLOODCOAGULANT / SALINE vehicle) |
 | `weapon_adrenaline`, `weapon_betablock`, `weapon_mannitol`, `weapon_thiamine` | **мгновенно** (body-эффект / SALINE vehicle) |
-| `weapon_tourniquet`, `weapon_painkillers`, `weapon_medkit_sh` режим `4`, blood bag и прочие спецы без `mg` | **мгновенно** (старая ветка `WB.SwepHeal`) |
+| `weapon_tourniquet` | **мгновенно**: нативный статус C:U плюс реальное закрытие артериальной раны в `ply.organism`; бинт такой ране не помогает |
+| `weapon_painkillers`, `weapon_medkit_sh` режим `4`, blood bag и прочие спецы без `mg` | **мгновенно** (старая ветка `WB.SwepHeal`) |
 
 Для «живых» предметов (`live`) `onProgress` вызывается на каждом wrap / толчке
 поршня: C:U применяет часть эффекта к **цели**, а ZCity списывает часть своего
@@ -219,7 +232,8 @@ SWEP. В authority-режиме каждая такая доза дополни�
 - Сервер создаёт виртуальный инструмент в слоте `6` (родной инвентарь C:U — слоты `1..5`)
   через `WSZC_MinigameOpen` / `WSZC_MinigameSlot`, открывает сессию через
   `WSZC_BandageOpen` / `WSZC_SyringeOpen`, принимает ввод через
-  `WSZC_BandageInput` / `WSZC_SyringeInput`, шлёт `WSZC_MinigameAck` и
+  `WSZC_BandageInput` / `WSZC_SyringeInput`, шлёт `WSZC_MinigameAck`,
+  `WSZC_BandageState` (обычный прогресс + остаток артерии) и
   `WSZC_SyringeState`, закрывает через `WSZC_BandageClose` / `WSZC_SyringeClose`
   и `WSZC_MinigameClose`.
 - `session.startAmount`, `session.deferredUsed`, `onProgress`, `onClose` и

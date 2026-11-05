@@ -15,6 +15,7 @@ WSZC.MinigameClientReady = false
 WSZC.MinigameClientAttempts = 0
 WSZC.MinigameSlotIdx = 6
 WSZC.PendingBandageOpen = nil
+WSZC.PendingBandageState = nil
 WSZC.PendingSyringeOpen = nil
 WSZC.MinigameOpenAt = 0
 
@@ -206,6 +207,7 @@ end)
 local function ClearAllMinigameState()
     WSZC.MinigameHUDOpen = false
     WSZC.PendingBandageOpen = nil
+    WSZC.PendingBandageState = nil
     WSZC.PendingSyringeOpen = nil
     WSZC.MinigameFrozenAngles = nil
     WSZC._ViewModelHidden = nil
@@ -380,6 +382,16 @@ local function ReadBandageOpen()
     }
 end
 
+local function ReadBandageState()
+    return {
+        sessionId = net.ReadUInt(24),
+        initialBleed = math.max(net.ReadFloat() or 0, 0),
+        currentBleed = math.max(net.ReadFloat() or 0, 0),
+        progress = math.Clamp(net.ReadFloat() or 0, 0, 1),
+        arterialBleed = math.max(net.ReadFloat() or 0, 0),
+    }
+end
+
 local function ReadSyringeOpen()
     return {
         sessionId = net.ReadUInt(24),
@@ -396,6 +408,12 @@ local function DeliverPending()
         local payload = WSZC.PendingBandageOpen
         WSZC.PendingBandageOpen = nil
         WSZCBandageMinigame.OpenFromServer(payload)
+        local state = WSZC.PendingBandageState
+        WSZC.PendingBandageState = nil
+        if state and state.sessionId == payload.sessionId
+            and type(WSZCBandageMinigame.ApplyBleedState) == "function" then
+            WSZCBandageMinigame.ApplyBleedState(state)
+        end
     end
 
     if WSZC.PendingSyringeOpen and WSZCSyringeMinigame
@@ -459,6 +477,7 @@ net.Receive("WSZC_MinigameClose", function()
     WSZC.MinigameHUDOpen = false
     WSZC.MinigameOpenAt = 0
     WSZC.PendingBandageOpen = nil
+    WSZC.PendingBandageState = nil
     WSZC.PendingSyringeOpen = nil
     ReleaseMinigameView()
     DisableMinigameClicker()
@@ -488,6 +507,18 @@ end)
 -- have finished loading, the payload is buffered and delivered by Activate().
 net.Receive("WSZC_BandageOpen", BufferBandageOpen)
 net.Receive("WSZC_SyringeOpen", BufferSyringeOpen)
+net.Receive("WSZC_BandageState", function()
+    local payload = ReadBandageState()
+    local mg = WSZCBandageMinigame
+    if mg and mg.active and mg.sessionId == payload.sessionId
+        and type(mg.ApplyBleedState) == "function" then
+        mg.ApplyBleedState(payload)
+    else
+        -- Open/state are separate reliable messages, but the client copy may
+        -- still be loading.  Keep one latest packet until DeliverPending().
+        WSZC.PendingBandageState = payload
+    end
+end)
 
 local function ClientReady()
     return WoundSystem
