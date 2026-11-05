@@ -33,6 +33,7 @@ local NET_STRINGS = {
     "WSZC_MinigameOpen",
     "WSZC_MinigameSlot",
     "WSZC_MinigameClose",
+    "WSZC_MinigameForceClose",
     "WSZC_MinigameAck",
     "WSZC_BandageStart",
     "WSZC_BandageOpen",
@@ -314,17 +315,67 @@ local function CUSessionActive(ply)
     return false
 end
 
-local function StopCUSessions(ply)
+local function StopCUSessions(ply, reason)
     local sessions = WSZC.CUSessions
     if type(sessions) ~= "table" then return end
+    reason = reason or "disabled"
 
     if sessions.Bandage and sessions.Bandage[ply] and WSZC.CUCloseBandageSession then
-        pcall(WSZC.CUCloseBandageSession, ply, "disabled")
+        pcall(WSZC.CUCloseBandageSession, ply, reason)
     end
     if sessions.Syringe and sessions.Syringe[ply] and WSZC.CUCloseSyringeSession then
-        pcall(WSZC.CUCloseSyringeSession, ply, "disabled")
+        pcall(WSZC.CUCloseSyringeSession, ply, reason)
+    end
+    if sessions.Shrapnel and sessions.Shrapnel[ply] then
+        if WSZC.CUCloseShrapnelSession then
+            pcall(WSZC.CUCloseShrapnelSession, ply, reason)
+        else
+            sessions.Shrapnel[ply] = nil
+        end
+    end
+    if sessions.Dislocation and sessions.Dislocation[ply] then
+        if WSZC.CUCloseDislocationSession then
+            pcall(WSZC.CUCloseDislocationSession, ply, reason)
+        else
+            sessions.Dislocation[ply] = nil
+        end
+    end
+    if sessions.Aed and sessions.Aed[ply] then
+        if WSZC.CUCloseAedSession then
+            pcall(WSZC.CUCloseAedSession, ply, reason)
+        else
+            sessions.Aed[ply] = nil
+        end
     end
 end
+
+local function HasNativeSession(ply)
+    local sessions = WSZC.CUSessions
+    if type(sessions) ~= "table" then return false end
+    for _, kind in ipairs({ "Bandage", "Syringe", "Shrapnel", "Dislocation", "Aed" }) do
+        if type(sessions[kind]) == "table" and sessions[kind][ply] then return true end
+    end
+    return false
+end
+
+--- The operator, not an unconscious PATIENT being treated by somebody else,
+--- must be conscious and able to control the minigame.  Check every ZCity
+--- representation because otrub/fake/NWBool arrive in a different order on
+--- different builds.
+local function PlayerIncapacitated(ply)
+    if not IsValid(ply) or not ply:Alive() then return true end
+    if ply.GetNWBool and ply:GetNWBool("WoundSystemUnconscious", false) then return true end
+    if IsValid(ply.FakeRagdoll) then return true end
+    local org = ply.organism
+    if type(org) == "table" then
+        if org.otrub == true or org.needotrub == true
+            or org.fake == true or org.needfake == true then return true end
+        local consciousness = tonumber(org.consciousness)
+        if consciousness and consciousness < 0.4 then return true end
+    end
+    return false
+end
+WSZC.PlayerMinigameIncapacitated = PlayerIncapacitated
 
 local function ValidSession(ply)
     local session = WSZC.MinigameSessions[ply]
@@ -358,6 +409,28 @@ local function StopMinigame(ply, reason)
     return true
 end
 
+local function StopAllMinigames(ply, reason, forceClient)
+    if not IsValid(ply) then return false end
+    reason = tostring(reason or "disabled")
+    local had = WSZC.MinigameSessions[ply] ~= nil or HasNativeSession(ply)
+    StopMinigame(ply, reason)
+    StopCUSessions(ply, reason)
+    local health = WSZC.H or (WoundSystem and WoundSystem.Health)
+    if health and type(health.CancelActiveMedicalSessions) == "function" then
+        pcall(health.CancelActiveMedicalSessions, ply, reason)
+    elseif type(WoundSystemCloseAllMedicalSessions) == "function" then
+        pcall(WoundSystemCloseAllMedicalSessions, ply, reason)
+    end
+    -- This is also a safety net for a native session whose private close
+    -- upvalue could not be captured: the client must never keep its overlay,
+    -- cursor or movement lock after the operator falls unconscious.
+    if had or forceClient then
+        Send("WSZC_MinigameForceClose", ply, function() net.WriteString(reason) end)
+    end
+    return had
+end
+WSZC.StopAllMinigames = StopAllMinigames
+
 local function HasMinigame(ply)
     if not OwnMinigamesEnabled() then return false end
     if WSZC.MinigameSessions[ply] then return true end
@@ -367,6 +440,7 @@ end
 local function StartMinigame(ply, data)
     if not (WSZC.Ready and BridgeEnabled() and OwnMinigamesEnabled() and HealthEnabled()) then return false end
     if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
+    if PlayerIncapacitated(ply) then return false end
     if HasMinigame(ply) then return true end
     if type(data) ~= "table" then return false end
 
@@ -778,6 +852,8 @@ hook.Add("Think", "WSZC_MinigameWatch", function()
     for ply, session in pairs(WSZC.MinigameSessions) do
         if not IsValid(ply) or not ply:Alive() then
             StopMinigame(ply, "dead")
+        elseif PlayerIncapacitated(ply) then
+            StopAllMinigames(ply, "unconscious", true)
         elseif not IsValid(session.target) or not session.target:Alive() or not Bridged(session.target) then
             StopMinigame(ply, "target_gone")
         elseif session.limbId ~= "body" and WSZC.H and WSZC.H.GetLimbState
@@ -787,4 +863,21 @@ hook.Add("Think", "WSZC_MinigameWatch", function()
             StopMinigame(ply, "disabled")
         end
     end
+
+    -- Native shrapnel/dislocation sessions are not in MinigameSessions, so
+    -- sweep players too.  StopAllMinigames only networks when one exists.
+    if player and player.GetAll then
+        for _, ply in ipairs(player.GetAll()) do
+            if PlayerIncapacitated(ply) and HasNativeSession(ply) then
+                StopAllMinigames(ply, "unconscious", true)
+            end
+        end
+    end
+end)
+
+hook.Add("HG_OnOtrub", "WSZC_MinigameUnconscious", function(ply)
+    StopAllMinigames(ply, "unconscious", true)
+end)
+hook.Add("Fake", "WSZC_MinigameUnconscious", function(ply)
+    StopAllMinigames(ply, "unconscious", true)
 end)

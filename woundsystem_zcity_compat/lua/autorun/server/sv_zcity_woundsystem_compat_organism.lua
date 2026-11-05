@@ -51,6 +51,9 @@ local cvGlass = CreateConVar("zc_woundsystem_compat_glass_shrapnel", "1",
 local cvRegen = CreateConVar("zc_woundsystem_compat_shrapnel_regen_block", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Lodged shrapnel blocks ZCity limb regeneration until extracted", 0, 1)
+local cvLodgedEffects = CreateConVar("zc_woundsystem_compat_shrapnel_lodged_effects", "1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Any lodged shrapnel/glass causes growing real wounds and pain until extracted", 0, 1)
 local cvShadow = CreateConVar("zc_woundsystem_compat_shadow", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Mirror ZCity injuries into the C:U injury HUD (BodyState / PlayerLimbs)", 0, 1)
@@ -727,6 +730,113 @@ function WSZC.ShrapnelSpawnLimb(limbId)
 end
 local ShrapnelSpawnLimb = WSZC.ShrapnelSpawnLimb
 
+-- The C:U protocol intentionally keeps ONE integer `state.shrapnel`, but the
+-- authoritative organism records WHERE each fragment came from.  In
+-- particular, shotgun fragments are a separate class: they can be created
+-- only by InjectDamageShrapnel after a positive shotgun identification.
+local SHRAPNEL_SOURCES = { "glass", "blast", "shotgun", "legacy" }
+local SHRAPNEL_WOUND_TAG = "WSZC_LODGED_SHRAPNEL"
+
+local function RecordShrapnelSource(org, limbId, source, amount)
+    if amount <= 0 then return end
+    if source ~= "shotgun" and source ~= "blast" and source ~= "glass" then source = "legacy" end
+    org.wszc_shrapnel_sources = org.wszc_shrapnel_sources or {}
+    local sources = org.wszc_shrapnel_sources[limbId] or {}
+    sources[source] = math.max((tonumber(sources[source]) or 0) + amount, 0)
+    org.wszc_shrapnel_sources[limbId] = sources
+end
+
+local function ConsumeShrapnelSource(org, limbId, amount)
+    local byLimb = org.wszc_shrapnel_sources
+    local sources = type(byLimb) == "table" and byLimb[limbId] or nil
+    if type(sources) ~= "table" then return end
+    for _, source in ipairs(SHRAPNEL_SOURCES) do
+        if amount <= 0 then break end
+        local n = math.min(tonumber(sources[source]) or 0, amount)
+        sources[source] = math.max((tonumber(sources[source]) or 0) - n, 0)
+        amount = amount - n
+    end
+    local left = false
+    for _, n in pairs(sources) do if (tonumber(n) or 0) > 0 then left = true break end end
+    if not left then byLimb[limbId] = nil end
+end
+
+local function RemoveLodgedWounds(org, limbId)
+    if type(org) ~= "table" or type(org.wounds) ~= "table" then return false end
+    local removed = false
+    for key, wound in pairs(org.wounds) do
+        if type(wound) == "table" and wound.wszcShrapnel == SHRAPNEL_WOUND_TAG
+            and (not limbId or wound.wszcLimb == limbId) then
+            org.wounds[key] = nil
+            removed = true
+        end
+    end
+    if removed then CompactWoundTable(org.wounds) end
+    return removed
+end
+WSZC.RemoveLodgedWounds = RemoveLodgedWounds
+
+local function EnsureLodgedWound(ply, org, limbId, count)
+    if type(org) ~= "table" or (tonumber(count) or 0) <= 0 then return nil end
+    org.wounds = org.wounds or {}
+    for _, wound in pairs(org.wounds) do
+        if type(wound) == "table" and wound.wszcShrapnel == SHRAPNEL_WOUND_TAG
+            and wound.wszcLimb == limbId then return wound end
+    end
+    local last = 0
+    for key in pairs(org.wounds) do
+        if type(key) == "number" and key > last then last = key end
+    end
+    local wound = {
+        math.Clamp(1.5 + count * 0.5, 2, 6), nil, nil,
+        COMPLICATION_BONES[limbId] or COMPLICATION_BONES.hand_R,
+        CurTime and CurTime() or 0,
+    }
+    wound.wszcShrapnel = SHRAPNEL_WOUND_TAG
+    wound.wszcLimb = limbId
+    org.wounds[last + 1] = wound
+    if IsValid(ply) and ply.SetNetVar then pcall(ply.SetNetVar, ply, "wounds", org.wounds) end
+    return wound
+end
+
+--- Every lodged fragment hurts and opens a REAL ZCity wound.  Severity and
+--- irritation grow with time and piece count; blood loss itself is then done
+--- by ZCity's native sv_blood module, so the effect cannot be overwritten by
+--- its next org.bleed recalculation.  Extraction removes this tagged wound.
+function WSZC.TickLodgedShrapnel(ply, org, dt)
+    if not (cvLodgedEffects and cvLodgedEffects:GetBool()) then return false end
+    if not (IsValid(ply) and type(org) == "table") then return false end
+    dt = math.Clamp(tonumber(dt) or 0.1, 0, 0.5)
+    org.wszc_shrapnel_irritation = org.wszc_shrapnel_irritation or {}
+    local changed = false
+    for limbId, value in pairs(org.wszc_shrapnel or {}) do
+        local count = math.max(tonumber(value) or 0, 0)
+        if count > 0 then
+            local wound = EnsureLodgedWound(ply, org, limbId, count)
+            local irritation = math.Clamp(
+                (tonumber(org.wszc_shrapnel_irritation[limbId]) or 1) + count * dt * 0.025,
+                1, 20)
+            org.wszc_shrapnel_irritation[limbId] = irritation
+            if wound then
+                wound[1] = math.Clamp((tonumber(wound[1]) or 0.5)
+                    + count * (0.018 + irritation * 0.002) * dt, 0.5, 30)
+                wound[5] = CurTime and CurTime() or wound[5]
+            end
+            local painRate = count * (0.7 + irritation * 0.03)
+            org.avgpain = math.Clamp((tonumber(org.avgpain) or tonumber(org.pain) or 0)
+                + painRate * dt, 0, 150)
+            org.painadd = math.Clamp((tonumber(org.painadd) or 0)
+                + count * 0.08 * dt, 0, 150)
+            -- Immediate feedback too; avgpain/painadd above are what survive
+            -- the native pain module's next recomputation.
+            org.pain = math.Clamp((tonumber(org.pain) or 0) + painRate * 0.5 * dt, 0, 150)
+            changed = true
+        end
+    end
+    if changed then ply.fullsend = true end
+    return changed
+end
+
 local function MaxShrapnel()
     local c = Constants()
     local n = tonumber(c and c.ShrapnelPieceCount) or 0
@@ -783,6 +893,11 @@ function WSZC.AddShrapnel(ply, limbId, count, reason)
     if type(org) == "table" then
         org.wszc_shrapnel = org.wszc_shrapnel or {}
         org.wszc_shrapnel[limbId] = after
+        RecordShrapnelSource(org, limbId, reason, after - before)
+        org.wszc_shrapnel_irritation = org.wszc_shrapnel_irritation or {}
+        org.wszc_shrapnel_irritation[limbId] = math.max(
+            tonumber(org.wszc_shrapnel_irritation[limbId]) or 0, 1)
+        EnsureLodgedWound(ply, org, limbId, after)
         -- Freeze ZCity limb regeneration at the state it had when the fragment
         -- lodged; extraction releases the floor again.
         if cvRegen and cvRegen:GetBool() then
@@ -826,6 +941,15 @@ function WSZC.RestoreShrapnel(ply)
                 if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
                 restored = restored + 1
             end
+            if type(state) == "table" then
+                org.wszc_shrapnel_irritation = org.wszc_shrapnel_irritation or {}
+                org.wszc_shrapnel_irritation[limbId] = math.max(
+                    tonumber(org.wszc_shrapnel_irritation[limbId]) or 0, 1)
+                EnsureLodgedWound(ply, org, limbId, n)
+                if not (org.wszc_shrapnel_sources and org.wszc_shrapnel_sources[limbId]) then
+                    RecordShrapnelSource(org, limbId, "legacy", n)
+                end
+            end
         end
     end
     ply._WSZCLimbsRef = limbs
@@ -860,9 +984,20 @@ local function SyncShrapnel(ply, org)
     for limbId, state in pairs(limbs) do
         if type(state) == "table" then
             local n = math.floor(tonumber(state.shrapnel) or 0)
-            if (tonumber(org.wszc_shrapnel[limbId]) or 0) ~= n then
+            local previous = tonumber(org.wszc_shrapnel[limbId]) or 0
+            if previous ~= n then
                 org.wszc_shrapnel[limbId] = n
-                if n <= 0 then org.wszc_shrapnel_floor[limbId] = nil end
+                if n < previous then ConsumeShrapnelSource(org, limbId, previous - n) end
+                if n <= 0 then
+                    org.wszc_shrapnel_floor[limbId] = nil
+                    if org.wszc_shrapnel_sources then org.wszc_shrapnel_sources[limbId] = nil end
+                    if org.wszc_shrapnel_irritation then org.wszc_shrapnel_irritation[limbId] = nil end
+                    if RemoveLodgedWounds(org, limbId) and ply.SetNetVar then
+                        pcall(ply.SetNetVar, ply, "wounds", org.wounds)
+                    end
+                else
+                    EnsureLodgedWound(ply, org, limbId, n)
+                end
             end
         end
     end
@@ -1217,9 +1352,9 @@ local function IsShotgunHit(dmginfo, dmgtype)
             or (buckshot ~= 0 and bit.band(dmgtype, buckshot) ~= 0)
     end
 
-    local buckshot = DMG_BUCKSHOT or 0
-    if buckshot ~= 0 and bit.band(dmgtype, buckshot) ~= 0 then return true end
-
+    -- DMG_BUCKSHOT alone is NOT enough: a custom pistol/SWEP can set that bit.
+    -- Require the shotgun ammo name or a real multi-pellet/known shotgun
+    -- weapon below, otherwise no fragment is created.
     if dmginfo.GetAmmoType and game and game.GetAmmoName then
         local ok, ammoId = pcall(dmginfo.GetAmmoType, dmginfo)
         if ok and type(ammoId) == "number" and ammoId >= 0 then
@@ -1271,13 +1406,13 @@ function WSZC.InjectDamageShrapnel(ent, dmginfo, hitgroup, rawOverride)
         Debug("shrapnel skipped: no reliable injured limb for %s", tostring(ent))
         return
     end
-    local added = 0
+    local shotgunAdded, blastAdded = 0, 0
 
-    -- One fragment per SHOTGUN hit only (HEV blocks it), capped at
-    -- ShrapnelPieceCount.  Pistols / rifles / SMGs deliberately produce none.
+    -- One separate shotgun fragment group per confirmed SHOTGUN hit only
+    -- (HEV can block it).  Pistols / rifles / SMGs deliberately produce none.
     local blast = DMG_BLAST or 0
     if IsShotgunHit(dmginfo, dmgtype) and not HevBlocks(ply) then
-        added = added + 1
+        shotgunAdded = 1
     end
 
     -- C:U's DMG_BLAST branch: fragment shower scaled by raw damage on
@@ -1294,11 +1429,12 @@ function WSZC.InjectDamageShrapnel(ent, dmginfo, hitgroup, rawOverride)
             if raw >= 20 and math.random() < 0.6 then frags = frags + 1 end
             if raw >= 40 and math.random() < 0.5 then frags = frags + 1 end
             if raw >= 70 and math.random() < 0.4 then frags = frags + 1 end
-            added = added + frags
+            blastAdded = frags
         end
     end
 
-    if added > 0 then WSZC.AddShrapnel(ply, limbId, added, "damage") end
+    if shotgunAdded > 0 then WSZC.AddShrapnel(ply, limbId, shotgunAdded, "shotgun") end
+    if blastAdded > 0 then WSZC.AddShrapnel(ply, limbId, blastAdded, "blast") end
 end
 
 ---------------------------------------------------------------------------
@@ -1954,21 +2090,73 @@ end
 local RESET_KEEP = {
     "otrub", "needotrub", "fake", "needfake",
     "alive", "otrub_start", "unconscious",
-    -- hg.organism.Clear() wipes every non-whitelisted field when the player
-    -- drops into / gets up from the unconscious ragdoll.  These three are our
-    -- authoritative shrapnel shadow; dropping them made the fragments vanish
-    -- on standing up ("why does shrapnel disappear when I get up?").
-    "wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation",
 }
 
 local SHRAPNEL_SHADOW_KEYS = {
     "wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation",
+    "wszc_shrapnel_sources",
 }
 
-local function SnapshotZCityStructure(org)
+local function SnapshotZCityStructure(org, preserveShrapnel)
     local snap = {}
     for _, key in ipairs(RESET_KEEP) do snap[key] = org[key] end
+    -- Only a ragdoll transition keeps fragments.  An EXPLICIT admin reset
+    -- passes false and therefore cannot resurrect them after Clear().
+    if preserveShrapnel ~= false then
+        for _, key in ipairs(SHRAPNEL_SHADOW_KEYS) do snap[key] = org[key] end
+    end
     return snap
+end
+
+local function IsExplicitReset(ply)
+    return (WSZC._ExplicitResetDepth or 0) > 0
+        or (IsValid(ply) and ply._WSZCExplicitReset == true)
+end
+
+function WSZC.ClearAllShrapnel(ply, org)
+    if type(org) == "table" then
+        RemoveLodgedWounds(org)
+        for _, key in ipairs(SHRAPNEL_SHADOW_KEYS) do org[key] = nil end
+        org.wounds = {}
+        org.arterialwounds = {}
+        org.bleed, org.internalBleed, org.bleedStart = 0, 0, 0
+        org.pain, org.avgpain, org.painadd = 0, 0, 0
+        org.shock, org.hurt, org.hurtadd = 0, 0, 0
+        org.immobilization, org.disorientation = 0, 0
+        for _, flag in ipairs({ "arteria", "rarmartery", "larmartery",
+            "rlegartery", "llegartery", "spineartery", "neckartery" }) do
+            org[flag] = 0
+        end
+    end
+
+    if IsValid(ply) then
+        if WSZC.StopAllMinigames then WSZC.StopAllMinigames(ply, "zcity_compat_reset", true) end
+        local h = H()
+        if h and h.ResetPlayer then pcall(h.ResetPlayer, ply)
+        elseif h and h.InitPlayer then pcall(h.InitPlayer, ply) end
+        local limbs = h and h.GetLimbs and h.GetLimbs(ply)
+        if type(limbs) == "table" then
+            for limbId, state in pairs(limbs) do
+                if type(state) == "table" then
+                    state.shrapnel, state.bleed, state.pain = 0, 0, 0
+                    state.broken, state.dislocated = false, false
+                    state.dislocationTimer = 0
+                    if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
+                end
+            end
+            ply._WSZCLimbsRef = limbs
+        end
+        ply._WSZCExpectedBleed, ply._WSZCExpectedPain = {}, {}
+        ply._WSZCExpectedDislocation = {}
+        ply._WSZCShrapnelCarry = nil
+        ply._WSZCLastComplication, ply._WSZCLastComplicationLimb = nil, nil
+        ply.fullsend = true
+        if ply.SetNetVar and type(org) == "table" then
+            pcall(ply.SetNetVar, ply, "wounds", org.wounds)
+            pcall(ply.SetNetVar, ply, "arterialwounds", org.arterialwounds)
+        end
+    end
+    return true
 end
 
 --- `down` is already false by the time some ZCity builds call Clear() on
@@ -1978,6 +2166,7 @@ end
 local function RestoreShrapnelShadow(org)
     if type(org) ~= "table" then return end
     local owner = org.owner
+    if IsExplicitReset(owner) then return end
     local ply = IsValid(owner) and owner or nil
     if not ply then return end
     local now = CurTime and CurTime() or 0
@@ -1994,6 +2183,7 @@ end
 --- Clear() wipes every field.
 local function CarryShrapnelShadow(ply, org)
     if not (IsValid(ply) and type(org) == "table") then return end
+    if IsExplicitReset(ply) then return end
     local now = CurTime and CurTime() or 0
     if (ply._WSZCRagdollTransitionUntil or 0) <= now then return end
     local carry = {}
@@ -2053,20 +2243,27 @@ function WSZC.InstallResetStructureGuard()
         end
         if type(org) ~= "table" then return originalClear(org, ...) end
         local owner = org.owner
+        local explicit = IsExplicitReset(owner)
         local down = (IsValid(owner) and IsValid(owner.FakeRagdoll))
             or org.otrub == true or org.fake == true
-        -- A normal Player Spawn has no ragdoll / unconscious state: let the
-        -- stock clear run and then make sure sprint is available again.
+        local snap = SnapshotZCityStructure(org, not explicit)
+        CarryShrapnelShadow(owner, org)
+        local a, b, c = originalClear(org, ...)
+
+        if explicit then
+            -- This branch is ONLY hg_organism_clear / WB.ResetOrganism, never
+            -- an ordinary Fake/FakeUp transition.  No carry table, no shrapnel
+            -- snapshot and no tagged wound is allowed to survive it.
+            WSZC.ClearAllShrapnel(owner, org)
+            RestoreZCityStructure(org, snap)
+            return a, b, c
+        end
+
         if not down then
-            CarryShrapnelShadow(owner, org)
-            local a, b, c = originalClear(org, ...)
             RestoreShrapnelShadow(org)
             ClearMovementPenalties(org)
             return a, b, c
         end
-        CarryShrapnelShadow(owner, org)
-        local snap = SnapshotZCityStructure(org)
-        local a, b, c = originalClear(org, ...)
         RestoreZCityStructure(org, snap)
         return a, b, c
     end
@@ -2081,21 +2278,45 @@ function WSZC.InstallResetStructureGuard()
             local ply = (wb.GetPlayer and wb.GetPlayer(ent))
                 or (IsValid(ent) and ent.IsPlayer and ent:IsPlayer() and ent) or nil
             local org = IsValid(ply) and ply.organism or nil
+            if IsValid(ply) then ply._WSZCExplicitReset = true end
             CarryShrapnelShadow(ply, org)
-            local snap = type(org) == "table" and SnapshotZCityStructure(org) or nil
+            local snap = type(org) == "table" and SnapshotZCityStructure(org, false) or nil
             -- Suppress the explicit "stand up if the old state kept him on the
             -- floor" call.  Its timer.Simple(0) would otherwise run AFTER this
             -- wrapper returns and undo everything.
             wb.RestoreRagdoll = function() return true end
             local ok, res = pcall(originalReset, ent, ...)
             wb.RestoreRagdoll = originalRestore
+            WSZC.ClearAllShrapnel(ply, org)
             if snap then RestoreZCityStructure(org, snap) end
             ClearMovementPenalties(org)
+            if IsValid(ply) then ply._WSZCExplicitReset = nil end
             if not ok then
                 Warn("WB.ResetOrganism failed: " .. tostring(res))
                 return false
             end
             return res
+        end
+    end
+
+    -- WB.ResetOrganism normally covers the command, but the stock command has
+    -- a direct hg.organism.Clear fallback (and can reset a list of players).
+    -- Mark that whole callback as explicit so NONE of those paths preserves
+    -- shrapnel as though it were a ragdoll transition.
+    if concommand and concommand.GetTable and concommand.Add
+        and not WSZC._ResetCommandPatched then
+        local commands = concommand.GetTable()
+        local entry = commands and commands.hg_organism_clear
+        local callback = type(entry) == "table" and (entry[1] or entry.callback) or entry
+        if type(callback) == "function" then
+            WSZC._ResetCommandPatched = true
+            concommand.Add("hg_organism_clear", function(...)
+                WSZC._ExplicitResetDepth = (WSZC._ExplicitResetDepth or 0) + 1
+                local ok, a, b, c = pcall(callback, ...)
+                WSZC._ExplicitResetDepth = math.max((WSZC._ExplicitResetDepth or 1) - 1, 0)
+                if not ok then error(a, 0) end
+                return a, b, c
+            end)
         end
     end
     return true
@@ -2207,23 +2428,10 @@ function WSZC.InstallOrganismMode()
             end
         end
 
-        -- A botched shrapnel extraction keeps hurting and bleeding until the
-        -- fragment is removed.  The irritation clears itself when C:U's
-        -- extraction minigame empties state.shrapnel for that limb.
-        if type(org.wszc_shrapnel_irritation) == "table" then
-            local h = H()
-            local dt = math.Clamp(tonumber(dt) or 0.1, 0, 0.5)
-            for limbId, irritation in pairs(org.wszc_shrapnel_irritation) do
-                local state = h and h.GetLimbState and h.GetLimbState(owner, limbId)
-                if type(state) ~= "table" or (tonumber(state.shrapnel) or 0) <= 0 then
-                    org.wszc_shrapnel_irritation[limbId] = nil
-                else
-                    local inc = math.Clamp(tonumber(irritation) or 0, 0, 20) * dt * 0.06
-                    org.bleed = math.Clamp((tonumber(org.bleed) or 0) + inc, 0, 200)
-                    org.pain = math.Clamp((tonumber(org.pain) or 0) + inc * 0.5, 0, 1000)
-                end
-            end
-        end
+        -- EVERY lodged fragment (shotgun, blast or glass), not only a botched
+        -- extraction, grows a tagged real wound and persistent ZCity pain.
+        -- SyncShrapnel removes both as soon as the last piece is extracted.
+        WSZC.TickLodgedShrapnel(owner, org, dt)
     end)
 
     -- The organism is authoritative (`organism_authoritative`).  The old

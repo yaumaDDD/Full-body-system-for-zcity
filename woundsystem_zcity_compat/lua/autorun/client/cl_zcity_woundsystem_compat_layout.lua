@@ -37,6 +37,8 @@ local cvHideMinigameText = CreateClientConVar("zc_woundsystem_compat_hide_miniga
     "1 = remove every header / instruction / exit-hint text and dark panel in all minigames")
 local cvCloseEmptyClick = CreateClientConVar("zc_woundsystem_compat_close_on_empty_click", "1", true, false,
     "1 = close WoundView when left-clicking an empty area outside the doll, slots and action point")
+local cvWoundViewPolish = CreateClientConVar("zc_woundsystem_compat_woundview_polish", "1", true, false,
+    "1 = clean WoundView backdrop, vital signs and selected-limb readout; doll and hitboxes stay native")
 
 --- Multiplier for the huge C:U hand sprites (512x1260 source images).
 function WSZC.HandCursorScale()
@@ -72,9 +74,23 @@ end
 --- return a bare LocalPlayer() table with no Alive(), so default to true.
 function WSZC.MinigameContextOK()
     local ply = LocalPlayer and LocalPlayer() or nil
-    if type(ply) == "table" and type(ply.Alive) == "function" then
+    if ply and ply.Alive then
         local ok, alive = pcall(ply.Alive, ply)
         if ok and alive == false then return false end
+    end
+    if ply then
+        if ply.GetNWBool then
+            local ok, unconscious = pcall(ply.GetNWBool, ply, "WoundSystemUnconscious", false)
+            if ok and unconscious == true then return false end
+        end
+        if IsValid and IsValid(ply.FakeRagdoll) then return false end
+        local org = ply.organism
+        if type(org) == "table" then
+            if org.otrub == true or org.needotrub == true
+                or org.fake == true or org.needfake == true then return false end
+            local consciousness = tonumber(org.consciousness)
+            if consciousness and consciousness < 0.4 then return false end
+        end
     end
     return true
 end
@@ -631,6 +647,156 @@ hook.Add("Think", "WSZC_WoundViewEmptyClickClose", function()
         woundViewClickArmed = false
     end
 end)
+
+---------------------------------------------------------------------------
+-- Final WoundView presentation layer
+---------------------------------------------------------------------------
+-- Keep C:U's proven limb geometry, selection, tooltips and action points.  The
+-- polish layer only adds contrast and INFORMATION around that doll; it never
+-- moves a hitbox and never draws over a minigame / unconscious screen.
+local WV_FONTS = {}
+local function WVFont(kind, size)
+    local px = math.max(10, math.floor(size * (ScrH() / 1080) + 0.5))
+    local name = "WSZC_WoundView_" .. kind .. "_" .. tostring(px)
+    if surface.CreateFont and not WV_FONTS[name] then
+        surface.CreateFont(name, {
+            font = "Retro Gaming", size = px, weight = 500,
+            antialias = false, extended = true,
+        })
+        WV_FONTS[name] = true
+    end
+    return surface.CreateFont and name or "CrunchyTechFont"
+end
+
+local function WVRound(value)
+    return math.Round and math.Round(value) or math.floor(value + 0.5)
+end
+
+local function WoundViewPolishActive()
+    if not cvWoundViewPolish:GetBool() or WoundSystemHealthHUDOpen ~= true then return false end
+    if WSZC.MinigameContextOK and not WSZC.MinigameContextOK() then return false end
+    if WSZC.MinigameActive and WSZC.MinigameActive() then return false end
+    local ply = LocalPlayer and LocalPlayer()
+    if ply and ply.Alive then
+        local ok, alive = pcall(ply.Alive, ply)
+        if ok and not alive then return false end
+    end
+    return true
+end
+WSZC.WoundViewPolishActive = WoundViewPolishActive
+
+local function WoundViewLayout()
+    local s = ScrH() / 1080
+    local wide = ScrW() >= 1100 * s
+    return s, ScrW() / 2, ScrH() / 2 + 20 * s, wide
+end
+
+local function DrawWoundViewBackground()
+    if not WoundViewPolishActive() then return end
+    WSZC._DrawMaterialName = nil -- do not inherit the doll's white-fill tint
+    local s, cx, _, wide = WoundViewLayout()
+    local sw, sh = ScrW(), ScrH()
+
+    surface.SetDrawColor(4, 9, 14, 118)
+    surface.DrawRect(0, 0, sw, sh)
+    draw.RoundedBox(12, cx - 340 * s, 74 * s, 680 * s, sh - 142 * s,
+        Color(8, 15, 22, 82))
+    surface.SetDrawColor(73, 188, 209, 145)
+    surface.DrawRect(cx - 310 * s, 73 * s, 620 * s, math.max(1, 2 * s))
+
+    if wide then
+        draw.RoundedBox(10, 24 * s, sh * 0.25, 242 * s, 292 * s, Color(8, 15, 22, 218))
+        draw.RoundedBox(10, sw - 266 * s, sh * 0.25, 242 * s, 292 * s, Color(8, 15, 22, 218))
+        surface.SetDrawColor(73, 188, 209, 190)
+        surface.DrawRect(24 * s, sh * 0.25, math.max(2, 3 * s), 292 * s)
+        surface.DrawRect(sw - 27 * s, sh * 0.25, math.max(2, 3 * s), 292 * s)
+    end
+end
+
+local function WVText(text, font, x, y, color, alignX, alignY)
+    draw.SimpleText(text, font, x, y, color or Color(219, 231, 236, 255),
+        alignX or TEXT_ALIGN_LEFT, alignY or TEXT_ALIGN_TOP)
+end
+
+local function DrawVitalRow(label, value, x, y, w, s, fraction, color)
+    WVText(label, WVFont("label", 15), x, y, Color(133, 157, 168, 255))
+    WVText(value, WVFont("value", 20), x + w, y - 2 * s,
+        color or Color(224, 235, 239, 255), TEXT_ALIGN_RIGHT)
+    surface.SetDrawColor(40, 55, 64, 230)
+    surface.DrawRect(x, y + 28 * s, w, math.max(3, 5 * s))
+    surface.SetDrawColor((color and color.r) or 73, (color and color.g) or 188,
+        (color and color.b) or 209, 230)
+    surface.DrawRect(x, y + 28 * s, w * math.Clamp(tonumber(fraction) or 0, 0, 1), math.max(3, 5 * s))
+end
+
+local function DrawWoundViewForeground()
+    if not WoundViewPolishActive() then return end
+    WSZC._DrawMaterialName = nil
+    local s, cx, _, wide = WoundViewLayout()
+    local sw, sh = ScrW(), ScrH()
+    WVText("WOUND VIEW", WVFont("title", 28), cx, 28 * s,
+        Color(222, 237, 241, 255), TEXT_ALIGN_CENTER)
+    WVText("MEDICAL ASSESSMENT  //  LIVE", WVFont("sub", 13), cx, 60 * s,
+        Color(91, 177, 193, 255), TEXT_ALIGN_CENTER)
+
+    if wide then
+        local cardio = WoundSystemClientState and WoundSystemClientState.Cardio or {}
+        local stats = WoundSystemClientState and WoundSystemClientState.PlayerStats or {}
+        local x, y, w = 44 * s, sh * 0.25 + 24 * s, 202 * s
+        WVText("VITAL SIGNS", WVFont("section", 20), x, y, Color(222, 237, 241, 255))
+        local blood = math.Clamp(tonumber(cardio.bloodVolume) or 100, 0, 100)
+        local pulse = math.max(tonumber(cardio.heartRate) or 70, 0)
+        local consciousness = math.Clamp(tonumber(stats.consciousness)
+            or tonumber(cardio.consciousness) or 100, 0, 100)
+        local pain = math.max(tonumber(cardio.avgPain) or 0, 0)
+        DrawVitalRow("BLOOD", tostring(WVRound(blood)) .. "%", x, y + 48 * s, w, s,
+            blood / 100, blood < 45 and Color(235, 91, 91, 255) or Color(73, 188, 209, 255))
+        DrawVitalRow("PULSE", tostring(WVRound(pulse)) .. " BPM", x, y + 106 * s, w, s,
+            pulse / 160, pulse > 130 and Color(235, 174, 91, 255) or Color(101, 211, 164, 255))
+        DrawVitalRow("CONSCIOUS", tostring(WVRound(consciousness)) .. "%", x, y + 164 * s, w, s,
+            consciousness / 100, consciousness < 40 and Color(235, 91, 91, 255) or Color(101, 211, 164, 255))
+        WVText("PAIN  " .. tostring(WVRound(pain)), WVFont("label", 15), x, y + 226 * s,
+            pain > 70 and Color(235, 91, 91, 255) or Color(155, 174, 183, 255))
+
+        local rx = sw - 246 * s
+        WVText("LIMB STATUS", WVFont("section", 20), rx, y, Color(222, 237, 241, 255))
+        local limbId = _G.WoundSystemSelectedLimbId
+        local limbs = WoundSystemClientState and WoundSystemClientState.PlayerLimbs or {}
+        local state = limbId and limbs[limbId] or nil
+        if type(state) == "table" then
+            WVText(string.upper(string.gsub(limbId, "_", " ")), WVFont("value", 21), rx, y + 44 * s,
+                Color(101, 211, 164, 255))
+            WVText("MUSCLE  " .. tostring(WVRound(tonumber(state.muscle) or 100)) .. "%",
+                WVFont("label", 16), rx, y + 88 * s)
+            WVText("PAIN  " .. tostring(WVRound(tonumber(state.pain) or 0)),
+                WVFont("label", 16), rx, y + 122 * s)
+            WVText("BLEED  " .. string.format("%.1f", tonumber(state.bleed) or 0),
+                WVFont("label", 16), rx, y + 156 * s)
+            local pieces = math.max(tonumber(state.shrapnel) or 0, 0)
+            WVText("SHRAPNEL  " .. tostring(WVRound(pieces)), WVFont("label", 16), rx, y + 190 * s,
+                pieces > 0 and Color(235, 174, 91, 255) or Color(133, 157, 168, 255))
+            WVText("LMB  TREAT / INSPECT", WVFont("sub", 13), rx, y + 238 * s,
+                Color(91, 177, 193, 255))
+        else
+            WVText("SELECT A LIMB", WVFont("value", 21), rx, y + 48 * s,
+                Color(101, 211, 164, 255))
+            WVText("Hover over the body to inspect.", WVFont("sub", 13), rx, y + 94 * s,
+                Color(155, 174, 183, 255))
+            WVText("Use a marked action point", WVFont("sub", 13), rx, y + 122 * s,
+                Color(155, 174, 183, 255))
+            WVText("to treat an injury.", WVFont("sub", 13), rx, y + 148 * s,
+                Color(155, 174, 183, 255))
+        end
+    end
+
+    WVText("T / EMPTY CLICK   CLOSE", WVFont("sub", 13), cx, sh - 42 * s,
+        Color(133, 157, 168, 255), TEXT_ALIGN_CENTER)
+end
+
+hook.Add("HUDPaintBackground", "WSZC_WoundViewPolishBackground", DrawWoundViewBackground)
+hook.Add("PostDrawHUD", "WSZC_WoundViewPolishForeground", DrawWoundViewForeground)
+WSZC.DrawWoundViewBackground = DrawWoundViewBackground
+WSZC.DrawWoundViewForeground = DrawWoundViewForeground
 
 local savedHudFn, hudWrapper
 local drawWrappersInstalled = false

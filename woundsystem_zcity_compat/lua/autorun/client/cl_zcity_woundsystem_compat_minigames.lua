@@ -204,7 +204,7 @@ end)
 -- CloseWoundMinigames() from WoundSystem.HealthGUI.ResetLocalRespawnInput(),
 -- which is tied to its own PlayerSpawn hook; if that hook is missing or a
 -- session object was replaced by a hot reload, MG.active stays true forever.
-local function ClearAllMinigameState()
+local function ClearAllMinigameState(notifyServer)
     WSZC.MinigameHUDOpen = false
     WSZC.PendingBandageOpen = nil
     WSZC.PendingBandageState = nil
@@ -215,22 +215,38 @@ local function ClearAllMinigameState()
         "WSZCBandageMinigame", "WSZCSyringeMinigame",
         "WoundSystemDislocationMinigame", "WoundSystemShrapnelMinigame",
         "WoundSystemAEDMinigame", "WoundSystemBandageMinigame",
-        "WoundSystemSyringeMinigame",
+        "WoundSystemSyringeMinigame", "WoundSystemSelfHarmMinigame",
     }
     for _, name in ipairs(names) do
         local mg = _G[name]
-        if type(mg) == "table" then mg.active = false end
+        if type(mg) == "table" then
+            if notifyServer and mg.active and type(mg.RequestClose) == "function" then
+                pcall(mg.RequestClose, "unconscious")
+            end
+            mg.active = false
+            -- RequestClose normally removes this already.  The direct removal
+            -- covers a lost native close upvalue and server-forced cleanup.
+            if IsValid(mg.overlay) and mg.overlay.Remove then pcall(mg.overlay.Remove, mg.overlay) end
+            mg.overlay = nil
+        end
+    end
+    ReleaseMinigameView()
+    DisableMinigameClicker()
+    if WSZC.ForceReleaseMinigameCursor then WSZC.ForceReleaseMinigameCursor() end
+    if not WSZC.MinigameContextOK() and WoundSystem
+        and type(WoundSystem.CloseHealthHUD) == "function" then
+        pcall(WoundSystem.CloseHealthHUD)
     end
 end
 WSZC.ClearAllMinigameState = ClearAllMinigameState
 
 hook.Add("PlayerDeath", "WSZC_MinigameDeathCleanup", function(ply)
     if LocalPlayer and ply ~= LocalPlayer() then return end
-    ClearAllMinigameState()
+    ClearAllMinigameState(true)
 end)
 hook.Add("PlayerSpawn", "WSZC_MinigameSpawnCleanup", function(ply)
     if LocalPlayer and ply ~= LocalPlayer() then return end
-    ClearAllMinigameState()
+    ClearAllMinigameState(true)
 end)
 
 -- PlayerDeath is not guaranteed to fire in every client realm/build; the
@@ -242,7 +258,18 @@ hook.Add("Think", "WSZC_MinigameDeadCleanup", function()
     end
     if WSZC._MinigameDeadCleaned then return end
     WSZC._MinigameDeadCleaned = true
-    ClearAllMinigameState()
+    ClearAllMinigameState(true)
+end)
+
+net.Receive("WSZC_MinigameForceClose", function()
+    net.ReadString() -- reason is diagnostic; cleanup is identical for all causes
+    ClearAllMinigameState(false)
+    -- The organism flag can arrive one network tick later.  A server-forced
+    -- close is already authoritative, so do not leave WoundView / its cursor
+    -- open while waiting for that flag to replicate.
+    if WoundSystem and type(WoundSystem.CloseHealthHUD) == "function" then
+        pcall(WoundSystem.CloseHealthHUD)
+    end
 end)
 
 -- Native C:U games (dislocation / shrapnel / AED) do not send our WSZC open

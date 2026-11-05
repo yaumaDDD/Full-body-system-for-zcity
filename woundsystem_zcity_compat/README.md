@@ -91,18 +91,23 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
     и сбрасывает шрапнель при респавне (в том числе после `LoadPlayerPersistData`
     при переходе между картами).
 
-## Шрапнель: одно состояние, три источника
+## Шрапнель: общий протокол, раздельные источники
 
-Поле `state.shrapnel` в `PlayerLimbs` — **единственный** источник истины.
-Поля `source` нет, второй мини-игры нет: gunshot, blast и glass пишут один и тот
-же счётчик, и родная кнопка `REMOVE SHRAPNEL` в панели C:U всегда открывает
+Поле `state.shrapnel` в `PlayerLimbs` остаётся общим счётчиком для родной
+мини-игры. Количество по источникам отдельно хранится в
+`org.wszc_shrapnel_sources[limbId]`: `shotgun`, `blast`, `glass` (и `legacy`
+для старых сохранений). Второй мини-игры нет: `REMOVE SHRAPNEL` всегда открывает
 один и тот же `BuildShrapnelSession()`.
 
 | Источник | Правило | Откуда перенесено |
 | --- | --- | --- |
-| Пуля / дробь | +1 за попадание, блокируется HEV-шансом, лимит `ShrapnelPieceCount` (5) | `Fn.AddGunshotShrapnel` из обработчика урона C:U (в authority-режиме он больше не вызывается) |
+| Подтверждённый дробовик | 3–5 фрагментов за попадание (с учётом лимита `ShrapnelPieceCount = 5`), блокируется HEV-шансом | `Fn.AddGunshotShrapnel` из обработчика урона C:U (в authority-режиме он больше не вызывается) |
 | Взрыв | на некритичных лимбах: `raw≥20` 60 %, `raw≥40` 50 %, `raw≥70` 40 %, до 3 осколков | ветка `DMG_BLAST` в `WoundSystem_Damage` |
 | Стекло | +1 за удар рукой/ногой по стеклу (стоячий игрок, brush `func_breakable_surf`, ragdoll-коллизии) | отсутствовало: в ZCity хук `sv_input.lua:441-446` закомментирован, `WB.SurfaceCut` пишет только skin/bleed |
+
+Обычная пуля не создаёт осколков. `DMG_BUCKSHOT` сам по себе тоже не является
+доказательством дробовика: нужен дробовый ammo/класс оружия/многопеллетный
+выстрел. Стекло остаётся независимым источником.
 
 Сырой урон снимается **до** `dmginfo:ScaleDamage(0.15)` внутри обёртки
 `homigrad-damage`, иначе пороги взрыва никогда не сработали бы. Поверхности
@@ -114,6 +119,21 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 `org.wszc_shrapnel_floor` удерживает повреждение лимба от регенерации; после
 извлечения C:U пишет `state.shrapnel = remaining`, тень подтягивает новое
 значение и блок снимается.
+
+Каждые 0.5 с любой оставшийся фрагмент усиливает настоящую tagged ZCity-рану
+(`wound.wszcShrapnel`) и добавляет боль в `avgpain/painadd/pain`. Кровотечение
+поэтому переживает родной recalculate `org.bleed`. При извлечении последнего
+осколка конечности удаляются только tagged-рана, source map и irritation;
+обычные раны остаются. Откат роста: `zc_woundsystem_compat_shrapnel_lodged_effects 0`.
+
+Явный `hg_organism_clear` / `WB.ResetOrganism` полностью удаляет все фрагменты,
+источники, tagged-раны и C:U residue. Этот explicit-reset context отделён от
+обычного `ragdoll → standing`, где шрапнель сохраняется.
+
+Потеря сознания владельца сессии (`otrub/needotrub`, `fake/needfake`,
+`FakeRagdoll`, `consciousness < 0.4`) закрывает WSZC и нативные C:U мини-игры,
+освобождает cursor/view/input и скрывает WoundView. Если медик в сознании, то
+бессознательное состояние его пациента мини-игру медика не закрывает.
 
 Вход в мини-игру — кнопка «Проверить травмы» → родная панель C:U → точка
 `REMOVE SHRAPNEL`. Инструмент не требуется: `slotIdx = 0`, `hasTweezers = false`,
@@ -293,12 +313,14 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_disable_cu_fx` | этот аддон (client) | `1` — снять ВСЕ экранные/камерные/UI-эффекты C:U, оставить только эффекты ZCity; `0` — вернуть хуки C:U. |
 | `zc_woundsystem_compat_disable_cu_blood` | этот аддон (client + server) | `1` — убрать декоративную кровь C:U и вернуть ванильную кровь ZCity/Hemogen; `0` — вернуть как было. |
 | `zc_woundsystem_compat_shrapnel_only_shotgun_blast` | этот аддон (server) | `1` — осколки только от дробовика и взрыва, не от пистолетов/винтовок; `0` — старое поведение (любой `DMG_BULLET`). |
-| `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа и сохраняет структуру ZCity (`otrub`/`fake`/`canmove`); `0` — исходный ZCity reset. |
+| `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа и сохраняет структуру ZCity (`otrub`/`fake`/`canmove`), но полностью очищает раны/шрапнель/C:U residue; `0` — исходный ZCity reset. |
+| `zc_woundsystem_compat_shrapnel_lodged_effects` | этот аддон (server) | `1` — любой неизвлечённый fragment наращивает tagged ZCity-рану, боль и кровотечение; `0` — отключить только этот рост. |
 | `zc_woundsystem_compat_fullscreen_minigame` | этот аддон (client) | `1` — мини-игры бинта/шприца на весь экран; `0` — исходный квадрат ~760 px C:U. |
 | `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `1.0` — базовый размер мини-игры; диапазон `0.7..1.8`. |
 | `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | **`1`** — авторский размер НАТИВНЫХ мини-игр C:U (вправление, осколки, AED), квадрат 760 px без shrink; диапазон `0.4..1.2`. |
 | `zc_woundsystem_compat_fullscreen_native` | этот аддон (client) | **`0`** — нативные C:U мини-игры в авторском размере. `1` — прежнее растяжение на весь экран; live-откат показал огромный обрезанный осколок и потерю нижней части раны. |
 | `zc_woundsystem_compat_close_on_empty_click` | этот аддон (client) | **`1`** — клик по пустой области WoundView закрывает окно через `WoundSystem.CloseHealthHUD()`; кукла, 5 слотов, кнопки инструментов, action point, UNI-HEALTH и drag исключены. |
+| `zc_woundsystem_compat_woundview_polish` | этот аддон (client) | **`1`** — медицинская подложка, vital signs и карточка выбранного лимба; doll, hover, hitboxes/action points не меняются, во время мини-игры/без сознания слой скрыт. |
 | `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | `0.45` — множитель спрайта руки 512×1260 в мини-играх бинта/шприца; диапазон `0.2..1`. |
 | `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 слоёв `unitmenu/limbs` архива; `0` — родные спрайты C:U. |
 | `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.24` — размер куклы относительно `dollScale` C:U; диапазон `0.1..0.8`. |
@@ -431,11 +453,12 @@ C:U пересоздаёт `EYEVIEW_CalcView` из своего `Think`.
 
 **Источники.** Раньше `IsBallisticHit()` возвращал `true` для любого
 `DMG_BULLET` и даже для любого калибра вида «NxM mm», поэтому пистолеты и
-винтовки сажали осколки. Новый `IsShotgunHit()` принимает только:
-`DMG_BUCKSHOT`; ammo `12/70*`, `20/70*`, `23x75*` (все shotgun-SWEP ZCity —
-xm1014, spas12, saiga12, remington870, roullet, doublebarrel_short); инфликтор
-или активное оружие с `NumBullet > 1`. Отдельная ветка `DMG_BLAST` даёт
-фрагменты от взрывчатки. Патроны `9x19 mm`, `7.62x39 mm` и т.п. больше **не
+винтовки сажали осколки. Теперь `IsShotgunHit()` требует положительного
+подтверждения: ammo `12/70*`, `20/70*`, `23x75*` (все shotgun-SWEP ZCity —
+xm1014, spas12, saiga12, remington870, roullet, doublebarrel_short), shotgun
+класс или инфликтор/активное оружие с `NumBullet > 1`. Одиночный `DMG_BUCKSHOT`
+без этих признаков недостаточен. Отдельная ветка `DMG_BLAST` даёт фрагменты от
+взрывчатки отдельным вызовом. Патроны `9x19 mm`, `7.62x39 mm` и т.п. больше **не
 дают** шрапнель. Откат: `zc_woundsystem_compat_shrapnel_only_shotgun_blast 0`.
 
 **Конечность.** Прежде limb угадывался по ближайшей кости к
@@ -463,7 +486,10 @@ no-op (иначе отложенный таймер поднял бы игрок
 сохраняется и возвращается после очистки. Травмы и `health` при этом очищаются как обычно —
 сохраняется именно **структура ZCity**, а не C:U body/limbs. После восстановления
 повторно шлются `hg.send_organism` / `hg.send_bareinfo` и обновляется shadow C:U.
-Обычный `Player Spawn` (нет `FakeRagdoll`, нет `otrub`) не затрагивается.
+При явном reset `SnapshotZCityStructure(..., false)` и `ClearAllShrapnel()` не
+оставляют ни фрагментов, ни tagged-ран, ни source/irritation/C:U residue. Это
+не применяется к обычному ragdoll-clear: там snapshot по-прежнему сохраняет
+шрапнель. Обычный `Player Spawn` (нет `FakeRagdoll`, нет `otrub`) не затрагивается.
 Откат: `zc_woundsystem_compat_preserve_reset_structure 0`.
 
 ## Камера в мини-игре

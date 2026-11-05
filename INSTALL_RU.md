@@ -44,7 +44,7 @@
 | В мини-игре персонаж не ходит, не крутит камерой и виден курсор | включается вместе с `zc_woundsystem_compat_minigames 1` (без отдельного конвара) |
 | Шрапнель только от дробовика и взрыва, не от пистолетов | `zc_woundsystem_compat_shrapnel_only_shotgun_blast 1` |
 | Осколок ложится в раненую конечность (`org.dmgstack` / `HitBones`) | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
-| `reset organism` не поднимает персонажа, структура ZCity сохранена | `zc_woundsystem_compat_preserve_reset_structure 1` |
+| `reset organism` не поднимает персонажа, сохраняет down-структуру и полностью очищает раны/шрапнель/C:U residue | `zc_woundsystem_compat_preserve_reset_structure 1`; обычный ragdoll→standing шрапнель сохраняет |
 | Шрапнель сохраняется при падении/подъёме из ragdoll | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
 | Стекло в ragdoll (руки/ноги) даёт осколки | `zc_woundsystem_compat_glass_shrapnel 1` |
 | Ошибки в shrapnel-мини-игре → боль и нарастающее кровотечение | включается вместе с `zc_woundsystem_compat_shadow 1` |
@@ -77,6 +77,9 @@
 | Рука в мини-игре ровно на курсоре | `zc_woundsystem_compat_hand_pivot_x 0.16`, `zc_woundsystem_compat_hand_pivot_y 0.45`, поворот `0`, лимит `zc_woundsystem_compat_hand_max_screen 0.34` |
 | Системный курсор в мини-игре не виден | `zc_woundsystem_compat_hide_minigame_cursor 0` (см. №12) → VGUI-курсор `"blank"`, мышь работает; `0` — вернуть стрелку |
 | После смерти не «залипают» мини-игры/курсор/лок движения | включается вместе с `zc_woundsystem_compat_minigames 1` |
+| Потеря сознания закрывает WSZC и нативные мини-игры, overlay, WoundView, cursor/view/input | серверный force-close `WSZC_MinigameForceClose`; проверяется владелец сессии, а не пациент медика |
+| Любой неизвлечённый fragment наращивает реальную боль и кровотечение | `zc_woundsystem_compat_shrapnel_lodged_effects 1`; последний extracted fragment удаляет tagged-рану/source/irritation |
+| Медицинский WoundView: vital signs, карточка лимба, читаемый фон | `zc_woundsystem_compat_woundview_polish 1`; чёрная doll-анатомия, shaped outlines, hover и hitboxes сохранены |
 | Если респавн не сработал | подождите 1 с после смерти и нажмите ЛКМ; откат визуала C:U — `zc_woundsystem_compat_disable_cu_fx 0` |
 
 Ассеты для куклы и руки берутся из архива `для переделывания интерфейса.zip`

@@ -719,6 +719,9 @@ function WSZC.Setup()
     refs.CUSessions = FindUpvalue("Sessions")
     refs.CUCloseBandageSession = FindUpvalue("CloseBandageSession")
     refs.CUCloseSyringeSession = FindUpvalue("CloseSyringeSession")
+    refs.CUCloseShrapnelSession = FindUpvalue("CloseShrapnelSession")
+    refs.CUCloseDislocationSession = FindUpvalue("CloseDislocationSession")
+    refs.CUCloseAedSession = FindUpvalue("CloseAedSession")
 
     WSZC.H = H
     WSZC.OriginalFn = WSZC.OriginalFn or refs.Fn
@@ -733,6 +736,9 @@ function WSZC.Setup()
     WSZC.CUSessions = refs.CUSessions
     WSZC.CUCloseBandageSession = refs.CUCloseBandageSession
     WSZC.CUCloseSyringeSession = refs.CUCloseSyringeSession
+    WSZC.CUCloseShrapnelSession = refs.CUCloseShrapnelSession
+    WSZC.CUCloseDislocationSession = refs.CUCloseDislocationSession
+    WSZC.CUCloseAedSession = refs.CUCloseAedSession
 
     WSZC.Debug("refs: Fn=%s Const=%s Bandage=%s Syringe=%s Ctx=%s TryRagdoll=%s Sessions=%s",
         tostring(refs.Fn ~= nil), tostring(refs.Const ~= nil),
