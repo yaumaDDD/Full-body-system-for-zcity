@@ -218,7 +218,8 @@ local function BoneLimb(bonename)
 
     if string.find(lower, "hand") then return "hand" .. side end
     if string.find(lower, "foot") then return "foot" .. side end
-    if string.find(lower, "forearm") or string.find(lower, "upperarm") then return "forearm" .. side end
+    if string.find(lower, "forearm") then return "forearm" .. side end
+    if string.find(lower, "upperarm") then return "arm" .. side end
     if string.find(lower, "calf") then return "crus" .. side end
     if string.find(lower, "thigh") then return "thigh" .. side end
     return nil
@@ -398,6 +399,37 @@ local function CompactWoundTable(wounds)
     for i, entry in ipairs(entries) do wounds[i] = entry.wound end
 end
 
+-- ZCity wound schema is {severity, localPos:Vector, localAng:Angle, bone, time}.
+-- Synthetic shrapnel wounds used to put nil in slots 2/3.  That is not a
+-- harmless omission: native hg.RenderTourniquets() dereferences the saved
+-- position with wound[1]:GetNegated() while drawing the character.  Always
+-- create the real value types, and repair old in-memory/saved wounds on use.
+local function NativeWoundPosition(value)
+    if (isvector and isvector(value))
+        or (type(value) == "table" and type(value.GetNegated) == "function") then
+        return value
+    end
+    if Vector then return Vector(0, 0, 0) end
+    return vector_origin
+end
+
+local function NativeWoundAngle(value)
+    if isangle then
+        if isangle(value) then return value end
+    elseif value ~= nil and value ~= false then
+        return value
+    end
+    if Angle then return Angle(0, 0, 0) end
+    return angle_zero
+end
+
+local function NormalizeNativeWound(wound)
+    if type(wound) ~= "table" then return nil end
+    wound[2] = NativeWoundPosition(wound[2])
+    wound[3] = NativeWoundAngle(wound[3])
+    return wound
+end
+
 local function SyncBandagedWounds(ply, org, bandagedBones)
     local owner = IsValid(org.owner) and org.owner or ply
     local entities = { ply, owner, ply.FakeRagdoll }
@@ -564,13 +596,30 @@ local TOURNIQUET_DOWNSTREAM = {
     crus_L = { "crus_L", "foot_L" }, foot_L = { "foot_L" },
 }
 
+-- Native ZCity has tourniquet offsets only for upper arm/forearm/thigh/calf.
+-- Anchor the visual to the SELECTED application site, not to an arbitrary
+-- downstream wound.  Hands/feet use their nearest supported proximal bone.
+local TOURNIQUET_VISUAL_BONES = {
+    arm_R = "ValveBiped.Bip01_R_UpperArm", forearm_R = "ValveBiped.Bip01_R_Forearm",
+    hand_R = "ValveBiped.Bip01_R_Forearm",
+    arm_L = "ValveBiped.Bip01_L_UpperArm", forearm_L = "ValveBiped.Bip01_L_Forearm",
+    hand_L = "ValveBiped.Bip01_L_Forearm",
+    thigh_R = "ValveBiped.Bip01_R_Thigh", crus_R = "ValveBiped.Bip01_R_Calf",
+    foot_R = "ValveBiped.Bip01_R_Calf",
+    thigh_L = "ValveBiped.Bip01_L_Thigh", crus_L = "ValveBiped.Bip01_L_Calf",
+    foot_L = "ValveBiped.Bip01_L_Calf",
+}
+
 local function TotalMappedBleeding(map)
     local total = 0
     for _, value in pairs(map) do total = total + math.max(tonumber(value) or 0, 0) end
     return total
 end
 
-local function SyncTourniquetWounds(ply, org, visualWound)
+local function SyncTourniquetWounds(ply, org, visualWound, limbId)
+    NormalizeNativeWound(visualWound)
+    local visualBone = TOURNIQUET_VISUAL_BONES[limbId]
+        or BoneNameOf(ply, visualWound[4])
     local owner = IsValid(org.owner) and org.owner or ply
     local entities = { ply, owner, ply.FakeRagdoll }
     if hg and hg.GetCurrentCharacter then
@@ -584,7 +633,7 @@ local function SyncTourniquetWounds(ply, org, visualWound)
             seen[ent] = true
             ent.tourniquets = ent.tourniquets or {}
             ent.tourniquets[#ent.tourniquets + 1] = {
-                visualWound[2], visualWound[3], visualWound[4],
+                visualWound[2], visualWound[3], visualBone,
             }
             if ent.SetNetVar then
                 pcall(ent.SetNetVar, ent, "wounds", org.wounds)
@@ -669,7 +718,7 @@ function WSZC.ApplyTourniquetToOrganism(ctx)
         if type(state) == "table" then state.bleed = afterMap[id] or 0 end
         ply._WSZCExpectedBleed[id] = afterMap[id] or 0
     end
-    SyncTourniquetWounds(ply, org, visualWound)
+    SyncTourniquetWounds(ply, org, visualWound, limbId)
 
     Debug("tourniquet treated %s/%s: -%.3f bleeding", tostring(ply), tostring(limbId), treated)
     return treated, beforeMap[limbId] or 0, afterMap[limbId] or 0
@@ -730,9 +779,9 @@ function WSZC.ApplyShrapnelComplication(ply, org, limbId, bleedDelta, painDelta)
     end
     local bone = COMPLICATION_BONES[limbId] or COMPLICATION_BONES[NormalizeLimb(limbId) or ""]
         or "ValveBiped.Bip01_R_Hand"
-    org.wounds[last + 1] = {
+    org.wounds[last + 1] = NormalizeNativeWound({
         math.Clamp(irritation * 1.2, 4, 24), nil, nil, bone, now,
-    }
+    })
     Debug("shrapnel complication on %s: bleed +%.2f pain +%.1f", tostring(limbId), bleedDelta, painDelta)
     return true
 end
@@ -781,22 +830,22 @@ end
 -- and the regeneration blocker can read it.  Neither table has a `source`.
 local DEFAULT_MAX_PIECES = 5
 
--- Owner's Screenshot_1-9.png: shrapnel appears ONLY on the four limbs circled
--- in red - both hands and both feet - and carries "4 - 5 - 3" fragments on the
--- marked limb, i.e. 3..5 pieces.  This is purely a spawn-location / spawn-count
--- rule: the persistency, ragdoll restore, bones and minigames are untouched.
-local SHRAPNEL_LIMBS = {
+-- GLASS keeps the owner's original four-point rule: both hands and both feet.
+-- It is deliberately source-specific.  Shotgun pellets and blast fragments
+-- remain on the actual resolved damage limb (including head/torso/limbs).
+local GLASS_SHRAPNEL_LIMBS = {
     hand_R = true, hand_L = true,
     foot_R = true, foot_L = true,
 }
 local SHRAPNEL_MIN_PIECES = 3
 local SHRAPNEL_MAX_PIECES = 5
 
--- Fold a hit on any OTHER limb onto the nearest circled limb of the same side,
--- so a chest/thigh/head hit can never place a fragment outside the four marks.
+-- Glass-only fallback onto the nearest circled limb of the same side.
+-- Kept exported for compatibility with existing glass callers; AddShrapnel
+-- must never apply this remap to shotgun or blast damage.
 function WSZC.ShrapnelSpawnLimb(limbId)
     if type(limbId) ~= "string" then return "hand_R" end
-    if SHRAPNEL_LIMBS[limbId] then return limbId end
+    if GLASS_SHRAPNEL_LIMBS[limbId] then return limbId end
     local side = (string.sub(limbId, -2) == "_L") and "_L" or "_R"
     local lower = string.lower(limbId)
     if string.find(lower, "foot", 1, true) or string.find(lower, "crus", 1, true)
@@ -858,17 +907,17 @@ local function EnsureLodgedWound(ply, org, limbId, count)
     org.wounds = org.wounds or {}
     for _, wound in pairs(org.wounds) do
         if type(wound) == "table" and wound.wszcShrapnel == SHRAPNEL_WOUND_TAG
-            and wound.wszcLimb == limbId then return wound end
+            and wound.wszcLimb == limbId then return NormalizeNativeWound(wound) end
     end
     local last = 0
     for key in pairs(org.wounds) do
         if type(key) == "number" and key > last then last = key end
     end
-    local wound = {
+    local wound = NormalizeNativeWound({
         math.Clamp(1.5 + count * 0.5, 2, 6), nil, nil,
         COMPLICATION_BONES[limbId] or COMPLICATION_BONES.hand_R,
         CurTime and CurTime() or 0,
-    }
+    })
     wound.wszcShrapnel = SHRAPNEL_WOUND_TAG
     wound.wszcLimb = limbId
     org.wounds[last + 1] = wound
@@ -1146,8 +1195,10 @@ local function ShrapnelState(ply, limbId)
     return nil
 end
 
---- Add lodged fragments.  `reason` is used for the debug log ONLY and is never
---- stored: glass, gunshot and blast shrapnel are indistinguishable afterwards.
+--- Add lodged fragments.  The aggregate state is shared by the native
+--- minigame; per-limb sources remain separate for reset/debug accounting.
+--- Only glass uses ShrapnelSpawnLimb's four-point remap.  Shotgun and blast
+--- damage keep the exact normalized limb resolved from hitgroup/HitBones.
 function WSZC.AddShrapnel(ply, limbId, count, reason)
     if not Authority() then return false end
     if not (cvShrapnel and cvShrapnel:GetBool()) then return false end
@@ -1155,14 +1206,17 @@ function WSZC.AddShrapnel(ply, limbId, count, reason)
     count = math.floor(tonumber(count) or 0)
     if count <= 0 then return false end
 
-    -- "и только там": every producer (shotgun, blast, glass, ragdoll glass)
-    -- funnels through this function, so a single clamp here guarantees that
-    -- no fragment can ever appear on head/thorax/abdomen/arm/forearm/thigh/crus.
-    limbId = ShrapnelSpawnLimb(limbId)
-    -- "4 - 5 - 3 осколка на один лимб": instead of the old single pellet a hit
-    -- leaves 3, 4 or 5 fragments on the marked limb (glass / shotgun = 3, a
-    -- blast adds one per extra pellet = 4 or 5).  Deterministic, keeps the
-    -- damage scaling, and never exceeds the C:U piece cap.
+    if reason == "glass" then
+        limbId = ShrapnelSpawnLimb(limbId)
+    else
+        limbId = NormalizeLimb(limbId)
+    end
+    -- A real damage source with no resolved limb is skipped, never redirected
+    -- to a hand/foot.  Glass alone retains its explicit fallback rule.
+    if not limbId then return false end
+    -- One hit leaves 3, 4 or 5 fragments (glass / shotgun = 3; a blast adds
+    -- one per extra pellet = 4 or 5).  Deterministic, keeps the damage scaling,
+    -- and never exceeds the C:U piece cap.
     local cap = math.min(SHRAPNEL_MAX_PIECES, MaxShrapnel())
     count = math.Clamp(count + 2, math.min(SHRAPNEL_MIN_PIECES, cap), cap)
 
@@ -1171,8 +1225,8 @@ function WSZC.AddShrapnel(ply, limbId, count, reason)
 
     local state = ShrapnelState(ply, limbId)
     if not state then
-        -- Unknown/not-yet-created limb id: fall back to a circled limb the
-        -- C:U panel can always draw.  Never fall back outside the four marks.
+        if reason ~= "glass" then return false end
+        -- Only glass may fall back to a circled limb while C:U initializes.
         state = ShrapnelState(ply, "hand_R")
         if not state then return false end
         limbId = "hand_R"
@@ -2347,19 +2401,90 @@ end
 -- tells it the outer wrapper already computed the full body delta).
 WSZC.SwepHealDepth = 0
 
+local function TourniquetExtremity(limbId)
+    limbId = NormalizeLimb(limbId)
+    return limbId and TOURNIQUET_DOWNSTREAM[limbId] and limbId or nil
+end
+
+local function IsTourniquetHeal(swep, mode)
+    if not IsValid(swep) or not swep.GetClass then return false end
+    local ok, class = pcall(swep.GetClass, swep)
+    class = ok and string.lower(tostring(class or "")) or ""
+    if class == "weapon_tourniquet" then return true end
+    if class ~= "weapon_medkit_sh" then return false end
+    return tonumber(swep.mode or mode or 1) == 4
+end
+
+--- Resolve the application site BEFORE native WB.SwepHeal/BestLimb.  Native
+--- AimedLimb deliberately returns nil for self-use, which is especially wrong
+--- while the owner's current character is a ragdoll: its traced PhysicsBone
+--- still identifies the exact leg the player selected.
+function WSZC.ResolveTourniquetLimb(swep, ent, mode, bone)
+    if not IsTourniquetHeal(swep, mode) then return nil end
+    local target = OwnerOf(ent)
+    if not target then return nil end
+
+    local direct = TourniquetExtremity(LimbFromBoneName(BoneNameOf(ent, bone)))
+    if direct then return direct end
+    if not IsValid(swep) or not swep.GetOwner or not (hg and hg.eyeTrace) then return nil end
+    local owner = swep:GetOwner()
+    if not IsValid(owner) then return nil end
+    local traceOk, tr = pcall(hg.eyeTrace, owner)
+    if not traceOk or type(tr) ~= "table" or not IsValid(tr.Entity) then return nil end
+    local hit = tr.Entity
+    if OwnerOf(hit) ~= target then return nil end
+
+    local boneName
+    if hit.IsRagdoll and hit:IsRagdoll() and tr.PhysicsBone
+        and hit.TranslatePhysBoneToBone and hit.GetBoneName then
+        local boneOk, boneId = pcall(hit.TranslatePhysBoneToBone, hit, tr.PhysicsBone)
+        boneId = tonumber(boneId)
+        if boneOk and boneId and boneId >= 0 then
+            local nameOk, name = pcall(hit.GetBoneName, hit, boneId)
+            if nameOk then boneName = name end
+        end
+    end
+
+    local limb = TourniquetExtremity(LimbFromBoneName(boneName))
+    if not limb and boneName then
+        local h = H()
+        local mapper = h and h.RagdollBoneNameToLimb
+        if type(mapper) == "function" then
+            local mapOk, mapped = pcall(mapper, boneName)
+            if mapOk then limb = TourniquetExtremity(mapped) end
+        end
+    end
+    -- Player hit traces do not have a PhysicsBone; retain their real hitgroup
+    -- instead of falling back to the worst-bleeding limb.
+    return limb or TourniquetExtremity(LimbFromHitgroup(tr.HitGroup))
+end
+
 local function InstallMedicalBridge()
     local wb = WB()
-    if not (wb and wb.SwepHeal) or wb._WSZCSwepHealPatched then return end
+    if not (wb and wb.SwepHeal) then return false end
+    if wb._WSZCSwepHealPatched then return true end
     wb._WSZCSwepHealPatched = true
     local original = wb.SwepHeal
     wb.SwepHeal = function(swep, ent, mode, bone)
         if not Authority() then return original(swep, ent, mode, bone) end
         local ply = OwnerOf(ent) or (IsValid(ent) and ent:IsPlayer() and ent)
         local before = ply and WSZC.SnapshotMedical(ply, "body") or nil
+        local previousRoute = WSZC.TourniquetLimbOverride
+        local routedLimb
+        if ply then
+            local routeOk, resolved = pcall(WSZC.ResolveTourniquetLimb, swep, ent, mode, bone)
+            if routeOk then routedLimb = resolved
+            else Warn("tourniquet aim resolve failed: " .. tostring(resolved)) end
+        end
+        if routedLimb then
+            WSZC.TourniquetLimbOverride = { ply = ply, limbId = routedLimb }
+            Debug("tourniquet route %s/%s", tostring(ply), tostring(routedLimb))
+        end
         WSZC.SwepHealDepth = WSZC.SwepHealDepth + 1
         local ok, a, b, c = pcall(original, swep, ent, mode, bone)
         WSZC.SwepHealDepth = WSZC.SwepHealDepth - 1
         if WSZC.SwepHealDepth < 0 then WSZC.SwepHealDepth = 0 end
+        WSZC.TourniquetLimbOverride = previousRoute
         if not ok then
             Warn("WB.SwepHeal failed: " .. tostring(a))
             return nil
@@ -2369,7 +2494,9 @@ local function InstallMedicalBridge()
         end
         return a, b, c
     end
+    return true
 end
+WSZC.InstallMedicalBridge = InstallMedicalBridge
 
 local function DisableCUPhysiology()
     if not Authority() then return end

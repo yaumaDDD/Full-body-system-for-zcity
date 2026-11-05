@@ -37,13 +37,13 @@
 | Нет «адреналинового» FOV-взрыва и радиальных полос | `zc_woundsystem_compat_clamp_adrenaline 1` |
 | Кровотечение только на раненых лимбах | `zc_woundsystem_compat_limb_bleed 1` |
 | Бинт лечит обычные раны и показывает прогресс | Вместе с `zc_woundsystem_compat_minigames 1`: уменьшается severity только `org.wounds`; `STOP N%` и кольцо показывают фактически остановленную долю обычного кровотечения, повторная перевязка разрешена до 100% |
-| Артерия останавливается только жгутом | Бинт не трогает `org.arterialwounds` / artery-флаг и не тратится при artery-only ране; оставшаяся артерия сохраняет каплю и показывает `TOURNIQUET`. Жгут реально удаляет артериальную рану из `ply.organism` и синхронизирует `Tourniquets` |
+| Артерия останавливается только жгутом | Бинт не трогает `org.arterialwounds` / artery-флаг и не тратится при artery-only ране. Жгут через `WB.SwepHeal → H.ApplyItemToBody` использует прицельную конечность также при self-use, реально удаляет её артериальную рану и ставит `Tourniquets` на ту же кость; synthetic wounds содержат валидные `Vector`/`Angle` для native renderer |
 | Шрапнель от дробовика/взрыва | `zc_woundsystem_compat_shrapnel 1`, `zc_woundsystem_compat_shrapnel_on_blocked 1` |
 | Только эффекты ZCity: все эффекты C:U выключены | `zc_woundsystem_compat_disable_cu_fx 1` |
 | Кровь C:U убрана, ванильная кровь ZCity/Hemogen возвращена | `zc_woundsystem_compat_disable_cu_blood 1` |
 | В мини-игре персонаж не ходит, не крутит камерой и виден курсор | включается вместе с `zc_woundsystem_compat_minigames 1` (без отдельного конвара) |
 | Шрапнель только от дробовика и взрыва, не от пистолетов | `zc_woundsystem_compat_shrapnel_only_shotgun_blast 1` |
-| Осколок ложится в раненую конечность (`org.dmgstack` / `HitBones`) | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
+| Дробовик/взрыв оставляют осколки в фактически раненой части (`org.dmgstack` / `HitBones`), не только в кистях/стопах; стекло отдельно сохраняет правило `hand_L/R` / `foot_L/R` | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
 | `reset organism` не поднимает персонажа, сохраняет down-структуру и полностью очищает раны/шрапнель/инфекцию/повязки/жгуты/C:U residue | `zc_woundsystem_compat_preserve_reset_structure 1`; обычный ragdoll→standing сохраняет шрапнель и накопленную инфекцию |
 | Шрапнель сохраняется при падении/подъёме из ragdoll | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
 | Стекло в ragdoll (руки/ноги) даёт осколки | `zc_woundsystem_compat_glass_shrapnel 1` |

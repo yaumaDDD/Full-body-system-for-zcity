@@ -537,6 +537,17 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
     if not (IsValid(ply) and ply:IsPlayer() and ply:Alive() and H and Items) then return false, 0 end
 
     itemId = NormalizeItemId(itemId)
+    -- InstallMedicalBridge resolves the PhysicsBone under the owner's crosshair
+    -- before native WB.SwepHeal/BestLimb runs.  Native self-use suppresses its
+    -- own AimedLimb, so it may pass the worst-bleeding ARM here instead.  This
+    -- scoped override changes only a tourniquet call for the same patient; the
+    -- corrected limbId then drives BuildMedicalItemContext, authoritative
+    -- artery treatment, C:U status and the native visual marker together.
+    local tourniquetRoute = WSZC.TourniquetLimbOverride
+    if itemId == "TOURNIQUET" and type(tourniquetRoute) == "table"
+        and tourniquetRoute.ply == ply and type(tourniquetRoute.limbId) == "string" then
+        limbId = tourniquetRoute.limbId
+    end
     local item = Items.Get and Items.Get(itemId)
     if not item then return false, 0 end
     local maxDurability = (Items.GetMax and Items.GetMax(itemId)) or item.max or 100

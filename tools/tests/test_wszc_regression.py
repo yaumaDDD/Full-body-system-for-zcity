@@ -221,12 +221,13 @@ check('S33 REFERENCE_BOXES = independent native Screenshot_1 boxes, POT-calibrat
       and 'hoverW = %d, hoverH = %d' in generator_s
       and 'limb.sourceW = g.hoverW or g.w' in layout_s
       and 'limb.sourceH = g.hoverH or g.h' in layout_s)
-check('S42 shrapnel appears ONLY on the four red-circled limbs (both hands + both feet)',
-      'local SHRAPNEL_LIMBS = {' in organism_s
+check('S42 glass alone maps to hands/feet; shotgun + blast keep the actual limb',
+      'local GLASS_SHRAPNEL_LIMBS = {' in organism_s
       and 'hand_R = true, hand_L = true,' in organism_s
       and 'foot_R = true, foot_L = true,' in organism_s
       and 'function WSZC.ShrapnelSpawnLimb(limbId)' in organism_s
-      and 'limbId = ShrapnelSpawnLimb(limbId)' in organism_s
+      and 'if reason == "glass" then\n        limbId = ShrapnelSpawnLimb(limbId)\n    else\n        limbId = NormalizeLimb(limbId)' in organism_s
+      and 'if reason ~= "glass" then return false end' in organism_s
       and 'state = ShrapnelState(ply, "hand_R")' in organism_s
       and 'limbId = limbId or "thorax"' not in organism_s
       and 'WSZC.AddShrapnel(ply, limbId, shotgunAdded, "shotgun")' in organism_s

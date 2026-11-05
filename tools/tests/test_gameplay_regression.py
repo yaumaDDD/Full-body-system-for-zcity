@@ -27,6 +27,7 @@ client_mg_s = CLIENT_MG.read_text(encoding="utf-8")
 layout_s = LAYOUT.read_text(encoding="utf-8")
 with ZipFile(ROOT / "zcity.zip") as zcity_zip:
     tourniquet_swep_s = zcity_zip.read("z_city/lua/weapons/weapon_tourniquet.lua").decode("utf-8-sig")
+    bandage_swep_s = zcity_zip.read("z_city/lua/weapons/weapon_bandage_sh.lua").decode("utf-8-sig")
     woundbridge_s = zcity_zip.read("z_city/lua/homigrad/woundbridge/sv_woundbridge.lua").decode("utf-8-sig")
 
 client_context = layout_s.split("function WSZC.MinigameContextOK()", 1)[1].split("function WSZC.MinigameScale", 1)[0]
@@ -84,6 +85,13 @@ check("S09 explicit reset covers death ragdolls and the stock admin property",
       and "list.reset_org" in organism_s
       and "originalClear(currentOrg)" in organism_s
       and "local currentOrg = IsValid(ply) and ply.organism or org" in organism_s)
+check("S10 tourniquet route precedes treatment and native renderer gets real vectors",
+      "pcall(WSZC.ResolveTourniquetLimb, swep, ent, mode, bone)" in organism_s
+      and "WSZC.TourniquetLimbOverride = { ply = ply, limbId = routedLimb }" in organism_s
+      and "tourniquetRoute.ply == ply" in server_main_s
+      and "NormalizeNativeWound(visualWound)" in organism_s
+      and "TOURNIQUET_VISUAL_BONES[limbId]" in organism_s
+      and "wound[1]:GetNegated()" in bandage_swep_s)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -117,7 +125,15 @@ print = function() end
 ErrorNoHalt = function() end
 SetGlobalBool = function() end
 isnumber = function(v) return type(v) == "number" end
-isvector = function() return false end
+isvector = function(v) return type(v) == "table" and v._isVector == true end
+Vector = function(x, y, z)
+    local v = { x = x or 0, y = y or 0, z = z or 0, _isVector = true }
+    v.GetNegated = function(self) return Vector(-self.x, -self.y, -self.z) end
+    return v
+end
+Angle = function(p, y, r) return { p = p or 0, y = y or 0, r = r or 0 } end
+vector_origin = Vector(0, 0, 0)
+angle_zero = Angle(0, 0, 0)
 bit = { band = function(a, b)
     local result, place = 0, 1
     a, b = math.floor(a or 0), math.floor(b or 0)
@@ -138,6 +154,7 @@ game = { GetAmmoName = function(id) return id == 12 and "12/70gauge" or "9mm" en
 function MakePlayer()
     local ply = { _nw = {}, _limbs = {}, _body = {} }
     ply._limbs.hand_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+    ply._limbs.forearm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
     ply.IsPlayer = function() return true end
     ply.Alive = function() return true end
     ply.Nick = function() return "regression_player" end
@@ -184,12 +201,13 @@ local pistolPlayer = MakePlayer()
 WSZC.InjectDamageShrapnel(pistolPlayer, MakeDamage("weapon_pistol", 1, 9, 1), HITGROUP_RIGHTARM, 30)
 WSZC.InjectDamageShrapnel(pistolPlayer, MakeDamage("weapon_pistol", 1, 9, 2), HITGROUP_RIGHTARM, 30)
 local pistolClean = pistolPlayer._limbs.hand_R.shrapnel == 0
+    and pistolPlayer._limbs.forearm_R.shrapnel == 0
 
 local shotgunPlayer = MakePlayer()
 WSZC.InjectDamageShrapnel(shotgunPlayer, MakeDamage("weapon_spas12", 8, 12, 0), HITGROUP_RIGHTARM, 30)
 local org = shotgunPlayer.organism
-local sources = org.wszc_shrapnel_sources.hand_R
-return pistolClean, shotgunPlayer._limbs.hand_R.shrapnel == 3
+local sources = org.wszc_shrapnel_sources.forearm_R
+return pistolClean, shotgunPlayer._limbs.forearm_R.shrapnel == 3
     and sources.shotgun == 3 and sources.glass == nil
 ''')
     check("R01 pistol and bare DMG_BUCKSHOT create no fragments", sources[0])
@@ -209,14 +227,67 @@ local function PhysBullet(class, pellets)
 end
 local shotgun = MakePlayer()
 WSZC.InjectDamageShrapnel(shotgun, PhysBullet("weapon_spas12", 8), HITGROUP_RIGHTARM, 30)
-local activeWeaponWorks = shotgun._limbs.hand_R.shrapnel == 3
-    and shotgun.organism.wszc_shrapnel_sources.hand_R.shotgun == 3
+local activeWeaponWorks = shotgun._limbs.forearm_R.shrapnel == 3
+    and shotgun.organism.wszc_shrapnel_sources.forearm_R.shotgun == 3
 local pistol = MakePlayer()
 WSZC.InjectDamageShrapnel(pistol, PhysBullet("weapon_pistol", 1), HITGROUP_RIGHTARM, 30)
-return activeWeaponWorks, pistol._limbs.hand_R.shrapnel == 0
+return activeWeaponWorks, pistol._limbs.hand_R.shrapnel == 0 and pistol._limbs.forearm_R.shrapnel == 0
 ''')
     check("R12 PhysBullet inflictor=attacker still identifies active shotgun", physical_pellets[0])
     check("R13 active pistol with DMG_BULLET still creates no fragments", physical_pellets[1])
+
+    placement = lua.execute(r'''
+local ALL = {
+    "head", "thorax", "abdomen",
+    "arm_L", "forearm_L", "hand_L", "arm_R", "forearm_R", "hand_R",
+    "thigh_L", "crus_L", "foot_L", "thigh_R", "crus_R", "foot_R",
+}
+local function AllLimbPlayer()
+    local ply = MakePlayer()
+    for _, id in ipairs(ALL) do
+        ply._limbs[id] = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+    end
+    return ply
+end
+local shotgunActual, nativeWoundSchema = true, true
+for _, id in ipairs(ALL) do
+    local ply = AllLimbPlayer()
+    local added = WSZC.AddShrapnel(ply, id, 1, "shotgun")
+    local state = ply._limbs[id]
+    local sources = ply.organism.wszc_shrapnel_sources[id]
+    if not added or state.shrapnel ~= 3 or not sources or sources.shotgun ~= 3 then
+        shotgunActual = false
+    end
+    for otherId, other in pairs(ply._limbs) do
+        if otherId ~= id and (other.shrapnel or 0) ~= 0 then shotgunActual = false end
+    end
+    local wound = WSZC.EnsureLodgedWound(ply, ply.organism, id, 3)
+    if not wound or not wound[2] or type(wound[2].GetNegated) ~= "function" or wound[3] == nil then
+        nativeWoundSchema = false
+    end
+end
+
+local glassOnly = true
+for _, id in ipairs(ALL) do
+    local ply = AllLimbPlayer()
+    local lower = string.lower(id)
+    local side = string.sub(id, -2) == "_L" and "_L" or "_R"
+    local isLeg = string.find(lower, "thigh", 1, true) or string.find(lower, "crus", 1, true)
+        or string.find(lower, "foot", 1, true)
+    local expected = (isLeg and "foot" or "hand") .. side
+    WSZC.AddShrapnel(ply, id, 1, "glass")
+    for otherId, state in pairs(ply._limbs) do
+        local expectedCount = otherId == expected and 3 or 0
+        if (state.shrapnel or 0) ~= expectedCount then glassOnly = false end
+    end
+    local sources = ply.organism.wszc_shrapnel_sources[expected]
+    if not sources or sources.glass ~= 3 or sources.shotgun ~= nil then glassOnly = false end
+end
+return shotgunActual, glassOnly, nativeWoundSchema
+''')
+    check("R29 shotgun stays on each actually hit limb across all 15 C:U limbs", placement[0])
+    check("R30 glass alone keeps its hands/feet-only spawn mapping", placement[1])
+    check("R31 synthetic shrapnel wounds satisfy native localPos/localAng schema", placement[2])
 
     native_damage = lua.execute(r'''
 local post = hook._t.PostEntityTakeDamage.WSZC_AuthorityDamagePost
@@ -230,10 +301,10 @@ post(proxy, dmg, false)
 local proxyRetryable = WSZC.ShrapnelHandled[dmg] == nil
     and ply._limbs.hand_R.shrapnel == 0
 post(ply, dmg, false)
-local stackResolved = ply._limbs.hand_R.shrapnel == 3
-    and ply.organism.wszc_shrapnel_sources.hand_R.shotgun == 3
+local stackResolved = ply._limbs.forearm_R.shrapnel == 3
+    and ply.organism.wszc_shrapnel_sources.forearm_R.shotgun == 3
 post(ply, dmg, false)
-local deduplicated = ply._limbs.hand_R.shrapnel == 3
+local deduplicated = ply._limbs.forearm_R.shrapnel == 3
 
 local bonesPlayer = MakePlayer()
 bonesPlayer.organism.dmgstack = {}
@@ -244,6 +315,19 @@ return proxyRetryable and stackResolved and deduplicated, bonesResolved
 ''')
     check("R23 proxy + nil hitgroup + dmgstack follows the real public damage hook", native_damage[0])
     check("R24 nil hitgroup resolves fresh ZCity HitBones without duplicate fragments", native_damage[1])
+
+    upper_arm = lua.execute(r'''
+local ply = MakePlayer()
+ply._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+ply.organism.dmgstack = {}
+ply.HitBones = { ["ValveBiped.Bip01_R_UpperArm"] = CurTime() + 30 }
+local post = hook._t.PostEntityTakeDamage.WSZC_AuthorityDamagePost
+post(ply, MakeDamage("weapon_spas12", 8, -1, 0), false)
+return ply._limbs.arm_R.shrapnel == 3
+    and ply._limbs.forearm_R.shrapnel == 0 and ply._limbs.hand_R.shrapnel == 0
+    and ply.organism.wszc_shrapnel_sources.arm_R.shotgun == 3
+''')
+    check("R34 upper-arm HitBones stays on arm_R instead of forearm/hand fallback", upper_arm)
 
     effects = lua.execute(r'''
 local ply = MakePlayer()
@@ -580,6 +664,88 @@ return rejectStillHeals, errorStillHeals, noFalseConsumption
             "ok", "used", "nativeCalls", "arterial", "artery", "wounds", "leftSeverity",
             "limbBleed", "marker", "orgBleed", "ok2", "used2", "arterial2", "wounds2", "orgBleed2")})
 
+    medical_wrapper = lua.execute(r'''
+local patient = MakePlayer()
+patient._limbs.forearm_R.bleed = 50
+patient._limbs.thigh_R = { shrapnel = 0, bleed = 26, pain = 20, muscle = 100, skin = 100 }
+patient.organism.rarmartery, patient.organism.rlegartery = 1, 1
+patient.organism.bleed = 10
+patient.organism.wounds = {}
+patient.organism.arterialwounds = {
+    { 5, nil, nil, "ValveBiped.Bip01_R_Forearm", 0, nil, "rarmartery" },
+    { 2, nil, nil, "ValveBiped.Bip01_R_Thigh", 0, nil, "rlegartery" },
+}
+local bodyRemoved, bodyHidden, ragdollRemoved, ragdollHidden = false, false, false, false
+patient.Remove = function() bodyRemoved = true end
+patient.SetNoDraw = function() bodyHidden = true end
+local ragdoll = {
+    IsPlayer = function() return false end,
+    IsRagdoll = function() return true end,
+    organism = patient.organism,
+    _net = {},
+    TranslatePhysBoneToBone = function() return 12 end,
+    GetBoneName = function() return "ValveBiped.Bip01_R_Thigh" end,
+    SetNetVar = function(self, key, value) self._net[key] = value end,
+    Remove = function() ragdollRemoved = true end,
+    SetNoDraw = function() ragdollHidden = true end,
+}
+patient.FakeRagdoll = ragdoll
+local previousOwnerResolver = hg.RagdollOwner
+hg.RagdollOwner = function(ent)
+    if ent == ragdoll then return patient end
+    return previousOwnerResolver and previousOwnerResolver(ent) or nil
+end
+hg.GetCurrentCharacter = function(owner) return owner == patient and ragdoll or owner end
+hg.eyeTrace = function(owner)
+    if owner ~= patient then return nil end
+    return { Entity = ragdoll, PhysicsBone = 7 }
+end
+local swep = {
+    modeValues = { 1 },
+    GetOwner = function() return patient end,
+    GetClass = function() return "weapon_tourniquet" end,
+}
+-- Source-faithful native behaviour for this regression: self_use suppresses
+-- AimedLimb and BestLimb picks the worse-bleeding arm.  The compatibility
+-- wrapper must route the traced thigh BEFORE this call reaches treatment.
+hg.WoundBridge.SwepHeal = function(swep, ent, mode, bone)
+    local target = hg.RagdollOwner(ent) or ent
+    local selfUse = ent == hg.GetCurrentCharacter(swep:GetOwner())
+    local aimed = (not selfUse) and "thigh_R" or nil
+    local bestLimb = "forearm_R"
+    return WoundSystem.Health.ApplyItemToBody(target, "TOURNIQUET", bestLimb, 100)
+end
+WSZC.Ready, WSZC.H = true, WoundSystem.Health
+WoundSystem.Health.ApplyItemToBody = WSZC.ApplyItemToBodyImpl
+WSZC.WithVanillaContext = function(fn, ...) return fn(...) end
+local installed = WSZC.InstallMedicalBridge()
+local ok, used = hg.WoundBridge.SwepHeal(swep, ragdoll, 1)
+local remaining = patient.organism.arterialwounds[1]
+local marker = patient.tourniquets and patient.tourniquets[1]
+local legTreated = installed and ok == true and used == 100
+    and #patient.organism.arterialwounds == 1
+    and remaining and remaining[7] == "rarmartery"
+    and patient.organism.rlegartery == 0 and patient.organism.rarmartery == 1
+    and patient._limbs.thigh_R.tourniqueted == true
+    and patient._limbs.forearm_R.tourniqueted ~= true
+    and marker and marker[3] == "ValveBiped.Bip01_R_Thigh"
+    and marker[1] and type(marker[1].GetNegated) == "function"
+    and ragdoll.tourniquets and ragdoll.tourniquets[1][3] == "ValveBiped.Bip01_R_Thigh"
+local bodyPreserved = not (bodyRemoved or bodyHidden or ragdollRemoved or ragdollHidden)
+    and WSZC.TourniquetLimbOverride == nil
+MedicalDebug = { installed = installed, ok = ok, used = used,
+    remaining = remaining and remaining[7], rleg = patient.organism.rlegartery,
+    rarm = patient.organism.rarmartery, marker = marker and marker[3],
+    thigh = patient._limbs.thigh_R.tourniqueted, arm = patient._limbs.forearm_R.tourniqueted }
+return legTreated, bodyPreserved
+''')
+    check("R32 traced self-use tourniquet treats and marks the leg through WB.SwepHeal", medical_wrapper[0])
+    check("R33 tourniquet path never removes/hides player or FakeRagdoll and cleans routing", medical_wrapper[1])
+    if not all(medical_wrapper):
+        debug = lua.globals().MedicalDebug
+        print("MEDICAL_DEBUG", {k: debug[k] for k in (
+            "installed", "ok", "used", "remaining", "rleg", "rarm", "marker", "thigh", "arm")})
+
     native_wrapper = lua.execute(r'''
 local ply = MakePlayer()
 local ragdoll = { IsPlayer = function() return false end, organism = ply.organism }
@@ -601,11 +767,11 @@ WSZC.WithVanillaContext = function(fn, ...) return fn(...) end
 local installed = WSZC.InstallOrganismMode()
 local dmg = MakeDamage("weapon_spas12", 8, -1, 0)
 local blocked = hook._t.EntityTakeDamage["homigrad-damage"](ply, dmg)
-local afterNative = ply._limbs.hand_R.shrapnel
+local afterNative = ply._limbs.forearm_R.shrapnel
 hook._t.PostEntityTakeDamage.WSZC_AuthorityDamagePost(ply, dmg, false)
 return installed and blocked == true and nestedDamageCalls == 1
-    and afterNative == 3 and ply._limbs.hand_R.shrapnel == 3
-    and ply.organism.wszc_shrapnel_sources.hand_R.shotgun == 3
+    and afterNative == 3 and ply._limbs.forearm_R.shrapnel == 3
+    and ply.organism.wszc_shrapnel_sources.forearm_R.shotgun == 3
 ''')
     check("R27 player->FakeRagdoll->native hook injects once even when Post is suppressed", native_wrapper)
 
