@@ -174,22 +174,23 @@ check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
       and 'hook.Add("PreDrawHUD", "WSZC_UnitmenuDollRetry"' in layout_s
       and 'HUDPaintBackground' in layout_s)
 check('S33 HUMAN_LAYOUT follows Screenshot_3-6 sizes and symmetric pairs',
-      "'head':      (750, 200, 118, 198)" in generator_s
-      and "'thorax':    (750, 430, 250, 262)" in generator_s
-      and "'abdomen':   (750, 705, 236, 288)" in generator_s
+      "'head':      (750, 190, 126, 178)" in generator_s
+      and "'thorax':    (750, 395, 250, 232)" in generator_s
+      and "'abdomen':   (750, 649, 236, 276)" in generator_s
       and "'arm_R':     (539, 376, 171, 104)" in generator_s
       and "'arm_L':     (961, 376, 171, 104)" in generator_s
       and "'forearm_R': (348, 376, 211, 104)" in generator_s
       and "'forearm_L': (1152, 376, 211, 104)" in generator_s
       and "'hand_R':    (190, 376, 107, 104)" in generator_s
       and "'hand_L':    (1310, 376, 107, 104)" in generator_s
-      and "'thigh_R':   (690, 965, 115, 232)" in generator_s
-      and "'thigh_L':   (810, 965, 115, 232)" in generator_s
-      and "'crus_R':    (686, 1191, 84, 220)" in generator_s
-      and "'crus_L':    (814, 1191, 84, 220)" in generator_s
+      and "'thigh_R':   (690, 933, 115, 292)" in generator_s
+      and "'thigh_L':   (810, 933, 115, 292)" in generator_s
+      and "'crus_R':    (686, 1190, 84, 222)" in generator_s
+      and "'crus_L':    (814, 1190, 84, 222)" in generator_s
       and "'foot_R':    (675, 1351, 80, 100)" in generator_s
       and "'foot_L':    (825, 1351, 80, 100)" in generator_s
-      and 'Screenshot_3-6.png' in generator_s)
+      and 'Screenshot_3-6.png' in generator_s
+      and 'EDGE_WIDTH = 9' in generator_s)
 check('S34 docs no longer claim the rejected transparent-edge build',
       'без белой обводки' not in all_docs
       and 'прозрачный `_edge`' not in all_docs)
@@ -310,7 +311,7 @@ try:
           edge_boxes == 15
           and 'DOLL_RGB = (0, 0, 0)' in generator_s
           and 'EDGE_PAD = 6' in generator_s
-          and 'EDGE_WIDTH = 5' in generator_s
+          and 'EDGE_WIDTH = 9' in generator_s
           and 'ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(EDGE_WIDTH)))' in generator_s
           and 'outer_band' not in generator_s
           and 'seam_lines' not in generator_s
@@ -333,13 +334,12 @@ try:
     leg_top = g['thigh_R'][1] - g['thigh_R'][3] / 2
     leg_bottom = g['foot_R'][1] + g['foot_R'][3] / 2
     torso_h, leg_h = torso_bottom - head_top, leg_bottom - leg_top
-    # Screenshot_3-6.png: legs 117 px vs head+torso 159 px -> 0.736.  The
-    # owner asked for EVERY limb to be resized to that reference, so the old
-    # "legs >= 0.85 * torso" expectation (from the rejected wide-coat layout)
-    # is replaced by the measured reference ratio, while the shape checks
-    # (narrow torso, thin limbs, symmetric pairs) keep their meaning.
-    check('S20 limb sizes follow Screenshot_3-6 proportions',
-          0.70 * torso_h <= leg_h <= 0.78 * torso_h
+    # Screenshot_4-5 live feedback: the upper body was stretched and the legs
+    # compressed, so HUMAN_LAYOUT was iterated again (shorter head/thorax,
+    # longer thigh/crus).  Keep the human-proportion checks plus the shape
+    # relations visible in Screenshot_3-6.png, without freezing one ratio.
+    check('S20 limb sizes keep Screenshot_3-6 proportions (iterated for live)',
+          leg_h >= 0.85 * torso_h
           and g['thorax'][2] > g['head'][2]
           and g['thigh_R'][2] < g['thorax'][2]
           and g['abdomen'][3] > g['thorax'][3]
