@@ -108,10 +108,10 @@ local ctx = { ply = ply, limbId = "thigh_R", limb = limb }
 local profile = { effects = { bandageSlowAmount = 45 } }
 local amount, before, after = WSZC.ApplyBandageToOrganism(ctx, profile, 1 / 12)
 local oneWrap = math.abs(before - 26) < 0.001
-    and math.abs(after - 22.25) < 0.001
-    and math.abs(amount - 3.75) < 0.001
-    and math.abs(ply.organism.bleed - 9.25) < 0.001
-    and math.abs(ply.organism.wounds[1][1] - 8.125) < 0.001
+    and math.abs(after - 18.5) < 0.001
+    and math.abs(amount - 7.5) < 0.001
+    and math.abs(ply.organism.bleed - 8.5) < 0.001
+    and math.abs(ply.organism.wounds[1][1] - 6.25) < 0.001
     and ply.organism.wounds[2][1] == 7
     and ply.organism.arterialwounds[1][1] == 2
     and netvars.bandaged_limbs["ValveBiped.Bip01_R_Thigh"] == true

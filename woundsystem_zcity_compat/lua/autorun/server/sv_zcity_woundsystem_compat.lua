@@ -570,6 +570,7 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
     end
     local ok = false
     local bandageEffectFraction = 0
+    local directTourniquetTreated, directTourniquetAfter = 0, nil
 
     if minigame == "bandage" then
         local profile = BandageProfile(itemId, item)
@@ -603,12 +604,42 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         -- with a virtual inventory slot.
         if Items.LimbAllowed and not Items.LimbAllowed(use, limbId) then return false, 0 end
         local useItem = WoundSystem.UseMedicalItem
-        if useItem then
-            local callOk, result = pcall(useItem, ply, itemId, limbId, nil, slot)
-            ok = callOk and result ~= false
-        elseif type(use.apply) == "function" then
-            local callOk, result = pcall(use.apply, ctx)
-            ok = callOk and result ~= false
+
+        -- A PHYSICAL ZCity tourniquet must not become a no-op merely because
+        -- C:U rejects its shadow state, a status helper is missing, or its
+        -- virtual inventory apply errors.  Close the authoritative artery
+        -- first; C:U presentation is then best-effort and cannot veto it.
+        local authoritativeTourniquet = itemId == "TOURNIQUET"
+            and WSZC.ApplyTourniquetToOrganism
+            and WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+        if authoritativeTourniquet then
+            local treatOk, treated, _, afterBleed = pcall(WSZC.ApplyTourniquetToOrganism, ctx)
+            if not treatOk then
+                if WSZC.Warn then WSZC.Warn("tourniquet organism treatment failed: " .. tostring(treated)) end
+            elseif (tonumber(treated) or 0) > 0 then
+                directTourniquetTreated = tonumber(treated) or 0
+                directTourniquetAfter = afterBleed
+                ok = true
+                if useItem then pcall(useItem, ply, itemId, limbId, nil, slot)
+                elseif type(use.apply) == "function" then pcall(use.apply, ctx) end
+                if type(ctx.limb) == "table" then
+                    ctx.limb.tourniqueted, ctx.limb.blockedBleeding = true, true
+                    if ctx.setStatus then pcall(ctx.setStatus, "TOURNIQUET", 0.01) end
+                end
+            end
+            -- Native success on a shadow limb is not a reason to consume the
+            -- physical SWEP item when no real ZCity wound was treated.
+            if not ok then return false, 0 end
+        end
+
+        if not ok then
+            if useItem then
+                local callOk, result = pcall(useItem, ply, itemId, limbId, nil, slot)
+                ok = callOk and result ~= false
+            elseif type(use.apply) == "function" then
+                local callOk, result = pcall(use.apply, ctx)
+                ok = callOk and result ~= false
+            end
         end
     end
 
@@ -627,13 +658,19 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
             medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
         end
     elseif itemId == "TOURNIQUET" and WSZC.ApplyTourniquetToOrganism then
-        local treatOk, treated, _, afterBleed = pcall(WSZC.ApplyTourniquetToOrganism, ctx)
-        if not treatOk then
-            if WSZC.Warn then WSZC.Warn("tourniquet organism treatment failed: " .. tostring(treated)) end
-        elseif (tonumber(treated) or 0) > 0 and medicalBefore then
-            -- The real arterial/ordinary wounds and org.bleed were updated by
-            -- the tourniquet itself; do not mirror the same bleed delta twice.
-            medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
+        if directTourniquetTreated > 0 then
+            if medicalBefore then
+                medicalBefore.limbBleed = tonumber(directTourniquetAfter) or medicalBefore.limbBleed
+            end
+        else
+            local treatOk, treated, _, afterBleed = pcall(WSZC.ApplyTourniquetToOrganism, ctx)
+            if not treatOk then
+                if WSZC.Warn then WSZC.Warn("tourniquet organism treatment failed: " .. tostring(treated)) end
+            elseif (tonumber(treated) or 0) > 0 and medicalBefore then
+                -- The real arterial/ordinary wounds and org.bleed were updated by
+                -- the tourniquet itself; do not mirror the same bleed delta twice.
+                medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
+            end
         end
     end
 

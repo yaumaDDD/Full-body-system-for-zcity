@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Focused regressions: unconscious cleanup, shrapnel DOT and explicit reset."""
 from pathlib import Path
+from zipfile import ZipFile
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 CONN = ROOT / "woundsystem_zcity_compat"
 ORGANISM = CONN / "lua/autorun/server/sv_zcity_woundsystem_compat_organism.lua"
+SERVER_MAIN = CONN / "lua/autorun/server/sv_zcity_woundsystem_compat.lua"
 SERVER_MG = CONN / "lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua"
 CLIENT_MG = CONN / "lua/autorun/client/cl_zcity_woundsystem_compat_minigames.lua"
 LAYOUT = CONN / "lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua"
@@ -19,9 +21,13 @@ def check(name, value):
 
 
 organism_s = ORGANISM.read_text(encoding="utf-8")
+server_main_s = SERVER_MAIN.read_text(encoding="utf-8")
 server_mg_s = SERVER_MG.read_text(encoding="utf-8")
 client_mg_s = CLIENT_MG.read_text(encoding="utf-8")
 layout_s = LAYOUT.read_text(encoding="utf-8")
+with ZipFile(ROOT / "zcity.zip") as zcity_zip:
+    tourniquet_swep_s = zcity_zip.read("z_city/lua/weapons/weapon_tourniquet.lua").decode("utf-8-sig")
+    woundbridge_s = zcity_zip.read("z_city/lua/homigrad/woundbridge/sv_woundbridge.lua").decode("utf-8-sig")
 
 client_context = layout_s.split("function WSZC.MinigameContextOK()", 1)[1].split("function WSZC.MinigameScale", 1)[0]
 check("S01 unconscious closes WSZC + native games on both realms",
@@ -44,10 +50,26 @@ check("S03 every lodged piece grows a real wound; explicit reset clears it",
       and "function WSZC.ClearAllShrapnel" in organism_s
       and "SnapshotZCityStructure(org, false)" in organism_s
       and "_ExplicitResetDepth" in organism_s)
-check("S04 polished WoundView has vitals and selected-limb readout",
-      "zc_woundsystem_compat_woundview_polish" in layout_s
-      and "WSZC_WoundViewPolishBackground" in layout_s
-      and "DrawVitalRow" in layout_s and "LIMB STATUS" in layout_s)
+check("S04 added WoundView cards are rolled back; native geometry remains",
+      "zc_woundsystem_compat_woundview_polish" not in layout_s
+      and "WSZC_WoundViewPolishBackground" not in layout_s
+      and "DrawVitalRow" not in layout_s and "LIMB STATUS" not in layout_s
+      and "WSZC_UNITMENU_LIMB_GEOMETRY" in layout_s)
+check("S05 bandage budget and ordinary bleed are bounded for a physical roll",
+      'zc_woundsystem_compat_bandage_strength", "2"' in organism_s
+      and 'zc_woundsystem_compat_bleeding_multiplier", "0.55"' in organism_s
+      and "org.bleedingmul = math.min" in organism_s
+      and "+ count * (0.018 + irritation * 0.002) * dt * growth, 0.5, 8)" in organism_s)
+check("S06 physical tourniquet treats before native and requires a real wound",
+      "directTourniquetTreated" in server_main_s
+      and "if authoritativeTourniquet then" in server_main_s
+      and "if not ok then return false, 0 end" in server_main_s
+      and "medicalBefore.limbBleed = tonumber(directTourniquetAfter)" in server_main_s)
+check("S07 stock physical SWEP really reaches this ApplyItemToBody contract",
+      "hg.WoundBridge.SwepHeal(self, ent, mode, bone)" in tourniquet_swep_s
+      and 'weapon_tourniquet    = {kind = "apply", item = "TOURNIQUET"' in woundbridge_s
+      and "local ok = H.ApplyItemToBody(target, spec.item, limbId, 100)" in woundbridge_s
+      and "if ok then\n\t\t\tswep.modeValues[idx] = 0" in woundbridge_s)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -157,6 +179,29 @@ return pistolClean, shotgunPlayer._limbs.hand_R.shrapnel == 3
     check("R01 pistol and bare DMG_BUCKSHOT create no fragments", sources[0])
     check("R02 confirmed shotgun creates its own fragment source", sources[1])
 
+    physical_pellets = lua.execute(r'''
+local function PhysBullet(class, pellets)
+    local weapon = { NumBullet = pellets, GetClass = function() return class end }
+    local attacker = { GetActiveWeapon = function() return weapon end }
+    return {
+        GetDamageType = function() return DMG_BULLET end,
+        GetDamage = function() return 30 end,
+        GetAmmoType = function() return -1 end,
+        GetInflictor = function() return attacker end, -- real ZCity PhysBullet
+        GetAttacker = function() return attacker end,
+    }
+end
+local shotgun = MakePlayer()
+WSZC.InjectDamageShrapnel(shotgun, PhysBullet("weapon_spas12", 8), HITGROUP_RIGHTARM, 30)
+local activeWeaponWorks = shotgun._limbs.hand_R.shrapnel == 3
+    and shotgun.organism.wszc_shrapnel_sources.hand_R.shotgun == 3
+local pistol = MakePlayer()
+WSZC.InjectDamageShrapnel(pistol, PhysBullet("weapon_pistol", 1), HITGROUP_RIGHTARM, 30)
+return activeWeaponWorks, pistol._limbs.hand_R.shrapnel == 0
+''')
+    check("R12 PhysBullet inflictor=attacker still identifies active shotgun", physical_pellets[0])
+    check("R13 active pistol with DMG_BULLET still creates no fragments", physical_pellets[1])
+
     effects = lua.execute(r'''
 local ply = MakePlayer()
 local normal = { 4, nil, nil, "ValveBiped.Bip01_R_Hand", 0 }
@@ -186,6 +231,13 @@ return separate, grows, removed
     reset = lua.execute(r'''
 local ply = MakePlayer()
 WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+WSZC.MarkBandagedShrapnel(ply, "hand_R", { ["ValveBiped.Bip01_R_Hand"] = true })
+ply.organism.wszc_bandaged_shrapnel.hand_R.infection = 12
+ply.organism.wszc_infection = 12
+ply._limbs.hand_R.isBandaged = true
+ply._limbs.hand_R.infection = 12
+ply.bandaged_limbs = { ["ValveBiped.Bip01_R_Hand"] = true }
+ply.tourniquets = { { 0, 0, "ValveBiped.Bip01_R_Hand" } }
 ply.organism.otrub = true
 hg.send_organism = function() end; hg.send_bareinfo = function() end
 hg.organism = { Clear = function(org)
@@ -204,17 +256,172 @@ hg.organism.Clear(ply.organism)
 local transitionKept = ply.organism.otrub == true
     and ply.organism.wszc_shrapnel.hand_R == 3
     and ply.organism.wszc_shrapnel_sources.hand_R.shotgun == 3
+    and ply.organism.wszc_bandaged_shrapnel.hand_R.infection == 12
+    and ply.organism.wszc_infection == 12
 hg.WoundBridge.ResetOrganism(ply)
 local explicitCleared = ply.organism.otrub == true
     and ply.organism.wszc_shrapnel == nil
     and ply.organism.wszc_shrapnel_sources == nil
     and ply.organism.wszc_shrapnel_irritation == nil
+    and ply.organism.wszc_bandaged_shrapnel == nil and ply.organism.wszc_infection == nil
     and #ply.organism.wounds == 0 and ply.organism.pain == 0
     and ply.organism.bleed == 0 and ply._limbs.hand_R.shrapnel == 0
+    and ply._limbs.hand_R.isBandaged == false and ply._limbs.hand_R.infection == 0
+    and next(ply.bandaged_limbs) == nil and next(ply.tourniquets) == nil
 return transitionKept, explicitCleared
 ''')
     check("R06 ordinary ragdoll clear still preserves fragments", reset[0])
     check("R07 explicit reset fully clears fragments and medical residue", reset[1])
+
+    complications = lua.execute(r'''
+local ply = MakePlayer()
+WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+local limb = ply._limbs.hand_R
+limb.isBandaged = false
+local treated = WSZC.ApplyBandageToOrganism(
+    { ply = ply, limbId = "hand_R", limb = limb },
+    { effects = { bandageSlowAmount = 15 } }, 1)
+local entry = ply.organism.wszc_bandaged_shrapnel.hand_R
+local bandageAllowed = treated > 0 and WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and ply._limbs.hand_R.shrapnel == 3 and entry.covered == true
+for _ = 1, 330 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
+local infected = entry.infection > 20 and ply.organism.internalBleed > 0
+    and ply.organism.blood < 5000 and ply._limbs.hand_R.shrapnel == 3
+local infectionBefore = entry.infection
+
+local refs = {}
+local sessions = { Shrapnel = { [ply] = { limbId = "hand_R", id = 41 } } }
+local closed, built, opened, consumed = 0, 0, 0, 0
+refs.Sessions = sessions
+refs.SendShrapnelOpen = function() opened = opened + 1 end
+refs.CloseShrapnelSession = function(_, reason)
+    closed = closed + 1
+    sessions.Shrapnel[ply] = nil
+end
+refs.BuildShrapnelSession = function(limbId, count)
+    built = built + 1
+    return { limbId = limbId, amount = count, id = 42 }
+end
+refs.ShrapnelItemHasTweezers = function() return true end
+refs.ConsumeToolDurability = function() consumed = consumed + 1; return true end
+refs.BroadcastMinigameOneShot = function() end
+WSZC.FindUpvalue = function(name) return refs[name] end
+net = {
+    Receivers = { WoundSystem_ShrapnelStart = function() error("old receiver must be replaced") end },
+    Receive = function(name, fn) net.Receivers[name] = fn end,
+    ReadString = function() return "hand_R" end,
+    ReadUInt = function() return 0 end,
+    BytesLeft = function() return 1, 0 end,
+}
+local installed = WSZC.InstallShrapnelBandageGuard()
+net.Receivers.WoundSystem_ShrapnelStart(0, ply)
+local unwrapOnly = installed and closed == 1 and built == 0 and consumed == 0
+    and sessions.Shrapnel[ply] == nil and ply._limbs.hand_R.shrapnel == 3
+    and not WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and entry.infection == infectionBefore and limb.isBandaged == false
+local reopened = false
+for _, wound in pairs(ply.organism.wounds) do
+    if wound.wszcShrapnel and wound[1] >= 2.5 then reopened = true end
+end
+net.Receivers.WoundSystem_ShrapnelStart(0, ply)
+local secondClickNative = built == 1 and opened == 1 and consumed == 1
+    and sessions.Shrapnel[ply] and sessions.Shrapnel[ply].id == 42
+
+ply._WSZCLimbsRef = ply._limbs
+ply._limbs.hand_R.shrapnel = 0
+WSZC.SyncShrapnel(ply, ply.organism)
+WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+local extractionDecay = (ply.organism.wszc_shrapnel.hand_R or 0) == 0
+    and entry.infection < infectionBefore and ply.organism.internalBleed > 0
+local preDressed = MakePlayer()
+preDressed._limbs.hand_R.isBandaged = true
+preDressed.bandaged_limbs = { ["ValveBiped.Bip01_R_Hand"] = true }
+WSZC.AddShrapnel(preDressed, "hand_R", 1, "shotgun")
+local preDressedCovered = WSZC.IsShrapnelBandaged(preDressed, "hand_R")
+    and preDressed.organism.wszc_bandaged_shrapnel.hand_R.bones["ValveBiped.Bip01_R_Hand"] == true
+return bandageAllowed, infected, unwrapOnly and reopened, secondClickNative, extractionDecay, preDressedCovered
+''')
+    check("R14 bandage covers shrapnel instead of rejecting treatment", complications[0])
+    check("R15 covered fragments cause gradual internal infection and blood loss", complications[1])
+    check("R16 first click unwraps without extraction, session or tool cost", complications[2])
+    check("R17 second click starts the native shrapnel session and spends tool", complications[3])
+    check("R18 extracting the last fragment stops growth and starts infection decay", complications[4])
+    check("R22 a pellet into an already dressed limb is covered too", complications[5])
+
+    # Load the real exported H.ApplyItemToBody implementation as well.  The
+    # physical SWEP reaches this through WB.SwepHeal, not through a direct call
+    # to ApplyTourniquetToOrganism.
+    lua.execute(r'''
+AddCSLuaFile = function() end
+HITGROUP_HEAD, HITGROUP_CHEST, HITGROUP_STOMACH = 1, 2, 3
+HITGROUP_LEFTARM, HITGROUP_RIGHTARM = 4, 5
+HITGROUP_LEFTLEG, HITGROUP_RIGHTLEG = 6, 7
+HITGROUP_GEAR, HITGROUP_GENERIC = 10, 0
+''')
+    lua.execute(server_main_s)
+    physical_tourniquet = lua.execute(r'''
+local item = { max = 100, use = { apply = function() return false end } }
+WoundSystem.Items = {
+    Get = function(id) return id == "TOURNIQUET" and item or nil end,
+    GetMax = function() return 100 end,
+    CreateSlot = function(id, amount) return { type = "tool", toolName = id, durability = amount } end,
+    LimbAllowed = function() return true end,
+}
+local function Patient()
+    local ply = MakePlayer()
+    ply._limbs.thigh_R = { shrapnel = 0, bleed = 26, pain = 20, muscle = 100, skin = 100 }
+    ply.organism.rlegartery = 1
+    ply.organism.bleed = 10
+    ply.organism.wounds = {
+        { 10, nil, nil, "ValveBiped.Bip01_R_Thigh", 0 },
+        { 7, nil, nil, "ValveBiped.Bip01_L_Hand", 0 },
+    }
+    ply.organism.arterialwounds = {
+        { 2, nil, nil, "ValveBiped.Bip01_R_Thigh", 0, nil, "rlegartery" },
+    }
+    return ply
+end
+local nativeCalls = 0
+WoundSystem.UseMedicalItem = function() nativeCalls = nativeCalls + 1; return false, 0 end
+local rejected = Patient()
+local ok, used = WSZC.ApplyItemToBodyImpl(rejected, "TOURNIQUET", "thigh_R", 100)
+local rejectStillHeals = ok == true and used == 100 and nativeCalls == 1
+    and #rejected.organism.arterialwounds == 0 and rejected.organism.rlegartery == 0
+    and #rejected.organism.wounds == 1 and rejected.organism.wounds[1][1] == 7
+    and rejected._limbs.thigh_R.bleed == 0 and rejected._limbs.thigh_R.tourniqueted == true
+    and math.abs(rejected.organism.bleed - 4.8) < 0.001
+
+WoundSystem.UseMedicalItem = function() error("native C:U apply failure") end
+local errored = Patient()
+local ok2, used2 = WSZC.ApplyItemToBodyImpl(errored, "TOURNIQUET", "thigh_R", 100)
+local errorStillHeals = ok2 == true and used2 == 100
+    and #errored.organism.arterialwounds == 0 and #errored.organism.wounds == 1
+    and math.abs(errored.organism.bleed - 4.8) < 0.001
+
+WoundSystem.UseMedicalItem = function() nativeCalls = nativeCalls + 1; return true end
+local empty = Patient()
+empty.organism.wounds, empty.organism.arterialwounds = {}, {}
+empty._limbs.thigh_R.bleed = 0
+local beforeCalls = nativeCalls
+local ok3, used3 = WSZC.ApplyItemToBodyImpl(empty, "TOURNIQUET", "thigh_R", 100)
+local noFalseConsumption = ok3 == false and used3 == 0 and nativeCalls == beforeCalls
+PhysicalDebug = { ok = ok, used = used, nativeCalls = nativeCalls,
+    arterial = #rejected.organism.arterialwounds, artery = rejected.organism.rlegartery,
+    wounds = #rejected.organism.wounds, leftSeverity = rejected.organism.wounds[1] and rejected.organism.wounds[1][1],
+    limbBleed = rejected._limbs.thigh_R.bleed, marker = rejected._limbs.thigh_R.tourniqueted,
+    orgBleed = rejected.organism.bleed, ok2 = ok2, used2 = used2,
+    arterial2 = #errored.organism.arterialwounds, wounds2 = #errored.organism.wounds,
+    orgBleed2 = errored.organism.bleed }
+return rejectStillHeals, errorStillHeals, noFalseConsumption
+''')
+    check("R19 physical tourniquet heals real wounds when native C:U rejects", physical_tourniquet[0])
+    check("R20 physical tourniquet survives native apply error without double mirror", physical_tourniquet[1])
+    check("R21 tourniquet is not consumed when no real wound was treated", physical_tourniquet[2])
+    if not all(physical_tourniquet):
+        debug = lua.globals().PhysicalDebug
+        print("PHYSICAL_DEBUG", {k: debug[k] for k in (
+            "ok", "used", "nativeCalls", "arterial", "artery", "wounds", "leftSeverity",
+            "limbBleed", "marker", "orgBleed", "ok2", "used2", "arterial2", "wounds2", "orgBleed2")})
 
     client = LuaRuntime(unpack_returned_tuples=True)
     client.execute(r'''

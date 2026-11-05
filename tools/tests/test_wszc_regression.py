@@ -1204,32 +1204,21 @@ end)()
 end)()
 ''')
 
-    rt('R34 polished WoundView draws vitals and hides on unconsciousness', '''
+    rt('R34 added WoundView cards are gone; unconscious gate remains', '''
 (function()
     local ply = { organism = {}, Alive = function() return true end }
     LocalPlayer = function() return ply end
-    ScrW = function() return 1600 end
     WoundSystemHealthHUDOpen = true
-    WoundSystemClientState = {
-        Cardio = { bloodVolume = 82, heartRate = 76, avgPain = 12 },
-        PlayerStats = { consciousness = 100 }, PlayerLimbs = {},
-    }
-    textCalls = {}
-    WSZC.DrawWoundViewForeground()
-    local title, vitals, selectLimb = false, false, false
-    for _, call in ipairs(textCalls) do
-        if call.t == "WOUND VIEW" then title = true end
-        if call.t == "VITAL SIGNS" then vitals = true end
-        if call.t == "SELECT A LIMB" then selectLimb = true end
-    end
-    local visible = WSZC.WoundViewPolishActive()
+    local noCustomLayer = WSZC.DrawWoundViewForeground == nil
+        and WSZC.WoundViewPolishActive == nil
+        and (not hook._t["PostDrawHUD"]
+            or not hook._t["PostDrawHUD"]["WSZC_WoundViewPolishForeground"])
+    local conscious = WSZC.MinigameContextOK()
     ply.organism.otrub = true
-    textCalls = {}
-    WSZC.DrawWoundViewForeground()
-    local hidden = not WSZC.WoundViewPolishActive() and #textCalls == 0
+    local unconsciousBlocked = not WSZC.MinigameContextOK()
     ply.organism.otrub = nil
     WoundSystemHealthHUDOpen = false
-    return visible and title and vitals and selectLimb and hidden
+    return noCustomLayer and conscious and unconsciousBlocked
 end)()
 ''')
 

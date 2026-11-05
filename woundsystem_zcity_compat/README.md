@@ -96,8 +96,11 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 Поле `state.shrapnel` в `PlayerLimbs` остаётся общим счётчиком для родной
 мини-игры. Количество по источникам отдельно хранится в
 `org.wszc_shrapnel_sources[limbId]`: `shotgun`, `blast`, `glass` (и `legacy`
-для старых сохранений). Второй мини-игры нет: `REMOVE SHRAPNEL` всегда открывает
-один и тот же `BuildShrapnelSession()`.
+для старых сохранений). Второй мини-игры нет: после снятия блокирующей повязки
+`REMOVE SHRAPNEL` открывает один и тот же `BuildShrapnelSession()`. Если осколок
+закрыт повязкой, guarded native receiver на первом клике только снимает её и
+закрывает старую сессию — без создания новой сессии, извлечения или расхода
+пинцета; второй клик идёт по обычному нативному пути.
 
 | Источник | Правило | Откуда перенесено |
 | --- | --- | --- |
@@ -107,7 +110,11 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 
 Обычная пуля не создаёт осколков. `DMG_BUCKSHOT` сам по себе тоже не является
 доказательством дробовика: нужен дробовый ammo/класс оружия/многопеллетный
-выстрел. Стекло остаётся независимым источником.
+выстрел. Настоящий ZCity PhysBullet обычно приходит с `DMG_BULLET`, ammo `-1` и
+`inflictor = attacker`, поэтому проверяются также attacker active weapon,
+known/family class (`spas12`, `xm1014`, `saiga12`, `remington870`, KS-23, M590,
+TOZ/doublebarrel), `Primary.Ammo`, `game.GetAmmoName` и pellet count. Стекло
+остаётся независимым источником; пистолет по-прежнему не проходит проверку.
 
 Сырой урон снимается **до** `dmginfo:ScaleDamage(0.15)` внутри обёртки
 `homigrad-damage`, иначе пороги взрыва никогда не сработали бы. Поверхности
@@ -122,13 +129,30 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 
 Каждые 0.5 с любой оставшийся фрагмент усиливает настоящую tagged ZCity-рану
 (`wound.wszcShrapnel`) и добавляет боль в `avgpain/painadd/pain`. Кровотечение
-поэтому переживает родной recalculate `org.bleed`. При извлечении последнего
-осколка конечности удаляются только tagged-рана, source map и irritation;
-обычные раны остаются. Откат роста: `zc_woundsystem_compat_shrapnel_lodged_effects 0`.
+поэтому переживает родной recalculate `org.bleed`. Severity такой раны
+ограничено `8`, чтобы одного физического бинта хватало на её обработку. При
+извлечении последнего осколка конечности удаляются только tagged-рана, source
+map и irritation; обычные раны остаются. Откат роста:
+`zc_woundsystem_compat_shrapnel_lodged_effects 0`.
+
+Бинтировать конечность с фрагментом **разрешено**. После фактического лечения
+`org.wszc_bandaged_shrapnel[limbId]` запоминает закрытый фрагмент и кости с
+повязкой. Попадание в заранее перевязанную конечность помечается так же.
+Инфекция растёт медленно (`0.1%/с` по умолчанию, с масштабом по числу
+осколков); после `20` постепенно накапливаются `org.internalBleed`, потеря
+крови и боль. Это не мгновенный урон. Снятие повязки останавливает рост, но не
+лечит уже накопленную инфекцию; когда извлечён последний фрагмент, начинается
+затухание (`0.04/с`). Обычный treatment budget бинта умножается на `2`, а
+`org.bleedingmul` ограничен `0.55`; артерии этот cap не используют и требуют
+жгута. Конвары: `zc_woundsystem_compat_bandaged_shrapnel_infection`,
+`zc_woundsystem_compat_shrapnel_infection_rate`,
+`zc_woundsystem_compat_bandage_strength`,
+`zc_woundsystem_compat_bleeding_multiplier`.
 
 Явный `hg_organism_clear` / `WB.ResetOrganism` полностью удаляет все фрагменты,
-источники, tagged-раны и C:U residue. Этот explicit-reset context отделён от
-обычного `ragdoll → standing`, где шрапнель сохраняется.
+источники, tagged-раны, накопленную инфекцию, ZCity `bandaged_limbs` /
+`tourniquets` и C:U residue. Этот explicit-reset context отделён от обычного
+`ragdoll → standing`, где шрапнель и накопленная инфекция сохраняются.
 
 Потеря сознания владельца сессии (`otrub/needotrub`, `fake/needfake`,
 `FakeRagdoll`, `consciousness < 0.4`) закрывает WSZC и нативные C:U мини-игры,
@@ -233,7 +257,7 @@ ZCity вызывает `WoundSystem.Health.StartExternalMinigame()` только
 | `weapon_medkit_sh` режим `2` | **мгновенно** (MORPHINE oneshot) |
 | `weapon_medkit_sh` режим `3` | **мгновенно** (BLOODCOAGULANT / SALINE vehicle) |
 | `weapon_adrenaline`, `weapon_betablock`, `weapon_mannitol`, `weapon_thiamine` | **мгновенно** (body-эффект / SALINE vehicle) |
-| `weapon_tourniquet` | **мгновенно**: нативный статус C:U плюс реальное закрытие артериальной раны в `ply.organism`; бинт такой ране не помогает |
+| `weapon_tourniquet` | **мгновенно через физический `WB.SwepHeal`**: сначала реально закрывается ZCity arterial/ordinary wound, затем C:U apply/status выполняется best-effort. Native `false`/Lua-ошибка не отменяет лечение; при отсутствии обработанной раны предмет не расходуется. Бинт артерии не помогает |
 | `weapon_painkillers`, `weapon_medkit_sh` режим `4`, blood bag и прочие спецы без `mg` | **мгновенно** (старая ветка `WB.SwepHeal`) |
 
 Для «живых» предметов (`live`) `onProgress` вызывается на каждом wrap / толчке
@@ -297,6 +321,10 @@ SWEP. В authority-режиме каждая такая доза дополни�
   `Examine Body`.
 - При закрытии мини-игры курсор не снимается, если панель C:U ещё открыта
   (`WoundSystemHealthHUDOpen`).
+- Дополнительные `MEDICAL ASSESSMENT`, vital signs и selected-limb cards
+  удалены по запросу владельца. Остаются прежние откалиброванные позиции и
+  размеры doll/hitboxes, shaped outlines и нативный hover; отдельного
+  `woundview_polish` конвара больше нет.
 
 ## Конвары
 
@@ -320,7 +348,10 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | **`1`** — авторский размер НАТИВНЫХ мини-игр C:U (вправление, осколки, AED), квадрат 760 px без shrink; диапазон `0.4..1.2`. |
 | `zc_woundsystem_compat_fullscreen_native` | этот аддон (client) | **`0`** — нативные C:U мини-игры в авторском размере. `1` — прежнее растяжение на весь экран; live-откат показал огромный обрезанный осколок и потерю нижней части раны. |
 | `zc_woundsystem_compat_close_on_empty_click` | этот аддон (client) | **`1`** — клик по пустой области WoundView закрывает окно через `WoundSystem.CloseHealthHUD()`; кукла, 5 слотов, кнопки инструментов, action point, UNI-HEALTH и drag исключены. |
-| `zc_woundsystem_compat_woundview_polish` | этот аддон (client) | **`1`** — медицинская подложка, vital signs и карточка выбранного лимба; doll, hover, hitboxes/action points не меняются, во время мини-игры/без сознания слой скрыт. |
+| `zc_woundsystem_compat_bandage_strength` | этот аддон (server) | **`2`** — множитель реального treatment budget бинта для ZCity ordinary wounds; не лечит артерии и не дублирует mirror. |
+| `zc_woundsystem_compat_bleeding_multiplier` | этот аддон (server) | **`0.55`** — верхний cap `org.bleedingmul` для обычных ран; меньшее серверное значение не повышается, arterial formula не использует этот множитель. |
+| `zc_woundsystem_compat_bandaged_shrapnel_infection` | этот аддон (server) | **`1`** — медленная внутренняя инфекция закрытых повязкой фрагментов; `0` отключает только рост инфекции, не цикл unwrap→extract. |
+| `zc_woundsystem_compat_shrapnel_infection_rate` | этот аддон (server) | **`0.1`** — базовые проценты инфекции в секунду до масштабирования по числу осколков; диапазон `0.001..2`. |
 | `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | `0.45` — множитель спрайта руки 512×1260 в мини-играх бинта/шприца; диапазон `0.2..1`. |
 | `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 слоёв `unitmenu/limbs` архива; `0` — родные спрайты C:U. |
 | `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.24` — размер куклы относительно `dollScale` C:U; диапазон `0.1..0.8`. |

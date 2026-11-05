@@ -54,6 +54,18 @@ local cvRegen = CreateConVar("zc_woundsystem_compat_shrapnel_regen_block", "1",
 local cvLodgedEffects = CreateConVar("zc_woundsystem_compat_shrapnel_lodged_effects", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Any lodged shrapnel/glass causes growing real wounds and pain until extracted", 0, 1)
+local cvBandageStrength = CreateConVar("zc_woundsystem_compat_bandage_strength", "2",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Multiplier for real ZCity wound severity treated by one bandage roll", 0.25, 5)
+local cvBleedingMul = CreateConVar("zc_woundsystem_compat_bleeding_multiplier", "0.55",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Upper cap for ZCity ordinary-wound bleedingmul; arteries remain a tourniquet emergency", 0.1, 2)
+local cvBandagedInfection = CreateConVar("zc_woundsystem_compat_bandaged_shrapnel_infection", "1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Bandaging over lodged shrapnel causes slowly spreading internal infection", 0, 1)
+local cvInfectionRate = CreateConVar("zc_woundsystem_compat_shrapnel_infection_rate", "0.1",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Bandaged-shrapnel infection percent per second before piece-count scaling", 0.001, 2)
 local cvShadow = CreateConVar("zc_woundsystem_compat_shadow", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Mirror ZCity injuries into the C:U injury HUD (BodyState / PlayerLimbs)", 0, 1)
@@ -89,6 +101,14 @@ end
 
 local function Warn(msg)
     if WSZC.Warn then WSZC.Warn(msg) else ErrorNoHalt(TAG .. tostring(msg) .. "\n") end
+end
+
+local function ConVarFloat(cv, fallback)
+    if cv and cv.GetFloat then
+        local ok, value = pcall(cv.GetFloat, cv)
+        if ok and tonumber(value) then return tonumber(value) end
+    end
+    return fallback
 end
 
 local function Authority()
@@ -401,6 +421,43 @@ local function SyncBandagedWounds(ply, org, bandagedBones)
     ply.fullsend = true
 end
 
+--- A bandage may cover a fragment, but then the fragment is inaccessible until
+--- that dressing is removed.  The map is authoritative and survives ragdoll;
+--- C:U's isBandaged flag alone is insufficient because partial WSZC wraps do
+--- not set it and native shrapnel extraction clears it on a failed grasp.
+local function AuthoritativeShrapnelCount(ply, org, limbId)
+    local n = org and org.wszc_shrapnel and tonumber(org.wszc_shrapnel[limbId]) or nil
+    if n then return math.max(n, 0) end
+    local h = H()
+    local state = h and h.GetLimbState and h.GetLimbState(ply, limbId)
+    return type(state) == "table" and math.max(tonumber(state.shrapnel) or 0, 0) or 0
+end
+
+function WSZC.IsShrapnelBandaged(ply, limbId)
+    local org = IsValid(ply) and ply.organism or nil
+    if type(org) ~= "table" or type(org.wszc_bandaged_shrapnel) ~= "table" then return false end
+    local entry = org.wszc_bandaged_shrapnel[limbId]
+    return type(entry) == "table" and entry.covered == true
+        and AuthoritativeShrapnelCount(ply, org, limbId) > 0, entry
+end
+
+function WSZC.MarkBandagedShrapnel(ply, limbId, bones)
+    local org = IsValid(ply) and ply.organism or nil
+    if type(org) ~= "table" or AuthoritativeShrapnelCount(ply, org, limbId) <= 0 then return false end
+    org.wszc_bandaged_shrapnel = org.wszc_bandaged_shrapnel or {}
+    local entry = org.wszc_bandaged_shrapnel[limbId] or { infection = 0, bones = {} }
+    entry.covered = true
+    entry.bones = entry.bones or {}
+    for bone in pairs(bones or {}) do entry.bones[bone] = true end
+    entry.infection = math.Clamp(tonumber(entry.infection) or 0, 0, 100)
+    org.wszc_bandaged_shrapnel[limbId] = entry
+    local h = H()
+    local state = h and h.GetLimbState and h.GetLimbState(ply, limbId)
+    if type(state) == "table" then state.wszcBandagedShrapnel = true end
+    ply.fullsend = true
+    return true
+end
+
 --- Apply a C:U bandage dose to ordinary authoritative ZCity wounds.
 ---
 --- C:U normally spends bandageSlowAmount in WoundSystem_LimbTick, reducing
@@ -428,6 +485,7 @@ function WSZC.ApplyBandageToOrganism(ctx, profile, effectFraction)
     local fullBudget = math.max(tonumber(effects.bandageSlowAmount) or 0, 0)
         + math.max(-(tonumber(effects.bleed) or 0), 0)
     local budget = fullBudget * math.max(tonumber(effectFraction) or 0, 0)
+        * math.max(ConVarFloat(cvBandageStrength, 2), 0.01)
     if budget <= 0 then return 0, before, before end
 
     local candidates = {}
@@ -483,6 +541,7 @@ function WSZC.ApplyBandageToOrganism(ctx, profile, effectFraction)
     ply._WSZCExpectedBleed = ply._WSZCExpectedBleed or {}
     ply._WSZCExpectedBleed[limbId] = after
     SyncBandagedWounds(ply, org, bandagedBones)
+    WSZC.MarkBandagedShrapnel(ply, limbId, bandagedBones)
 
     Debug("bandage treated %s/%s: %.3f -> %.3f (-%.3f)",
         tostring(ply), tostring(limbId), before, after, treated)
@@ -813,16 +872,22 @@ function WSZC.TickLodgedShrapnel(ply, org, dt)
         local count = math.max(tonumber(value) or 0, 0)
         if count > 0 then
             local wound = EnsureLodgedWound(ply, org, limbId, count)
+            local covered = WSZC.IsShrapnelBandaged(ply, limbId)
+            local growth = covered and 0.15 or 0.4
             local irritation = math.Clamp(
-                (tonumber(org.wszc_shrapnel_irritation[limbId]) or 1) + count * dt * 0.025,
+                (tonumber(org.wszc_shrapnel_irritation[limbId]) or 1) + count * dt * 0.012 * growth,
                 1, 20)
             org.wszc_shrapnel_irritation[limbId] = irritation
             if wound then
+                -- A permanent 30-severity wound made a whole bandage roll
+                -- physically insufficient.  Lodged fragments still grow pain
+                -- and bleeding, but the external wound is bounded; covered
+                -- fragments primarily drive INTERNAL infection instead.
                 wound[1] = math.Clamp((tonumber(wound[1]) or 0.5)
-                    + count * (0.018 + irritation * 0.002) * dt, 0.5, 30)
+                    + count * (0.018 + irritation * 0.002) * dt * growth, 0.5, 8)
                 wound[5] = CurTime and CurTime() or wound[5]
             end
-            local painRate = count * (0.7 + irritation * 0.03)
+            local painRate = count * (0.35 + irritation * 0.02)
             org.avgpain = math.Clamp((tonumber(org.avgpain) or tonumber(org.pain) or 0)
                 + painRate * dt, 0, 150)
             org.painadd = math.Clamp((tonumber(org.painadd) or 0)
@@ -835,6 +900,218 @@ function WSZC.TickLodgedShrapnel(ply, org, dt)
     end
     if changed then ply.fullsend = true end
     return changed
+end
+
+WSZC.EnsureLodgedWound = EnsureLodgedWound
+
+local function NotifyMedical(ply, text)
+    if not IsValid(ply) then return end
+    if ply.Notify then
+        pcall(ply.Notify, ply, text, 45, "bandage", 0)
+    elseif ply.PrintMessage then
+        pcall(ply.PrintMessage, ply, HUD_PRINTCENTER or 4, text)
+    end
+end
+
+--- Remove ONLY the dressing that blocks extraction.  Infection already earned
+--- is not magically cured; it stops spreading while uncovered and begins to
+--- recede after the last fragment is removed.  Re-opening the tagged wound
+--- restores a small, real external bleed instead of a free cosmetic unwrap.
+function WSZC.RemoveBandageForShrapnel(ply, limbId)
+    local org = IsValid(ply) and ply.organism or nil
+    if type(org) ~= "table" then return false end
+    local covered, entry = WSZC.IsShrapnelBandaged(ply, limbId)
+    if not covered then return false end
+    entry.covered = false
+    entry.reopenedAt = CurTime and CurTime() or 0
+
+    local h = H()
+    local state = h and h.GetLimbState and h.GetLimbState(ply, limbId)
+    if type(state) == "table" then
+        if h.Fn and h.Fn.ClearLimbBandage then pcall(h.Fn.ClearLimbBandage, state) end
+        state.isBandaged, state.blockedBleeding = false, false
+        state.bandageSlowAmount = 0
+        state.wszcBandagedShrapnel = false
+        state.infectionSpeed = 0
+        if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
+    end
+
+    local entities = { ply, org.owner, ply.FakeRagdoll }
+    if hg and hg.GetCurrentCharacter then
+        local ok, current = pcall(hg.GetCurrentCharacter, ply)
+        if ok then entities[#entities + 1] = current end
+    end
+    local seen = {}
+    for _, ent in ipairs(entities) do
+        if IsValid(ent) and not seen[ent] then
+            seen[ent] = true
+            if type(ent.bandaged_limbs) == "table" then
+                for bone in pairs(entry.bones or {}) do ent.bandaged_limbs[bone] = nil end
+                if ent.SetNetVar then pcall(ent.SetNetVar, ent, "bandaged_limbs", ent.bandaged_limbs) end
+            end
+        end
+    end
+
+    local count = AuthoritativeShrapnelCount(ply, org, limbId)
+    local wound = EnsureLodgedWound(ply, org, limbId, count)
+    if wound then wound[1] = math.max(tonumber(wound[1]) or 0, 2.5) end
+    org.bleed = math.max(tonumber(org.bleed) or 0, 0.5)
+    ply.fullsend = true
+    NotifyMedical(ply, "Bandage removed. Click REMOVE SHRAPNEL again.")
+    return true
+end
+
+--- Slow internal infection, not another instant arterial bleed.  At the
+--- default 0.1%/s a covered fragment needs minutes to become systemic; the
+--- internalBleed / blood drain then kills gradually if the player leaves the
+--- dressing on and never extracts the fragment.
+function WSZC.TickBandagedShrapnel(ply, org, dt)
+    if not (IsValid(ply) and type(org) == "table") then return false end
+    if type(org.wszc_bandaged_shrapnel) ~= "table" then return false end
+    dt = math.Clamp(tonumber(dt) or 0.1, 0, 0.5)
+    local enabled = not cvBandagedInfection or cvBandagedInfection:GetBool()
+    local baseRate = math.max(ConVarFloat(cvInfectionRate, 0.1), 0)
+    local maxInfection, changed = 0, false
+    local h = H()
+
+    for limbId, entry in pairs(org.wszc_bandaged_shrapnel) do
+        if type(entry) == "table" then
+            local count = AuthoritativeShrapnelCount(ply, org, limbId)
+            local state = h and h.GetLimbState and h.GetLimbState(ply, limbId)
+            entry.infection = math.Clamp(tonumber(entry.infection) or 0, 0, 100)
+
+            if count <= 0 then
+                entry.covered = false
+                entry.infection = math.max(entry.infection - dt * 0.04, 0)
+                if entry.infection <= 0.0001 then
+                    org.wszc_bandaged_shrapnel[limbId] = nil
+                    if type(state) == "table" then
+                        state.infection, state.infectionSpeed = 0, 0
+                        state.wszcBandagedShrapnel = false
+                    end
+                end
+                maxInfection = math.max(maxInfection, entry.infection)
+            elseif entry.covered and enabled then
+                local old = entry.infection
+                local rate = baseRate * (1 + math.max(count - 1, 0) * 0.15)
+                entry.infection = math.Clamp(old + rate * dt, 0, 100)
+                maxInfection = math.max(maxInfection, entry.infection)
+                if type(state) == "table" then
+                    state.infection = entry.infection
+                    state.infectionSpeed = rate * 6
+                    state.wszcBandagedShrapnel = true
+                end
+
+                if entry.infection >= 20 then
+                    local systemic = entry.infection - 20
+                    org.internalBleed = math.Clamp((tonumber(org.internalBleed) or 0)
+                        + systemic * 0.0015 * dt, 0, 12)
+                    org.blood = math.max((tonumber(org.blood) or 5000)
+                        - entry.infection * 0.01 * dt, 1)
+                    org.pain = math.Clamp((tonumber(org.pain) or 0)
+                        + (0.02 + entry.infection * 0.003) * dt, 0, 150)
+                    org.avgpain = math.Clamp((tonumber(org.avgpain) or tonumber(org.pain) or 0)
+                        + entry.infection * 0.001 * dt, 0, 150)
+                end
+
+                if math.floor(entry.infection) > math.floor(old) then
+                    changed = true
+                    if h and h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, false) end
+                end
+                if entry.infection >= 25 and not entry.warned25 then
+                    entry.warned25 = true
+                    NotifyMedical(ply, "The covered wound is infected. Remove the bandage and extract the fragment.")
+                elseif entry.infection >= 60 and not entry.warned60 then
+                    entry.warned60 = true
+                    NotifyMedical(ply, "Infection is spreading inside. The fragment must be removed.")
+                end
+            else
+                maxInfection = math.max(maxInfection, entry.infection)
+                if type(state) == "table" then
+                    state.infection = entry.infection
+                    state.infectionSpeed = 0
+                    state.wszcBandagedShrapnel = false
+                end
+            end
+        else
+            org.wszc_bandaged_shrapnel[limbId] = nil
+        end
+    end
+
+    org.wszc_infection = maxInfection > 0 and maxInfection or nil
+    if changed then ply.fullsend = true end
+    return changed
+end
+
+--- Native C:U owns this net message.  Reuse its own captured helpers, adding
+--- only the covered-fragment gate BEFORE BuildShrapnelSession / tool cost.
+--- First click unwraps; second click follows the untouched native minigame.
+function WSZC.InstallShrapnelBandageGuard()
+    if not (net and net.Receive and WSZC.FindUpvalue) then return false end
+    local receivers = net.Receivers or {}
+    local original = receivers["WoundSystem_ShrapnelStart"]
+        or receivers["woundsystem_shrapnelstart"]
+    if type(original) ~= "function" then return false end
+    if WSZC._ShrapnelBandageGuardOriginal == original then return true end
+
+    local sessions = WSZC.CUSessions or WSZC.FindUpvalue("Sessions")
+    local sendOpen = WSZC.FindUpvalue("SendShrapnelOpen")
+    local closeSession = WSZC.CUCloseShrapnelSession or WSZC.FindUpvalue("CloseShrapnelSession")
+    local buildSession = WSZC.FindUpvalue("BuildShrapnelSession")
+    local hasTweezers = WSZC.FindUpvalue("ShrapnelItemHasTweezers")
+    local consumeTool = WSZC.FindUpvalue("ConsumeToolDurability")
+    local broadcast = WSZC.FindUpvalue("BroadcastMinigameOneShot")
+    if not (type(sessions) == "table" and type(sessions.Shrapnel) == "table"
+        and type(sendOpen) == "function" and type(closeSession) == "function"
+        and type(buildSession) == "function" and type(hasTweezers) == "function"
+        and type(consumeTool) == "function") then return false end
+
+    local function GuardedShrapnelStart(_, ply)
+        if type(WoundSystemHealthEnabled) == "function" and not WoundSystemHealthEnabled() then return end
+        if not IsValid(ply) or not ply:Alive() then return end
+        local limbId = net.ReadString()
+        local slotIdx = 0
+        if net.BytesLeft then
+            local bytesLeft, bitsLeft = net.BytesLeft()
+            if (bitsLeft or 0) >= 3 or (bytesLeft or 0) >= 1 then slotIdx = net.ReadUInt(3) end
+        end
+
+        if WSZC.IsShrapnelBandaged(ply, limbId) then
+            WSZC.RemoveBandageForShrapnel(ply, limbId)
+            -- A dressing may have been applied while the native overlay was
+            -- already open.  Close that stale session, but do not call native
+            -- BreakShrapnelGrasp: a failed bare-hand pull would decrement
+            -- state.shrapnel even though the ZCity fragment is still lodged.
+            if sessions.Shrapnel[ply] then closeSession(ply, "bandage_unwrapped") end
+            return -- no new session, no extraction and no tweezers durability spent
+        end
+
+        local existing = sessions.Shrapnel[ply]
+        if existing then
+            if existing.limbId == limbId then
+                sendOpen(ply, existing)
+                return
+            end
+            closeSession(ply, "replaced")
+        end
+
+        local h = H()
+        local state = h and h.GetLimbState and h.GetLimbState(ply, limbId)
+        if not state or (tonumber(state.shrapnel) or 0) <= 0 then return end
+        local tweezers = hasTweezers(ply, slotIdx)
+        if tweezers and not consumeTool(ply, slotIdx, 1) then return end
+        local session = buildSession(limbId, state.shrapnel, tweezers)
+        sessions.Shrapnel[ply] = session
+        sendOpen(ply, session)
+        if tweezers and type(broadcast) == "function" then
+            broadcast(ply, "tweezeruse.ogg", 0.5)
+        end
+    end
+
+    WSZC._OriginalShrapnelStart = original
+    WSZC._ShrapnelBandageGuardOriginal = original
+    net.Receive("WoundSystem_ShrapnelStart", GuardedShrapnelStart)
+    return true
 end
 
 local function MaxShrapnel()
@@ -898,6 +1175,13 @@ function WSZC.AddShrapnel(ply, limbId, count, reason)
         org.wszc_shrapnel_irritation[limbId] = math.max(
             tonumber(org.wszc_shrapnel_irritation[limbId]) or 0, 1)
         EnsureLodgedWound(ply, org, limbId, after)
+        -- A pellet can hit a limb that was dressed BEFORE the shot.  Such a
+        -- fragment is covered too; otherwise pre-bandaging would bypass the
+        -- unwrap -> extract cycle and the internal-infection consequence.
+        local bone = COMPLICATION_BONES[limbId] or COMPLICATION_BONES.hand_R
+        local dressed = state.isBandaged == true
+            or (type(ply.bandaged_limbs) == "table" and ply.bandaged_limbs[bone] == true)
+        if dressed then WSZC.MarkBandagedShrapnel(ply, limbId, { [bone] = true }) end
         -- Freeze ZCity limb regeneration at the state it had when the fragment
         -- lodged; extraction releases the floor again.
         if cvRegen and cvRegen:GetBool() then
@@ -992,6 +1276,8 @@ local function SyncShrapnel(ply, org)
                     org.wszc_shrapnel_floor[limbId] = nil
                     if org.wszc_shrapnel_sources then org.wszc_shrapnel_sources[limbId] = nil end
                     if org.wszc_shrapnel_irritation then org.wszc_shrapnel_irritation[limbId] = nil end
+                    local bandaged = org.wszc_bandaged_shrapnel and org.wszc_bandaged_shrapnel[limbId]
+                    if type(bandaged) == "table" then bandaged.covered = false end
                     if RemoveLodgedWounds(org, limbId) and ply.SetNetVar then
                         pcall(ply.SetNetVar, ply, "wounds", org.wounds)
                     end
@@ -1330,16 +1616,41 @@ end
 local SHOTGUN_WEAPONS = {
     weapon_xm1014 = true, weapon_spas12 = true, weapon_saiga12 = true,
     weapon_remington870 = true, weapon_remington870_roullet = true,
-    weapon_doublebarrel_short = true,
+    weapon_doublebarrel = true, weapon_doublebarrel_short = true,
+    weapon_ks23 = true, weapon_m590a1 = true, weapon_toz106 = true,
 }
 
 local function IsShotgunEntity(ent)
     if not IsValid(ent) then return false end
     local ok, class = pcall(ent.GetClass, ent)
-    if ok and SHOTGUN_WEAPONS[class] then return true end
-    -- NumBullet > 1 is the pellet count on every ZCity shotgun SWEP; pistols
-    -- and rifles always have 1.
+    class = ok and string.lower(tostring(class or "")) or ""
+    if SHOTGUN_WEAPONS[class] then return true end
+    -- Physical ZCity bullets do not retain their weapon as inflictor.  Keep
+    -- family fallbacks for derived SWEP class names used by server packs.
+    if string.find(class, "shotgun", 1, true)
+        or string.find(class, "spas12", 1, true)
+        or string.find(class, "xm1014", 1, true)
+        or string.find(class, "saiga12", 1, true)
+        or string.find(class, "remington870", 1, true)
+        or string.find(class, "doublebarrel", 1, true)
+        or string.find(class, "ks23", 1, true)
+        or string.find(class, "m590", 1, true) then return true end
+
+    local primary = type(ent.Primary) == "table" and ent.Primary or nil
+    if primary and IsShotgunAmmoName(primary.Ammo) then return true end
+    if ent.GetPrimaryAmmoType and game and game.GetAmmoName then
+        local okAmmo, ammoId = pcall(ent.GetPrimaryAmmoType, ent)
+        if okAmmo and type(ammoId) == "number" and ammoId >= 0 then
+            local okName, name = pcall(game.GetAmmoName, ammoId)
+            if okName and IsShotgunAmmoName(name) then return true end
+        end
+    end
+
+    -- Different ZCity generations store pellet count in these fields.  A
+    -- multi-pellet weapon is positive evidence even when ammo is already -1.
     return (tonumber(ent.NumBullet) or 0) > 1
+        or (primary and (tonumber(primary.NumBullets or primary.NumBullet) or 0) > 1)
+        or false
 end
 
 local function IsShotgunHit(dmginfo, dmgtype)
@@ -1357,6 +1668,7 @@ local function IsShotgunHit(dmginfo, dmgtype)
     -- weapon below, otherwise no fragment is created.
     if dmginfo.GetAmmoType and game and game.GetAmmoName then
         local ok, ammoId = pcall(dmginfo.GetAmmoType, dmginfo)
+        if ok and type(ammoId) == "string" and IsShotgunAmmoName(ammoId) then return true end
         if ok and type(ammoId) == "number" and ammoId >= 0 then
             local ok2, name = pcall(game.GetAmmoName, ammoId)
             if ok2 and IsShotgunAmmoName(name) then return true end
@@ -2094,7 +2406,7 @@ local RESET_KEEP = {
 
 local SHRAPNEL_SHADOW_KEYS = {
     "wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation",
-    "wszc_shrapnel_sources",
+    "wszc_shrapnel_sources", "wszc_bandaged_shrapnel", "wszc_infection",
 }
 
 local function SnapshotZCityStructure(org, preserveShrapnel)
@@ -2140,11 +2452,38 @@ function WSZC.ClearAllShrapnel(ply, org)
                 if type(state) == "table" then
                     state.shrapnel, state.bleed, state.pain = 0, 0, 0
                     state.broken, state.dislocated = false, false
+                    state.isBandaged, state.wszcBandagedShrapnel = false, false
+                    state.tourniqueted, state.blockedBleeding = false, false
+                    state.bandageSlowAmount = 0
+                    state.infection, state.infectionSpeed = 0, 0
                     state.dislocationTimer = 0
                     if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
                 end
             end
             ply._WSZCLimbsRef = limbs
+        end
+
+        -- Explicit reset also removes ZCity's own medical presentation.  A
+        -- stale bandaged_limbs entry would otherwise keep rendering a dressing
+        -- after every real wound and infection has already been cleared.
+        local owner = type(org) == "table" and org.owner or nil
+        local entities = { ply, owner, ply.FakeRagdoll }
+        local seen = {}
+        for _, ent in ipairs(entities) do
+            if IsValid(ent) and not seen[ent] then
+                seen[ent] = true
+                ent.bandaged_limbs, ent.tourniquets = {}, {}
+                if ent.SetNetVar then
+                    pcall(ent.SetNetVar, ent, "bandaged_limbs", ent.bandaged_limbs)
+                    pcall(ent.SetNetVar, ent, "Tourniquets", ent.tourniquets)
+                end
+            end
+        end
+        if hg and type(hg.TourniquetGuys) == "table" then
+            for i = #hg.TourniquetGuys, 1, -1 do
+                if seen[hg.TourniquetGuys[i]] then table.remove(hg.TourniquetGuys, i) end
+            end
+            if SetNetVar then pcall(SetNetVar, "TourniquetGuys", hg.TourniquetGuys) end
         end
         ply._WSZCExpectedBleed, ply._WSZCExpectedPain = {}, {}
         ply._WSZCExpectedDislocation = {}
@@ -2401,6 +2740,7 @@ function WSZC.InstallOrganismMode()
     DisableCUPhysiology()
     WSZC.DisableCUBloodReplacement()
     WSZC.InstallResetStructureGuard()
+    WSZC.InstallShrapnelBandageGuard()
 
     -- Org Think runs at 10 Hz in ZCity.  Our own hook keeps the C:U HUD and the
     -- shrapnel shadow in sync, and holds the regeneration block.
@@ -2428,10 +2768,17 @@ function WSZC.InstallOrganismMode()
             end
         end
 
+        -- Keep ordinary ZCity bleeding survivable enough for a physical roll
+        -- of bandage.  Arterial wounds do not use bleedingmul and still need a
+        -- tourniquet immediately.  Never raise a server's custom lower value.
+        local bleedCap = math.max(ConVarFloat(cvBleedingMul, 0.55), 0.01)
+        org.bleedingmul = math.min(tonumber(org.bleedingmul) or 1, bleedCap)
+
         -- EVERY lodged fragment (shotgun, blast or glass), not only a botched
         -- extraction, grows a tagged real wound and persistent ZCity pain.
         -- SyncShrapnel removes both as soon as the last piece is extracted.
         WSZC.TickLodgedShrapnel(owner, org, dt)
+        WSZC.TickBandagedShrapnel(owner, org, dt)
     end)
 
     -- The organism is authoritative (`organism_authoritative`).  The old
@@ -2515,7 +2862,9 @@ local function TryInstall()
     -- Keep re-asserting vanilla blood even if InstallOrganismMode() already
     -- succeeded: C:U may create its Config table after our first attempt.
     WSZC.DisableCUBloodReplacement()
-    if WSZC.InstallOrganismMode() and (not cvCUBlood:GetBool() or WSZC._CUBloodOriginal) then return end
+    local guardReady = WSZC.InstallShrapnelBandageGuard()
+    if WSZC.InstallOrganismMode() and guardReady
+        and (not cvCUBlood:GetBool() or WSZC._CUBloodOriginal) then return end
     retries = retries + 1
     if retries < 60 then timer.Simple(0.5, TryInstall) end
 end

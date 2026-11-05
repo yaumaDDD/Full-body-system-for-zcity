@@ -44,7 +44,7 @@
 | В мини-игре персонаж не ходит, не крутит камерой и виден курсор | включается вместе с `zc_woundsystem_compat_minigames 1` (без отдельного конвара) |
 | Шрапнель только от дробовика и взрыва, не от пистолетов | `zc_woundsystem_compat_shrapnel_only_shotgun_blast 1` |
 | Осколок ложится в раненую конечность (`org.dmgstack` / `HitBones`) | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
-| `reset organism` не поднимает персонажа, сохраняет down-структуру и полностью очищает раны/шрапнель/C:U residue | `zc_woundsystem_compat_preserve_reset_structure 1`; обычный ragdoll→standing шрапнель сохраняет |
+| `reset organism` не поднимает персонажа, сохраняет down-структуру и полностью очищает раны/шрапнель/инфекцию/повязки/жгуты/C:U residue | `zc_woundsystem_compat_preserve_reset_structure 1`; обычный ragdoll→standing сохраняет шрапнель и накопленную инфекцию |
 | Шрапнель сохраняется при падении/подъёме из ragdoll | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
 | Стекло в ragdoll (руки/ноги) даёт осколки | `zc_woundsystem_compat_glass_shrapnel 1` |
 | Ошибки в shrapnel-мини-игре → боль и нарастающее кровотечение | включается вместе с `zc_woundsystem_compat_shadow 1` |
@@ -79,7 +79,12 @@
 | После смерти не «залипают» мини-игры/курсор/лок движения | включается вместе с `zc_woundsystem_compat_minigames 1` |
 | Потеря сознания закрывает WSZC и нативные мини-игры, overlay, WoundView, cursor/view/input | серверный force-close `WSZC_MinigameForceClose`; проверяется владелец сессии, а не пациент медика |
 | Любой неизвлечённый fragment наращивает реальную боль и кровотечение | `zc_woundsystem_compat_shrapnel_lodged_effects 1`; последний extracted fragment удаляет tagged-рану/source/irritation |
-| Медицинский WoundView: vital signs, карточка лимба, читаемый фон | `zc_woundsystem_compat_woundview_polish 1`; чёрная doll-анатомия, shaped outlines, hover и hitboxes сохранены |
+| Дополнительные WoundView-карточки/polish удалены | Конвара `woundview_polish` больше нет; сохранены прежние откалиброванные позиции/размеры doll и hitboxes, чёрная анатомия, shaped outlines и hover |
+| Бинт можно наложить на шрапнель, но закрытый фрагмент заражает рану | `zc_woundsystem_compat_bandaged_shrapnel_infection 1`, скорость `zc_woundsystem_compat_shrapnel_infection_rate 0.1` (%/с до масштабирования по числу фрагментов); после 20 постепенно растут internal bleed, боль и потеря крови |
+| Цикл снятия шрапнели | Первый `REMOVE SHRAPNEL` снимает повязку без session/извлечения/расхода пинцета, второй запускает нативную мини-игру; снятие останавливает рост, последнее извлечение запускает затухание инфекции |
+| Физического бинта хватает, обычное кровотечение снижено | `zc_woundsystem_compat_bandage_strength 2`, `zc_woundsystem_compat_bleeding_multiplier 0.55`, tagged shrapnel-рана ограничена severity 8; артерия не ослаблена и требует жгута |
+| Физический жгут работает даже при отказе/ошибке C:U apply | `weapon_tourniquet → WB.SwepHeal → H.ApplyItemToBody`: сначала лечатся реальные ZCity-раны, затем native status best-effort; расход только по фактически обработанной ране, двойного mirror нет |
+| Дробовик определяется у настоящего ZCity PhysBullet | Проверяются attacker active weapon, known/family class, `Primary.Ammo`, ammo name и pellets; `inflictor=attacker`, `DMG_BULLET` и ammo `-1` больше не мешают. Пистолет и bare `DMG_BUCKSHOT` осколков не создают |
 | Если респавн не сработал | подождите 1 с после смерти и нажмите ЛКМ; откат визуала C:U — `zc_woundsystem_compat_disable_cu_fx 0` |
 
 Ассеты для куклы и руки берутся из архива `для переделывания интерфейса.zip`
@@ -152,6 +157,10 @@ zc_woundsystem_bridge 1                 сам мост ZCity
 zc_woundsystem_compat_authority 1       ply.organism авторитетен (0 = старый мост)
 zc_woundsystem_compat_shrapnel 1        единый state.shrapnel
 zc_woundsystem_compat_glass_shrapnel 1  стекло как источник шрапнели
+zc_woundsystem_compat_bandage_strength 2  усиление реального treatment budget бинта
+zc_woundsystem_compat_bleeding_multiplier 0.55  верхний cap обычного bleedingmul
+zc_woundsystem_compat_bandaged_shrapnel_infection 1  инфекция под повязкой
+zc_woundsystem_compat_shrapnel_infection_rate 0.1  базовые %/с инфекции
 zc_woundsystem_compat_inspect_button 1  кнопка «Проверить травмы» в радиал-меню
 zc_woundsystem_compat_debug 1           диагностика коннектора
 ```
