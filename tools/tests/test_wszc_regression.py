@@ -194,26 +194,28 @@ check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
 # Screenshot_1-10.png and emits POT sprites (C:U sizes limbs by mat:Width(),
 # which GMod rounds to a power of two).  A uniform scale of w/h can never work.
 check('S33 REFERENCE_BOXES = native Screenshot_2-10 pixel boxes, POT-calibrated',
-      "'head':      (682.5, 267.0, 70, 102)" in generator_s
-      and "'thorax':    (682.5, 385.5, 122, 131)" in generator_s
-      and "'abdomen':   (682.5, 521.5, 132, 141)" in generator_s
-      and "'arm_R':     (578.9, 355.0, 82, 46)" in generator_s
-      and "'arm_L':     (786.1, 355.0, 82, 46)" in generator_s
-      and "'forearm_R': (480.0, 355.0, 110, 33)" in generator_s
-      and "'forearm_L': (885.0, 355.0, 110, 33)" in generator_s
-      and "'hand_R':    (400.0, 355.0, 47, 40)" in generator_s
-      and "'hand_L':    (965.0, 355.0, 47, 40)" in generator_s
-      and "'thigh_R':   (652.5, 650.0, 60, 116)" in generator_s
-      and "'thigh_L':   (712.5, 650.0, 60, 116)" in generator_s
-      and "'crus_R':    (649.5, 759.0, 46, 102)" in generator_s
-      and "'crus_L':    (715.5, 759.0, 46, 102)" in generator_s
-      and "'foot_R':    (650.0, 837.5, 45, 55)" in generator_s
-      and "'foot_L':    (715.0, 837.5, 45, 55)" in generator_s
+      "'head':      (682.5, 268.0, 67, 102)" in generator_s
+      and "'thorax':    (681.5, 385.5, 124, 129)" in generator_s
+      and "'abdomen':   (681.5, 521.5, 129, 140)" in generator_s
+      and "'arm_R':     (576.9, 361.0, 86, 54)" in generator_s
+      and "'arm_L':     (788.1, 361.0, 86, 54)" in generator_s
+      and "'forearm_R': (479.0, 356.0, 110, 38)" in generator_s
+      and "'forearm_L': (886.0, 356.0, 110, 38)" in generator_s
+      and "'hand_R':    (399.0, 355.0, 47, 42)" in generator_s
+      and "'hand_L':    (966.0, 355.0, 47, 42)" in generator_s
+      and "'thigh_R':   (652.5, 650.0, 58, 114)" in generator_s
+      and "'thigh_L':   (712.5, 650.0, 58, 114)" in generator_s
+      and "'crus_R':    (650.5, 760.0, 48, 101)" in generator_s
+      and "'crus_L':    (714.5, 760.0, 48, 101)" in generator_s
+      and "'foot_R':    (648.0, 842.0, 38, 50)" in generator_s
+      and "'foot_L':    (717.0, 842.0, 38, 50)" in generator_s
       and 'Screenshot_2-10.png' in generator_s
       and 'Screenshot_1-10.png' in generator_s
       and 'Screenshot_6-2.png' in generator_s
       and 'Screenshot_8.png' in generator_s
+      and 'IoU 0.8497 -> 0.9090' in generator_s
       and '44 px thick' in generator_s
+      and 'tools/fit_unitmenu_geometry.py' in generator_s
       and 'EDGE_WIDTH = 9' in generator_s
       and 'EDGE_PAD_MIN = 6' in generator_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s
@@ -313,13 +315,24 @@ check('S48 arm silhouettes are NOT redrawn; only the forearm proportion changes'
       and 'def FlattenLimbBand(mask):' not in generator_s
       and 'def SquareToe(mask):' in generator_s
       and "limb_id.startswith('foot_')" in generator_s
-      and 'Change ONLY' in generator_s
-      and "'forearm_R': (480.0, 355.0, 110, 33)" in generator_s
-      and "'arm_R':     (578.9, 355.0, 82, 46)" in generator_s)
+      and 'ONLY these numbers change' in generator_s
+      and "'forearm_R': (479.0, 356.0, 110, 38)" in generator_s
+      and "'arm_R':     (576.9, 361.0, 86, 54)" in generator_s)
 check('S49 opioid dose reaches the ZCity organism (morphine / fentanyl)',
       'opiateAmount = tonumber(body.opiateAmount) or 0' in organism_s
       and 'add("analgesiaAdd", (after.opiateAmount - before.opiateAmount) * 0.006, 0, 4)' in organism_s
       and 'WSZC.BoneAnchor = BoneAnchor' in organism_s)
+fit_s = (ROOT / 'tools' / 'fit_unitmenu_geometry.py').read_text(encoding='utf-8')
+check('S50 geometry is measured against the native reference, not eyeballed',
+      'max(px[x, y]) < 20' in fit_s
+      and 'def iou(' in fit_s
+      and 'def optimize(' in fit_s
+      and 'def render(' in fit_s
+      and 'G.REFERENCE_BOXES' in fit_s
+      and 'Screenshot_2-10.png' in fit_s
+      and 'mirror-symmetric' in fit_s
+      and 'NOT ONE silhouette pixel is redrawn' in fit_s
+      and 'DOLL_RGB = (0, 0, 0)' in generator_s)
 check('S39 shrapnel survives ragdoll -> standing (authoritative organism)',
       '"wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation"' in organism_s
       and '_WSZCRagdollTransitionUntil' in organism_s

@@ -73,18 +73,24 @@ padded POT sprite there would make every hover rect far too big.
 `finalMiddle`); `*_edge.png` is deliberately NOT overridden so C:U keeps
 control of the outline colour and its hover animation.
 
-LIVE PROPORTION CORRECTION (Screenshot_6-2.png / Screenshot_7.png)
+PIXEL FIT (Screenshot_1-11.png rejection: "интерфейс не точный в плане
+расставления и размеров сделай также но с нашей стилистикой")
 ------------------------------------------------------------------
-Pixel-column profiling against Screenshot_2-10.png showed the doll was NOT
-mis-positioned: head (98 vs 100 px), thorax (129/133 vs 128/139 px), thighs
-(114 vs 112 px) and calves (99 vs 101 px) all matched within 1-3 px.  The
-mismatch was limb THICKNESS - all six arm sprites rendered 44 px tall
-(y 333..377) where the native doll is 33..36 px (y 337..373), i.e. the arms
-looked like thick rectangular bars instead of human limbs.  The six arm
-REFERENCE_BOXES heights went 50 -> 40; the centre is unchanged, so the top
-and bottom edges each move 4 px toward the middle.  POT height drops from
-256 to 128 for those sprites, but the opaque inner box stays centred, so
-C:U's `mat:Height() * scale` still places the visible silhouette correctly.
+tools/fit_unitmenu_geometry.py renders the 15 VERBATIM archive silhouettes
+into screen space with exactly the same linear placement C:U uses, and
+compares that black mask with the native doll in Screenshot_2-10.png
+(max(RGB) < 20 removes the woven background; the doll is 0..8).  A bounded
+coordinate descent over (tx, ty, w, h) - mirror-symmetric pairs, no shape
+editing - raised the intersection-over-union from 0.8497 to 0.9090.  The
+fitted numbers are what REFERENCE_BOXES below now holds.  Earlier live
+fixes are kept as history: Screenshot_6-2.png / Screenshot_7.png showed the
+six arm sprites were 44 px thick (y 333..377) where the native doll is
+33..36 px, and Screenshot_1-11.png rejected the seam-closing masks.  This
+fit supersedes those hand-tuned heights with measured numbers.  The remaining red
+pixels are the authored underarm notches, which "не меняй то как оно
+выглядит" forbids filling, plus the 5 px native ankle gap.  The styling is
+UNCHANGED: pure black fill + a thin outline along each limb's own contour,
+no rectangular frames, no seam-closing masks for arms.
 
 Usage: python3 tools/build_unitmenu_materials.py [path/to/ui.zip]
 Requires Pillow.
@@ -152,31 +158,25 @@ LIVE_CX, LIVE_CY = 682.5, 558.2
 # shave ~2 px off each side of an inner box before it reaches the screen.
 # Without it the head/legs simulate 6-10 px narrower than the native doll.
 REFERENCE_BOXES = {
-    'head':      (682.5, 267.0, 70, 102),
-    'thorax':    (682.5, 385.5, 122, 131),
-    'abdomen':   (682.5, 521.5, 132, 141),
-    # Screenshot_6-2.png / Screenshot_7.png live measurement: the arms were
-    # 44 px thick (y 333..377) while the native Screenshot_2-10.png doll is
-    # 33..36 px (y 337..373).  Head/torso/thighs/calves already matched in
-    # +/-1..3 px, so this is a PROPORTION fix, not a repositioning: shrinking
-    # the height about the same centre automatically moves the top edge down
-    # 4 px and the bottom edge up 4 px, exactly onto the native band.
-    # Screenshot_1-11.png: the forearm rendered ~35 px thick while
-    # the upper arm (with its authored underarm cut) read ~21-25 px, so the
-    # forearm looked out of proportion with the rest of the arm.  Change ONLY
-    # these two heights - never the silhouette - to bring both to ~27-30 px.
-    'arm_R':     (578.9, 355.0, 82, 46),
-    'arm_L':     (786.1, 355.0, 82, 46),
-    'forearm_R': (480.0, 355.0, 110, 33),
-    'forearm_L': (885.0, 355.0, 110, 33),
-    'hand_R':    (400.0, 355.0, 47, 40),
-    'hand_L':    (965.0, 355.0, 47, 40),
-    'thigh_R':   (652.5, 650.0, 60, 116),
-    'thigh_L':   (712.5, 650.0, 60, 116),
-    'crus_R':    (649.5, 759.0, 46, 102),
-    'crus_L':    (715.5, 759.0, 46, 102),
-    'foot_R':    (650.0, 837.5, 45, 55),
-    'foot_L':    (715.0, 837.5, 45, 55),
+    'head':      (682.5, 268.0, 67, 102),
+    'thorax':    (681.5, 385.5, 124, 129),
+    'abdomen':   (681.5, 521.5, 129, 140),
+    # Pixel fit against the native doll (see tools/fit_unitmenu_geometry.py):
+    # IoU 0.8497 -> 0.9090.  ONLY these numbers change; all 15 archive
+    # silhouettes stay VERBATIM, DOLL_RGB stays pure black and every outline
+    # still follows its limb's own contour.
+    'arm_R':     (576.9, 361.0, 86, 54),
+    'arm_L':     (788.1, 361.0, 86, 54),
+    'forearm_R': (479.0, 356.0, 110, 38),
+    'forearm_L': (886.0, 356.0, 110, 38),
+    'hand_R':    (399.0, 355.0, 47, 42),
+    'hand_L':    (966.0, 355.0, 47, 42),
+    'thigh_R':   (652.5, 650.0, 58, 114),
+    'thigh_L':   (712.5, 650.0, 58, 114),
+    'crus_R':    (650.5, 760.0, 48, 101),
+    'crus_L':    (714.5, 760.0, 48, 101),
+    'foot_R':    (648.0, 842.0, 38, 50),
+    'foot_L':    (717.0, 842.0, 38, 50),
 }
 
 
