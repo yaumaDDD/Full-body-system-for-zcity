@@ -921,7 +921,12 @@ local function BuildUnitmenuMaterials()
             local fill = Material("wszc/unitmenu/limbs/" .. id .. "_fill.png", "smooth noclamp")
             local edge = Material("wszc/unitmenu/limbs/" .. id .. "_edge.png", "smooth noclamp")
             if fill:IsError() or edge:IsError() then return nil end
-            built[id] = { fill = fill, edge = edge, cx = g.cx, cy = g.cy, w = g.w, h = g.h }
+            -- hoverW/hoverH are the VISIBLE inner silhouette boxes.  The png
+            -- itself is power-of-two sized (C:U sizes by mat:Width()), so the
+            -- padded sprite must NOT be used as the hover hit rectangle.
+            built[id] = { fill = fill, edge = edge, cx = g.cx, cy = g.cy,
+                          w = g.w, h = g.h,
+                          hoverW = g.hoverW or g.w, hoverH = g.hoverH or g.h }
             count = count + 1
         end
     end
@@ -1129,8 +1134,8 @@ local function ApplyDoll(limbs, mats, k)
             limb.ox = (g.cx - 750) * k
             limb.oy = (g.cy - 750) * k
             limb.size = k
-            limb.sourceW = g.w
-            limb.sourceH = g.h
+            limb.sourceW = g.hoverW or g.w
+            limb.sourceH = g.hoverH or g.h
             limb.texturePadding = 0
             -- The archive layers are already mirrored; C:U's flip would mirror
             -- them a second time.

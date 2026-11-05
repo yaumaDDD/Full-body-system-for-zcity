@@ -101,9 +101,13 @@ check('S12 hemogen blood is explicitly untouched',
           p.read_text(encoding='utf-8') for p in CONN.rglob('*.lua')))
 check('S13 generator: standard black, anatomy kept, per-limb shaped outline, NO frames',
       'HUMAN_LAYOUT' in generator_s
+      and 'REFERENCE_BOXES' in generator_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s
       and 'ALPHA_THRESHOLD = 96' in generator_s
-      and 'EDGE_PAD = 6' in generator_s
+      and 'EDGE_PAD_MIN = 6' in generator_s
+      and 'LIVE_S = 0.4155' in generator_s
+      and 'LIVE_CX, LIVE_CY = 682.5, 558.2' in generator_s
+      and 'assert w == next_pot(w) and h == next_pot(h)' in generator_s
       and 'ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(EDGE_WIDTH)))' in generator_s
       and 'outer_band' not in generator_s
       and 'union = ImageChops.lighter(union, layer)' not in generator_s
@@ -173,26 +177,34 @@ check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
       and 'WSZC.ClearCULimbsCache' in layout_s
       and 'hook.Add("PreDrawHUD", "WSZC_UnitmenuDollRetry"' in layout_s
       and 'HUDPaintBackground' in layout_s)
-check('S33 HUMAN_LAYOUT follows Screenshot_2-10 native seams and symmetric pairs',
-      "'head':      (750, 121, 145, 235)" in generator_s
-      and "'thorax':    (750, 390, 288, 304)" in generator_s
-      and "'abdomen':   (750, 704, 271, 324)" in generator_s
-      and "'arm_R':     (507, 320, 197, 120)" in generator_s
-      and "'arm_L':     (993, 320, 197, 120)" in generator_s
-      and "'forearm_R': (288, 320, 243, 120)" in generator_s
-      and "'forearm_L': (1212, 320, 243, 120)" in generator_s
-      and "'hand_R':    (106, 320, 123, 120)" in generator_s
-      and "'hand_L':    (1394, 320, 123, 120)" in generator_s
-      and "'thigh_R':   (681, 1001, 132, 269)" in generator_s
-      and "'thigh_L':   (819, 1001, 132, 269)" in generator_s
-      and "'crus_R':    (676, 1254, 97, 237)" in generator_s
-      and "'crus_L':    (824, 1254, 97, 237)" in generator_s
-      and "'foot_R':    (664, 1435, 92, 126)" in generator_s
-      and "'foot_L':    (836, 1435, 92, 126)" in generator_s
+# Screenshot_2-10.png native boxes are now the SOURCE of truth: the generator
+# inverts C:U's linear placement with the live calibration measured from
+# Screenshot_1-10.png and emits POT sprites (C:U sizes limbs by mat:Width(),
+# which GMod rounds to a power of two).  A uniform scale of w/h can never work.
+check('S33 REFERENCE_BOXES = native Screenshot_2-10 pixel boxes, POT-calibrated',
+      "'head':      (682.5, 267.0, 70, 102)" in generator_s
+      and "'thorax':    (682.5, 385.5, 122, 131)" in generator_s
+      and "'abdomen':   (682.5, 521.5, 132, 141)" in generator_s
+      and "'arm_R':     (578.9, 355.0, 82, 50)" in generator_s
+      and "'arm_L':     (786.1, 355.0, 82, 50)" in generator_s
+      and "'forearm_R': (480.0, 355.0, 102, 50)" in generator_s
+      and "'forearm_L': (885.0, 355.0, 102, 50)" in generator_s
+      and "'hand_R':    (400.0, 355.0, 47, 50)" in generator_s
+      and "'hand_L':    (965.0, 355.0, 47, 50)" in generator_s
+      and "'thigh_R':   (652.5, 650.0, 60, 116)" in generator_s
+      and "'thigh_L':   (712.5, 650.0, 60, 116)" in generator_s
+      and "'crus_R':    (649.5, 759.0, 46, 102)" in generator_s
+      and "'crus_L':    (715.5, 759.0, 46, 102)" in generator_s
+      and "'foot_R':    (650.0, 837.5, 45, 55)" in generator_s
+      and "'foot_L':    (715.0, 837.5, 45, 55)" in generator_s
       and 'Screenshot_2-10.png' in generator_s
+      and 'Screenshot_1-10.png' in generator_s
       and 'EDGE_WIDTH = 9' in generator_s
+      and 'EDGE_PAD_MIN = 6' in generator_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s
-      and 'EDGE_PAD = 6' in generator_s)
+      and 'hoverW = %d, hoverH = %d' in generator_s
+      and 'limb.sourceW = g.hoverW or g.w' in layout_s
+      and 'limb.sourceH = g.hoverH or g.h' in layout_s)
 check('S42 shrapnel appears ONLY on the four red-circled limbs (both hands + both feet)',
       'local SHRAPNEL_LIMBS = {' in organism_s
       and 'hand_R = true, hand_L = true,' in organism_s
@@ -331,7 +343,7 @@ try:
     check('S37 generator emits standard black + shape-following per-limb contours',
           edge_boxes == 15
           and 'DOLL_RGB = (0, 0, 0)' in generator_s
-          and 'EDGE_PAD = 6' in generator_s
+          and 'EDGE_PAD_MIN = 6' in generator_s
           and 'EDGE_WIDTH = 9' in generator_s
           and 'ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(EDGE_WIDTH)))' in generator_s
           and 'outer_band' not in generator_s
@@ -365,13 +377,25 @@ try:
           and leg_h <= 0.80 * torso_h
           and g['thorax'][2] > g['head'][2]
           and g['thigh_R'][2] < g['thorax'][2]
-          and g['abdomen'][3] > g['thorax'][3]
+          and g['abdomen'][3] >= g['thorax'][3]
           and g['forearm_R'][2] > g['arm_R'][2]
           and g['hand_R'][2] < g['forearm_R'][2]
-          and g['foot_R'][2] < g['crus_R'][2]
+          and g['foot_R'][2] <= g['crus_R'][2]
           and abs(g['arm_R'][0] + g['arm_L'][0] - 1500) < 1
           and abs(g['thigh_R'][0] + g['thigh_L'][0] - 1500) < 1
-          and abs(g['foot_R'][1] - g['foot_L'][1]) < 1)
+          and abs(g['foot_R'][1] - g['foot_L'][1]) < 1
+          # C:U reads mat:Width()/Height(); GMod rounds PNG textures to a
+          # power of two, so EVERY emitted sprite must already be POT-sized.
+          and all(int(v[2]) > 0 and int(v[2]) & (int(v[2]) - 1) == 0
+                  and int(v[3]) > 0 and int(v[3]) & (int(v[3]) - 1) == 0
+                  for v in g.values()))
+    hover = {m[0]: (m[1], m[2]) for m in re.findall(
+        r'(\w+)\s*=\s*\{[^\n]*?hoverW\s*=\s*(\d+),\s*hoverH\s*=\s*(\d+)',
+        geom_text)}
+    check('S44 hover boxes are the visible silhouettes, not the padded POT sprites',
+          len(hover) == 15
+          and all(int(hover[k][0]) <= int(g[k][2]) and int(hover[k][1]) <= int(g[k][3])
+                  for k in hover))
     mats = [p for p in (CONN / 'materials').rglob('*') if p.is_file()]
     check('S21 connector ships 647 UI materials', len(mats) == 647)
     checksums = (CONN / 'MATERIALS.sha256').read_text(encoding='utf-8').splitlines()

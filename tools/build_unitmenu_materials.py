@@ -24,12 +24,49 @@ Visual contract (owner's live correction after 6e2196f, confirmed by choice):
   * the outline is a THIN line that follows the SHAPE OF EACH LIMB, like
     C:U's own `casunknown-images/outlines/<part>outline.png` sprites.  It is
     derived from each limb's alpha contour, never from the rectangular sprite
-    bounds, and a 4 px inset keeps it off all four sprite edges - so no white
-    box/frame can appear ("constructor" / Lego robot);
+    bounds, and a per-limb inset keeps it off all four sprite edges - so no
+    white box/frame can appear ("constructor" / Lego robot);
   * the outline sprite is non-empty, so C:U's `finalOutline` + `HoverAnims`
     keep darkening it on hover (reaction preserved);
   * no single union outer band and no explicit rectangular seam lines: those
     were the previous build's rejected look.
+
+WHY THE PREVIOUS SIZES WERE WRONG (live Screenshot_1-10.png rejection)
+-----------------------------------------------------------------------
+C:U's DrawSprite does NOT use the numbers from our geometry table to size a
+limb.  It calls `mat:Width() * scaleMult` (and `mat:Height() * scaleMult`).
+Garry's Mod uploads a PNG into the nearest power-of-two texture, so a
+145x235 PNG reports Width=256 and Height=256; a 288x304 PNG reports 512x512.
+The visible limb therefore scales with POT(w), NOT with w.  That is exactly
+why the live doll had a 196 px torso while 288 * 0.4155 predicted 120 px,
+and why a uniform 1.15x resize of every (cx,cy,w,h) could never match the
+native Screenshot_2-10.png owner reference ("бля ну одинаково делай по
+размерам как на том скриншоте").  A global scale leaves every limb in the
+same POT bucket, so nothing changes.
+
+THE FIX
+-------
+Every sprite is now emitted with an EXPLICIT power-of-two width/height, so
+`mat:Width()` == `w` and `mat:Height()` == `h` under any rounding rule.  The
+opaque silhouette is placed in a centred inner box whose size is exactly
+`target_px / S`, where S is the live px-per-canvas-unit measured from BOTH
+screenshots at the same resolution:
+
+    S          = 0.4155     (live Screenshot_1-10.png; verified by head top
+                             248, head seam 346, arm span 391..975, foot
+                             bottom 869 - all four land within 2 px)
+    centre     = (682.5, 558.2)   = (ScrW()/2, ScrH()/2 + 20*scale)
+
+Target boxes come from the native C:U doll in Screenshot_2-10.png:
+    218 / 320 / 451 / 592 / 708 / 810 / 865   (647 px tall)
+    head 650..712, thorax 621..742, arms 303..980, legs 592..865.
+For every limb: cx = 750 + (target_cx - 682.5)/S, cy likewise, and
+inner = target/S.  C:U stays strictly LINEAR - only sprite dimensions and
+positions change; no convar, no runtime scaling, no non-linear "calibration".
+
+`hoverW`/`hoverH` in the Lua table carry the VISIBLE inner box, because
+ApplyDoll feeds `limb.sourceW/sourceH` into C:U's hover hit test; using the
+padded POT sprite there would make every hover rect far too big.
 
 `cl_zcity_woundsystem_compat_layout.lua` forces a white draw colour for the
 `*_fill.png` sprites ONLY (C:U otherwise multiplies them by a black
@@ -53,7 +90,12 @@ GEOMETRY_LUA = (ROOT / 'woundsystem_zcity_compat' / 'lua' / 'autorun' /
 ARCHIVE_REL = 'для переделывания интерфейса.zip'
 PREFIX = 'human_hands_for_z_city_casualties_medical_system_heavy_wip/materials/'
 
-CANVAS = 1500
+# The diagnostic compositing canvas.  C:U positions limbs linearly about
+# canvas centre 750; the calibrated reference reaches -202..1550, so the
+# scratch canvas is padded.  The Lua table ALWAYS stores unpadded cx/cy.
+CANVAS_PAD = 320
+CANVAS = 1500 + 2 * CANVAS_PAD
+CENTRE = 750.0
 
 # C:U limb id -> source layer.  *_R is drawn on the LEFT of the screen, so it
 # maps to the archive's l_* half; *_L maps to r_*.
@@ -73,53 +115,72 @@ STATUS = ('bleeding', 'dislocation', 'fracture')
 DOLL_RGB = (0, 0, 0)         # standard black, exactly the archive layers' RGB
 ALPHA_THRESHOLD = 96          # r_foot.png has a transparent left half
 JOINT_ERODE = 5               # 2 px inset for the fill, leaving a hairline seam
-EDGE_PAD = 6                  # inset the shape inside its cell so the contour
-                              # can never touch the rectangular sprite border
+EDGE_PAD_MIN = 6              # minimum inset of the shape inside its POT sprite
 EDGE_WIDTH = 9                # MinFilter size -> ~4 px contour along the shape.
                               # Owner asked for the body outline to be a little
-                              # thicker; 5 was a hairline (~0.9 px on screen at
-                              # the live 0.43 scale), 9 reads as ~1.7 px.
-                              # EDGE_PAD=6 still keeps it off every sprite border.
+                              # thicker; 5 was a hairline, 9 reads as ~1.7 px.
+ERODE_MARGIN = 4              # MinFilter(JOINT_ERODE) eats 2 px per side
 
-# Limb sizes in the canonical 1500x1500 canvas.  C:U draws
-#   screen = centerY + (canvas - 750) * dollScale * limb.size,
-# a strictly LINEAR map, so sizes/positions are the ONLY thing to edit here.
-#
-# Screenshot_2-10.png is the native C:U UNIT-HEALTH V2.04 doll the owner asked
-# to reproduce ("вот так сделай").  Measured silhouette seams:
-#   218 / 320 / 451 / 592 / 708 / 810 / 865   (647 px tall, 612 px arm span)
-# while our own live Screenshot_1-9.png doll was only 277..833 (556 px tall,
-# 503 px arm span).  The native doll is 1.15x LARGER, so the reference seams
-# are mapped into our canvas with a uniform 1.15 scale about centre 750:
-#   canvas seams 4 / 239 / 542 / 866 / 1136 / 1373 / 1498
-#   segment h    235 / 304 / 324 / 269 / 237 / 126
-# Projected back at the live 0.4285 px per canvas px this gives
-# 234 / 335 / 465 / 604 / 719 / 821 / 875 - within ~15 px (2%) of the target,
-# with the whole doll still inside 0..1500 and no convar/runtime change.
-# Horizontal geometry, T-pose, symmetric pairs (cx_R + cx_L == 1500) and whole
-# feet are preserved, just scaled with the rest of the body.
-# The white lines on Screenshot_1-9.png are SHAPE CONTOURS, not cell borders,
-# so no non-linear "calibration" is applied - that would distort the anatomy.
-# ONLY sizes and positions change; colour, outline, hover, minigames and
-# every runtime system stay untouched.
-#   limb id: (cx, cy, w, h)
-HUMAN_LAYOUT = {
-    'head':      (750, 121, 145, 235),
-    'thorax':    (750, 390, 288, 304),
-    'abdomen':   (750, 704, 271, 324),
-    'arm_R':     (507, 320, 197, 120),
-    'forearm_R': (288, 320, 243, 120),
-    'hand_R':    (106, 320, 123, 120),
-    'arm_L':     (993, 320, 197, 120),
-    'forearm_L': (1212, 320, 243, 120),
-    'hand_L':    (1394, 320, 123, 120),
-    'thigh_R':   (681, 1001, 132, 269),
-    'thigh_L':   (819, 1001, 132, 269),
-    'crus_R':    (676, 1254, 97, 237),
-    'crus_L':    (824, 1254, 97, 237),
-    'foot_R':    (664, 1435, 92, 126),
-    'foot_L':    (836, 1435, 92, 126),
+# Live calibration constants (see module docstring).
+LIVE_S = 0.4155
+LIVE_CX, LIVE_CY = 682.5, 558.2
+
+# Native Screenshot_2-10.png boxes: (target_cx, target_cy, width, height).
+# Symmetric pairs are pre-mirrored about 682.5 so cx_R + cx_L == 1500 exactly.
+# Widths include a small compensation: MinFilter(JOINT_ERODE) and LANCZOS
+# shave ~2 px off each side of an inner box before it reaches the screen.
+# Without it the head/legs simulate 6-10 px narrower than the native doll.
+REFERENCE_BOXES = {
+    'head':      (682.5, 267.0, 70, 102),
+    'thorax':    (682.5, 385.5, 122, 131),
+    'abdomen':   (682.5, 521.5, 132, 141),
+    'arm_R':     (578.9, 355.0, 82, 50),
+    'arm_L':     (786.1, 355.0, 82, 50),
+    'forearm_R': (480.0, 355.0, 102, 50),
+    'forearm_L': (885.0, 355.0, 102, 50),
+    'hand_R':    (400.0, 355.0, 47, 50),
+    'hand_L':    (965.0, 355.0, 47, 50),
+    'thigh_R':   (652.5, 650.0, 60, 116),
+    'thigh_L':   (712.5, 650.0, 60, 116),
+    'crus_R':    (649.5, 759.0, 46, 102),
+    'crus_L':    (715.5, 759.0, 46, 102),
+    'foot_R':    (650.0, 837.5, 45, 55),
+    'foot_L':    (715.0, 837.5, 45, 55),
 }
+
+
+def next_pot(v):
+    p = 16
+    while p < v:
+        p *= 2
+    return p
+
+
+def build_layout():
+    """Exact inverse of C:U's linear placement for the reference screenshot."""
+    layout = {}
+    for limb_id, (tx, ty, tw, th) in REFERENCE_BOXES.items():
+        cx = CENTRE + (tx - LIVE_CX) / LIVE_S
+        cy = CENTRE + (ty - LIVE_CY) / LIVE_S
+        inner_w = int(round(tw / LIVE_S))
+        inner_h = int(round(th / LIVE_S))
+        w = next_pot(inner_w + 2 * EDGE_PAD_MIN + ERODE_MARGIN)
+        h = next_pot(inner_h + 2 * EDGE_PAD_MIN + ERODE_MARGIN)
+        px = (w - inner_w) // 2
+        py = (h - inner_h) // 2
+        assert px >= EDGE_PAD_MIN and py >= EDGE_PAD_MIN, limb_id
+        # Round to 0.1 exactly like the emitted Lua, then RE-ASSERT symmetry
+        # in the same representation that C:U will read.
+        layout[limb_id] = (round(cx, 1), round(cy, 1), w, h, px, py,
+                           inner_w, inner_h)
+    for a, b in (('arm_R', 'arm_L'), ('forearm_R', 'forearm_L'),
+                 ('hand_R', 'hand_L'), ('thigh_R', 'thigh_L'),
+                 ('crus_R', 'crus_L'), ('foot_R', 'foot_L')):
+        assert layout[a][0] + layout[b][0] == 1500.0, (a, b)
+    return layout
+
+
+HUMAN_LAYOUT = build_layout()
 
 
 def load_archive(arg=None):
@@ -132,10 +193,10 @@ def load_archive(arg=None):
 
 
 def cell(limb_id):
-    """(left, top, right, bottom) of the limb's sprite in the 1500 canvas."""
-    cx, cy, w, h = HUMAN_LAYOUT[limb_id]
-    return (round(cx - w / 2), round(cy - h / 2),
-            round(cx - w / 2) + w, round(cy - h / 2) + h)
+    """(left, top, right, bottom) inside the padded diagnostic canvas."""
+    cx, cy, w, h = HUMAN_LAYOUT[limb_id][:4]
+    left, top = round(cx - w / 2) + CANVAS_PAD, round(cy - h / 2) + CANVAS_PAD
+    return (left, top, left + w, top + h)
 
 
 def main():
@@ -147,16 +208,15 @@ def main():
     (OUT / 'status').mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 1. Place every archive silhouette into its human-proportioned cell.
-    #    The shape is inset by EDGE_PAD on all four sides.  That single change
-    #    is what makes the outline follow the LIMB SHAPE instead of becoming a
-    #    rectangular frame: a contour derived from `hard` can never touch the
-    #    sprite border (the earlier be9c0b5 build resized the shape to fill
-    #    the entire cell, so MaxFilter produced a white line on all 4 sides).
+    # 1. Place every archive silhouette into its POT sprite's inner box.
+    #    The inner box is exactly target_px / LIVE_S wide/tall, so once GMod
+    #    reports mat:Width() == w the limb lands on the native pixel box.
+    #    A per-limb inset keeps the contour off the rectangular sprite edge.
     # ------------------------------------------------------------------
     soft, hard = {}, {}
     for limb_id, layer in LIMB_LAYERS.items():
-        cx, cy, w, h = HUMAN_LAYOUT[limb_id]
+        cx, cy, w, h, px, py, inner_w, inner_h = HUMAN_LAYOUT[limb_id]
+        assert w == next_pot(w) and h == next_pot(h), limb_id
         src = Image.open(
             io.BytesIO(z.read(PREFIX + 'zcity_delta/unitmenu/limbs/' + layer + '.png'))
         ).convert('RGBA')
@@ -166,11 +226,10 @@ def main():
         # by the raw alpha bbox would squash the foot into a thin sliver.
         bbox = alpha.point(lambda p: 255 if p > ALPHA_THRESHOLD else 0).getbbox()
         assert bbox, limb_id
-        inner_w, inner_h = w - 2 * EDGE_PAD, h - 2 * EDGE_PAD
         assert inner_w > 8 and inner_h > 8, limb_id
         scaled = alpha.crop(bbox).resize((inner_w, inner_h), Image.Resampling.LANCZOS)
         cell_soft = Image.new('L', (w, h), 0)
-        cell_soft.paste(scaled, (EDGE_PAD, EDGE_PAD))
+        cell_soft.paste(scaled, (px, py))
         soft[limb_id] = cell_soft
         hard[limb_id] = cell_soft.point(lambda p: 255 if p > ALPHA_THRESHOLD else 0)
 
@@ -178,14 +237,13 @@ def main():
     # 2. One THIN outline per limb, following that limb's own silhouette.
     #    `mask - erode(mask)` is the inner boundary of the shape: it curves
     #    with the head / arm / foot exactly like C:U's own outlines/*.png.
-    #    No union band, no explicit seam rectangles, no per-sprite ring: the
-    #    previous build's single outer contour and 4-sided seams were both
-    #    rejected live.  EDGE_PAD keeps every contour pixel off the sprite's
-    #    rectangular border, so a closed white frame is impossible.
+    #    No union band, no explicit seam rectangles, no per-sprite ring.
     # ------------------------------------------------------------------
     edge_lines = Image.new('L', (CANVAS, CANVAS), 0)
+    contours = {}
     for limb_id, mask in hard.items():
         contour = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(EDGE_WIDTH)))
+        contours[limb_id] = contour
         layer = Image.new('L', (CANVAS, CANVAS), 0)
         layer.paste(contour, cell(limb_id)[:2])
         edge_lines = ImageChops.lighter(edge_lines, layer)
@@ -202,7 +260,11 @@ def main():
         fill.putalpha(soft_inner)
         fill.save(OUT / 'limbs' / (limb_id + '_fill.png'), optimize=True)
 
-        edge_alpha = edge_lines.crop((left, top, right, bottom))
+        # POT cells overlap in the padded canvas, so cropping the shared
+        # outline canvas would leak a neighbour's contour onto this sprite's
+        # rectangular border.  Use THIS limb's own contour instead.
+        edge_alpha = contours[limb_id]
+        assert edge_alpha.size == (w, h), limb_id
         edge = Image.new('RGBA', (w, h), (255, 255, 255, 0))
         edge.putalpha(edge_alpha)
         edge.save(OUT / 'limbs' / (limb_id + '_edge.png'), optimize=True)
@@ -215,14 +277,18 @@ def main():
 
     lines = ['-- Generated by tools/build_unitmenu_materials.py. Do not edit by hand.',
              '-- Standard black fill + per-limb shaped outline (no rectangular frames).',
-             '-- Vertical seams follow the native C:U doll in Screenshot_2-10.png,',
-             '-- linearly normalised onto the 101..1401 span; horizontal geometry is',
-             '-- unchanged.  cx/cy are in the 1500x1500 canvas.',
+             '-- POT sprite sizes: C:U sizes limbs by mat:Width()/Height(), which GMod',
+             '-- rounds to a power of two.  Inner silhouette boxes are calibrated',
+             '-- pixel-for-pixel against native Screenshot_2-10.png using the live',
+             '-- S=0.4155 / centre=(682.5,558.2) from Screenshot_1-10.png.',
+             '-- cx/cy are in the 1500x1500 canvas; hoverW/hoverH are the VISIBLE',
+             '-- inner boxes (used for C:U sourceW/sourceH hit tests).',
              'WSZC_UNITMENU_LIMB_GEOMETRY = {']
     for limb_id in LIMB_LAYERS:
-        cx, cy, w, h = HUMAN_LAYOUT[limb_id]
-        lines.append('    %s = { cx = %.1f, cy = %.1f, w = %d, h = %d },' %
-                     (limb_id, cx, cy, w, h))
+        cx, cy, w, h, px, py, inner_w, inner_h = HUMAN_LAYOUT[limb_id]
+        lines.append('    %s = { cx = %.1f, cy = %.1f, w = %d, h = %d, '
+                     'hoverW = %d, hoverH = %d },' %
+                     (limb_id, cx, cy, w, h, inner_w, inner_h))
     lines += ['}', '']
     GEOMETRY_LUA.write_text('\n'.join(lines), encoding='utf-8')
 
@@ -255,12 +321,12 @@ def main():
             empty_edges.append(limb_id)
     print('generated', len(LIMB_LAYERS) * 2,
           'limb materials (standard black fill + per-limb shaped outline),',
-          len(STATUS), 'status icons + human-proportioned geometry table')
+          len(STATUS), 'status icons + POT-calibrated geometry table')
     print('max white border coverage: %.1f%% (must be 0%%)' % (worst * 100))
     assert worst == 0.0, 'a limb outline touches its rectangular sprite border'
     assert not empty_edges, 'empty outline sprites: ' + ', '.join(empty_edges)
     for limb_id in ('head', 'thorax', 'hand_R', 'foot_L'):
-        print('  ', limb_id, HUMAN_LAYOUT[limb_id])
+        print('  ', limb_id, HUMAN_LAYOUT[limb_id][:4])
 
 
 if __name__ == '__main__':
