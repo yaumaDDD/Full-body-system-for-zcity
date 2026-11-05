@@ -1,0 +1,41 @@
+screenspace_general
+{
+    "$pixshader" "woundsystem_aberration_ps20b"
+
+    "$basetexture" "_rt_FullFrameFB"
+    "$texture1" "casunknown-images/screen/aberrationtex"
+
+    "$ignorez" "1"
+    "$vertexcolor" "1"
+    "$vertextransform" "1"
+    "$fix_fb" "32768"
+
+    "<dx90"
+    {
+        "$no_draw" "1"
+    }
+
+    "$copyalpha" "1"
+    "$alpha_blend_color_overlay" "0"
+    "$alpha_blend" "1"
+    "$linearwrite" "1"
+    "$linearread_basetexture" "1"
+    "$linearread_texture1" "1"
+
+    "$c0_x" "0"
+    "$c0_y" "0"
+    "$c0_z" "0"
+    "$c0_w" "0"
+    "$c1_x" "0"
+    "$c1_y" "1"
+    "$c1_z" "1"
+
+    "Proxies"
+    {
+        "Equals"
+        {
+            "srcVar1" "$fix_fb"
+            "resultVar" "$flags2"
+        }
+    }
+}

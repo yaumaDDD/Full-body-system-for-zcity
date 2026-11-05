@@ -1,0 +1,18 @@
+"UnlitGeneric"
+{
+    "$basetexture" "casunknown-images/screen/painimage"
+    "$alphatest" "1"
+    "$alphatestreference" "0.5" // The magic threshold value
+    "$nocull" "1"
+    "$translucent" "1"
+
+    "Proxies"
+    {
+        // This allows your Lua code to push a value to the shader
+        "Equals"
+        {
+            "srcVar1" "$color2"           // We hijack $color2 as our transport
+            "resultVar" "$alphatestreference"
+        }
+    }
+}

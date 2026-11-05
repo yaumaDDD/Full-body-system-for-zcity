@@ -1,0 +1,155 @@
+-- ZCity <-> Casualties: Unknown: injury-inspection button (client part)
+--
+-- ZCity already ships an "Examine Body" option in its radial selector
+-- (lua/homigrad/woundbridge/cl_woundbridge.lua).  This file makes that option
+-- open the native C:U health/wound panel, gives it the requested Russian
+-- label, and adds the option itself when the stock ZCity hook is missing.
+-- No original ZIP addon is edited and no second HUD/menu is drawn: the button
+-- only calls WoundSystem.OpenHealthHUD() from Casualties: Unknown.
+
+if not CLIENT then return end
+
+WSZC = WSZC or {}
+
+if WSZC._InspectClientLoaded then return end
+WSZC._InspectClientLoaded = true
+
+local BUTTON_LABEL = "Проверить травмы"
+local OPEN_DELAY = 0.12 -- let the radial menu fade out before C:U grabs the mouse
+
+local cvButton
+if CreateClientConVar then
+    cvButton = CreateClientConVar(
+        "zc_woundsystem_compat_inspect_button", "1", true, false,
+        "Show the injury-inspection button in the ZCity radial menu (opens the C:U health panel)"
+    )
+end
+if not cvButton and GetConVar then
+    cvButton = GetConVar("zc_woundsystem_compat_inspect_button")
+end
+
+local function ConVarAllows(name)
+    if not GetConVar then return true end
+    local cv = GetConVar(name)
+    if not (cv and cv.GetBool) then return true end
+    return cv:GetBool() ~= false
+end
+
+local function CompatInspectEnabled()
+    if cvButton and cvButton.GetBool and not cvButton:GetBool() then return false end
+    if not ConVarAllows("zc_woundsystem_bridge") then return false end
+    if not ConVarAllows("woundsys_enabled") then return false end
+    if GetGlobalBool and GetGlobalBool("WSZC_Ready", false) ~= true then return false end
+    if not (WoundSystem and WoundSystem.Health) then return false end
+    if not (WoundSystem.OpenHealthHUD or WoundSystem.ToggleHealthHUD) then return false end
+
+    -- Do NOT gate this on WB.IsEnabled(): in organism-authority mode the client
+    -- deliberately reports the bridge as off so ZCity keeps its stock HUD, yet
+    -- the C:U panel is still the requested injury-inspection surface.  The
+    -- networked WSZC_Ready flag above is the authoritative readiness check.
+    local WB = hg and hg.WoundBridge
+    if not WB then return false end
+    return true
+end
+
+local function OpenCUHealthPanel()
+    -- Open (not toggle): pressing the radial button must never close an already
+    -- open C:U panel.  ToggleHealthHUD / woundsys_open_panel are fallbacks for
+    -- a future C:U build that only exposes the older entry points.
+    if WoundSystem.OpenHealthHUD then
+        WoundSystem.OpenHealthHUD()
+    elseif WoundSystem.ToggleHealthHUD then
+        WoundSystem.ToggleHealthHUD()
+    else
+        RunConsoleCommand("woundsys_open_panel")
+    end
+end
+
+function WSZC.OpenCUWoundMenu()
+    local ply = LocalPlayer()
+    if not IsValid(ply) or not ply:Alive() then return end
+
+    timer.Simple(OPEN_DELAY, function()
+        if not IsValid(ply) or not ply:Alive() then return end
+        if not (WoundSystem and WoundSystem.Health) then return end
+        OpenCUHealthPanel()
+    end)
+end
+
+-- Any other code that calls WB.OpenWoundView() should use the same C:U entry point.
+local function EnsureBridgeWrapper()
+    local WB = hg and hg.WoundBridge
+    if not WB then return end
+    if WB.OpenWoundView == WSZC.OpenCUWoundMenu then return end
+
+    WSZC.OriginalOpenWoundView = WSZC.OriginalOpenWoundView or WB.OpenWoundView
+    WB.OpenWoundView = WSZC.OpenCUWoundMenu
+end
+
+local function IsInspectOption(option)
+    return type(option) == "table"
+        and (option._WSZCInspect or option[2] == "Examine Body" or option[2] == BUTTON_LABEL)
+end
+
+local function RemoveInspectOption()
+    hg = hg or {}
+    if type(hg.radialOptions) ~= "table" then return end
+
+    local options = hg.radialOptions
+    for i = #options, 1, -1 do
+        if IsInspectOption(options[i]) then table.remove(options, i) end
+    end
+end
+
+local function RepointOrAddOption()
+    hg = hg or {}
+    hg.radialOptions = hg.radialOptions or {}
+
+    local options = hg.radialOptions
+    local kept = false
+    for i = #options, 1, -1 do
+        local option = options[i]
+        if IsInspectOption(option) then
+            if kept then
+                table.remove(options, i) -- never show two inspection buttons
+            else
+                kept = true
+                option._WSZCInspect = true
+                option[1] = function() WSZC.OpenCUWoundMenu() end
+                option[2] = BUTTON_LABEL
+            end
+        end
+    end
+    if kept then return end
+
+    local option = { function() WSZC.OpenCUWoundMenu() end, BUTTON_LABEL }
+    option._WSZCInspect = true
+    options[#options + 1] = option
+end
+
+-- ZCity's cl_hud.lua runs radialOptions hooks with SortedPairs().  This id sorts
+-- *after* "ZCity_WoundBridge_Inspect", so the stock "Examine Body" entry is
+-- relabelled/repointed instead of producing a duplicate button.
+hook.Add("radialOptions", "ZCity_WoundBridge_Inspect_WSZC", function()
+    EnsureBridgeWrapper()
+
+    if not CompatInspectEnabled() then
+        -- The stock ZCity hook may still have added "Examine Body"; hide it too
+        -- when the compatibility button is disabled/unavailable.
+        RemoveInspectOption()
+        return
+    end
+
+    local ply = LocalPlayer()
+    if not IsValid(ply) or not ply:Alive() then
+        RemoveInspectOption()
+        return
+    end
+
+    RepointOrAddOption()
+end)
+
+-- Handy for binds/diagnostics; uses exactly the same C:U panel as the button.
+concommand.Add("wszc_open_wounds", function()
+    WSZC.OpenCUWoundMenu()
+end)
