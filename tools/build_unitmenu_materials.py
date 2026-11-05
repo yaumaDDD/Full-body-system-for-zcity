@@ -114,7 +114,10 @@ STATUS = ('bleeding', 'dislocation', 'fracture')
 
 DOLL_RGB = (0, 0, 0)         # standard black, exactly the archive layers' RGB
 ALPHA_THRESHOLD = 96          # r_foot.png has a transparent left half
-JOINT_ERODE = 5               # 2 px inset for the fill, leaving a hairline seam
+JOINT_ERODE = 3               # 1 px inset for the fill.  Screenshot_3-7 live
+                              # seams were 6-11 px wide vs the native 2-4 px
+                              # on Screenshot_2-10; the old MinFilter(5) ate
+                              # 2 px per side and then got magnified by POT.
 EDGE_PAD_MIN = 6              # minimum inset of the shape inside its POT sprite
 EDGE_WIDTH = 9                # MinFilter size -> ~4 px contour along the shape.
                               # Owner asked for the body outline to be a little
@@ -136,8 +139,8 @@ REFERENCE_BOXES = {
     'abdomen':   (682.5, 521.5, 132, 141),
     'arm_R':     (578.9, 355.0, 82, 50),
     'arm_L':     (786.1, 355.0, 82, 50),
-    'forearm_R': (480.0, 355.0, 102, 50),
-    'forearm_L': (885.0, 355.0, 102, 50),
+    'forearm_R': (480.0, 355.0, 110, 50),
+    'forearm_L': (885.0, 355.0, 110, 50),
     'hand_R':    (400.0, 355.0, 47, 50),
     'hand_L':    (965.0, 355.0, 47, 50),
     'thigh_R':   (652.5, 650.0, 60, 116),

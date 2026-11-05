@@ -175,7 +175,12 @@ end
 ---     instruction lines and the black top bar, while KEEPING the minigame
 ---     icon (the owner explicitly forbade deleting icons).
 ---   * DrawExitGuide -> no-op ("Press RMB/ESC to exit").
----   * DrawBackdrop  -> no-op (the black full-screen panel).
+---   * DrawBackdrop  -> KEPT.  The owner explicitly wants the dark backdrop
+---     behind every minigame again ("во всех мини играх было затемнение
+---     заднего фона как раньше").  It is wrapped ONLY to (a) stamp the frame
+---     as "a minigame is painting" and (b) whitelist its draw.RoundedBox
+---     calls past HiddenRegionRaw(), which otherwise eats them as WoundView
+---     chrome.  Suppressing it here was the reason the world stayed bright.
 --- The shrapnel pieces, wound board, bone, white fracture icons, red drops,
 --- status labels and ZCity notifications are all drawn by other calls and stay.
 ---
@@ -202,7 +207,7 @@ function WSZC.InstallMinigameTextFilter()
                 return orig(clean)
             end
         end
-        for _, name in ipairs({"DrawExitGuide", "DrawBackdrop"}) do
+        for _, name in ipairs({"DrawExitGuide"}) do
             if type(clip[name]) == "function" then
                 local orig = clip[name]
                 clip["_WSZCOrig" .. name] = orig
@@ -210,6 +215,26 @@ function WSZC.InstallMinigameTextFilter()
                     if WSZC.MinigameTextHidden() then return end
                     return orig(...)
                 end
+            end
+        end
+        -- Restore the shared dark backdrop.  Every C:U minigame (bandage,
+        -- syringe, shrapnel, dislocation, AED, selfharm) calls it; our old
+        -- no-op made the world visible behind the board.  The flag also lets
+        -- HiddenRegionRaw() pass its draw.RoundedBox through untouched.
+        if type(clip.DrawBackdrop) == "function" and not clip._WSZCBackdropWrapped then
+            local origBackdrop = clip.DrawBackdrop
+            clip._WSZCOrigDrawBackdrop = origBackdrop
+            clip._WSZCBackdropWrapped = true
+            clip.DrawBackdrop = function(data)
+                WSZC._LastMinigameDraw = (CurTime and CurTime()) or 0
+                WSZC._MinigameBackdropDrawing = true
+                local ok, a, b = pcall(origBackdrop, data)
+                WSZC._MinigameBackdropDrawing = false
+                if not ok then
+                    ErrorNoHalt("[ZCity/CU compat] minigame backdrop failed: " .. tostring(a) .. "\n")
+                    return
+                end
+                return a, b
             end
         end
         clipTextWrapped = true
@@ -372,6 +397,23 @@ WSZC.CUHudFiltered = false
 -- hook's respawn input handling keeps working.
 WSZC.CUDeathVisualsHidden = false
 
+-- The owner asked for the dark backdrop "как раньше" in EVERY minigame.
+-- C:U draws it through WoundSystem.MinigameClip.DrawBackdrop(), which our
+-- WoundView region filter used to swallow.  These two fields are the single
+-- source of truth shared by the backdrop wrapper, the region whitelist and
+-- the cursor watchdog: if a minigame painted a backdrop in the last 0.35 s,
+-- it is running even when our IsActive() probes miss it (ZCity SWEP games,
+-- hot-reloaded C:U tables, a lost open packet).
+WSZC._MinigameBackdropDrawing = false
+WSZC._LastMinigameDraw = -10
+WSZC._HoldMinigameCursor = false
+WSZC._AllowClickerRelease = false
+
+function WSZC.MinigameDrawnRecently()
+    local now = (CurTime and CurTime()) or 0
+    return (now - (WSZC._LastMinigameDraw or -10)) < 0.35
+end
+
 --- Materials that belong to the DOLL, its status icons and the shrapnel /
 --- dislocation action point.  The hidden regions below were sized for C:U's
 --- original 760 px square; the unitmenu doll is wider, so its left arm, feet
@@ -424,6 +466,11 @@ WSZC.MaterialName = MaterialName
 --- Everything is expressed in ScrH()/1080 so it follows the game's own scale.
 local function HiddenRegionRaw(x, y, w, h)
     if WSZC.CUDeathVisualsHidden == true then return true end
+    -- C:U's shared minigame backdrop is a rounded box drawn from Clip.DrawBackdrop.
+    -- It overlaps the "left scanner" and even the full-screen region, so the
+    -- WoundView filter would otherwise erase exactly the darkening the owner
+    -- asked to bring back.  Only WoundView chrome is filtered, never this.
+    if WSZC._MinigameBackdropDrawing == true then return false end
     if not WSZC.CUHudFiltered then return false end
     if type(x) ~= "number" or type(y) ~= "number" then return false end
     w = tonumber(w) or 0
@@ -1407,6 +1454,17 @@ end)
 if type(gui) == "table" and type(gui.EnableScreenClicker) == "function" then
     local origEnableScreenClicker = gui.EnableScreenClicker
     gui.EnableScreenClicker = function(on, ...)
+        -- C:U's WoundSystem_ScreenClickerWatchdog calls ForceReleaseScreenClicker
+        -- whenever its own IsAnyWoundMinigameActive() probe says false, and the
+        -- ZCity radial menu closing can release the clicker a frame later.
+        -- Both used to leave gui.MousePos() frozen at (0,0), so the bandage /
+        -- syringe hand could not be steered.  Refuse such releases while a
+        -- minigame is actually painting its board; DisableMinigameClicker()
+        -- explicitly opts out via _AllowClickerRelease when the game closes.
+        if not on and WSZC._HoldMinigameCursor == true
+            and WSZC._AllowClickerRelease ~= true then
+            return
+        end
         local res = origEnableScreenClicker(on, ...)
         if on and cvHideCursor:GetBool() then WSZC.SyncMinigameCursor() end
         return res

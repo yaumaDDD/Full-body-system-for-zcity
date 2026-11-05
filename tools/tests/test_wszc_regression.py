@@ -105,6 +105,7 @@ check('S13 generator: standard black, anatomy kept, per-limb shaped outline, NO 
       and 'DOLL_RGB = (0, 0, 0)' in generator_s
       and 'ALPHA_THRESHOLD = 96' in generator_s
       and 'EDGE_PAD_MIN = 6' in generator_s
+      and 'JOINT_ERODE = 3' in generator_s
       and 'LIVE_S = 0.4155' in generator_s
       and 'LIVE_CX, LIVE_CY = 682.5, 558.2' in generator_s
       and 'assert w == next_pot(w) and h == next_pot(h)' in generator_s
@@ -155,12 +156,17 @@ check('S29 font filter covers ALL minigame fonts incl. AED, but no ZCity fonts',
       and 'WSZC.MinigameTextHidden()' in layout_s
       and 'BerserkFont = true' not in layout_s
       and 'ZB_ProotOSMedium = true' not in layout_s)
-check('S30 DrawHeader keeps the icon but blanks text + top bar',
+check('S30 DrawHeader keeps the icon but blanks text + top bar; backdrop KEPT',
       'clip._WSZCOrigDrawHeader' in layout_s
       and 'clean.title, clean.value, clean.guide' in layout_s
       and 'clean.panelAlpha = 0' in layout_s
       and 'clip["_WSZCOrig" .. name] = orig' in layout_s
-      and '{"DrawExitGuide", "DrawBackdrop"}' in layout_s)
+      and '{"DrawExitGuide"}' in layout_s
+      and 'clip._WSZCBackdropWrapped' in layout_s
+      and 'WSZC._MinigameBackdropDrawing = true' in layout_s
+      and 'if WSZC._MinigameBackdropDrawing == true then return false end' in layout_s
+      and 'function WSZC.MinigameDrawnRecently()' in layout_s
+      and 'WSZC._HoldMinigameCursor == true' in layout_s)
 check('S31 wound FRONT LAYER + gameplay sprites are protected, never suppressed',
       'MINIGAME_WOUND_MARKER = "minigameshrapnel"' in layout_s
       and 'function WSZC.IsMinigameWoundLayer(name)' in layout_s
@@ -187,8 +193,8 @@ check('S33 REFERENCE_BOXES = native Screenshot_2-10 pixel boxes, POT-calibrated'
       and "'abdomen':   (682.5, 521.5, 132, 141)" in generator_s
       and "'arm_R':     (578.9, 355.0, 82, 50)" in generator_s
       and "'arm_L':     (786.1, 355.0, 82, 50)" in generator_s
-      and "'forearm_R': (480.0, 355.0, 102, 50)" in generator_s
-      and "'forearm_L': (885.0, 355.0, 102, 50)" in generator_s
+      and "'forearm_R': (480.0, 355.0, 110, 50)" in generator_s
+      and "'forearm_L': (885.0, 355.0, 110, 50)" in generator_s
       and "'hand_R':    (400.0, 355.0, 47, 50)" in generator_s
       and "'hand_L':    (965.0, 355.0, 47, 50)" in generator_s
       and "'thigh_R':   (652.5, 650.0, 60, 116)" in generator_s
@@ -236,6 +242,14 @@ check('S38 hand can move: no zeroed mouse delta and no extra maxLength cap',
       and 'MouseX/MouseY are intentionally NOT zeroed in SetupMove' in minigames_s
       and 'cmd:SetViewAngles(ang)' in minigames_s
       and 'return nil' in minigames_s)
+check('S45 minigame cursor is held for games our IsActive() probes miss',
+      'WSZC.MinigameDrawnRecently and WSZC.MinigameDrawnRecently()' in minigames_s
+      and 'WSZC._CUMinigameActiveWrapper == WoundSystemIsAnyWoundMinigameActive' in minigames_s
+      and 'WSZC._AllowClickerRelease = true' in minigames_s
+      and 'WSZC._HoldMinigameCursor = running and true or false' in minigames_s
+      and 'WSZC._NextCursorFix = now + 0.05' in minigames_s
+      and minigames_s.count('cmd:SetMouseX(0)') == 0
+      and minigames_s.count('cmd:SetMouseY(0)') == 0)
 check('S39 shrapnel survives ragdoll -> standing (authoritative organism)',
       '"wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation"' in organism_s
       and '_WSZCRagdollTransitionUntil' in organism_s
@@ -852,7 +866,7 @@ end)()
 end)()
 ''')
 
-    rt('R24 DrawHeader blanks text/bar but KEEPS the icon; exit + backdrop are no-ops', '''
+    rt('R24 DrawHeader blanks text/bar, exit no-op, dark backdrop RESTORED', '''
 (function()
     WSZC.InstallMinigameTextFilter()
     WoundSystemShrapnelMinigame = { active = true }
@@ -867,8 +881,16 @@ end)()
     local kept = hdr and hdr.kind == "header" and hdr.d.title == ""
         and hdr.d.value == "" and hdr.d.guide == "" and hdr.d.panelAlpha == 0
         and hdr.d.mat == icon
-    local noChrome = #clipCalls == 1
-    -- convar 0 restores all three original functions verbatim
+    -- DrawExitGuide is gone, but the shared dark backdrop MUST still be drawn:
+    -- the owner asked for the darkened world behind EVERY minigame again.
+    local noChrome = #clipCalls == 2 and clipCalls[2].kind == "backdrop"
+    -- The backdrop's draw.RoundedBox would otherwise be eaten by HiddenRegionRaw.
+    WSZC.CUHudFiltered = true
+    WSZC._MinigameBackdropDrawing = true
+    local backdropSurvivesFilter = WSZC.CUHudHiddenRegionRaw(0, 0, 1365, 1079) == false
+    WSZC._MinigameBackdropDrawing = false
+    WSZC.CUHudFiltered = false
+    -- convar 0 restores the chrome functions verbatim
     convars["zc_woundsystem_compat_hide_minigame_text"]._v = "0"
     clipCalls = {}
     WoundSystem.MinigameClip.DrawExitGuide()
@@ -882,7 +904,28 @@ end)()
     WoundSystem.MinigameClip.DrawHeader({ title = "Keep me", mat = icon })
     local outside = #clipCalls == 1 and clipCalls[1].d.title == "Keep me"
     WoundSystemShrapnelMinigame = { active = false }
-    return kept and noChrome and restored and outside
+    return kept and noChrome and restored and outside and backdropSurvivesFilter
+end)()
+''')
+
+    rt('R32 minigame cursor survives the C:U watchdog, but our close releases it', '''
+(function()
+    WSZC._LastMinigameDraw = CurTime()
+    local recent = WSZC.MinigameDrawnRecently() == true
+    WSZC._LastMinigameDraw = CurTime() - 1
+    local stale = WSZC.MinigameDrawnRecently() == false
+
+    clickerOn = true
+    WSZC._HoldMinigameCursor = true
+    WSZC._AllowClickerRelease = false
+    gui.EnableScreenClicker(false)              -- C:U watchdog / radial menu
+    local held = clickerOn == true
+    WSZC._AllowClickerRelease = true           -- our own DisableMinigameClicker
+    gui.EnableScreenClicker(false)
+    local released = clickerOn == false
+    WSZC._AllowClickerRelease = false
+    WSZC._HoldMinigameCursor = false
+    return recent and stale and held and released
 end)()
 ''')
 

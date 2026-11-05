@@ -104,7 +104,7 @@
 `zc_woundsystem_compat_hide_minigame_text 1` (по умолчанию) через
 `WSZC.InstallMinigameTextFilter()` обнуляет `title/value/guide/panelAlpha` в
 `Clip.DrawHeader` (иконка мини-игры остаётся), отключает `Clip.DrawExitGuide`
-(`Press RMB/ESC to exit`) и `Clip.DrawBackdrop`, точечно фильтрует только
+(`Press RMB/ESC to exit`), **сохраняет `Clip.DrawBackdrop`** (затемнение фона), точечно фильтрует только
 chrome-шрифты (`RetroTooltipTitle*`, `RetroTooltipDesc*`,
 `RetroMinigameGuide*`) и AED-статус. **`minigameshrapnel.png` — передний слой
 раны, а не чёрная панель: он НЕ удаляется.** Все игровые спрайты (осколок, рука,

@@ -88,10 +88,16 @@ local function DisableMinigameClicker()
     -- while that panel is still up; C:U releases it when the panel closes.
     if WoundSystemHealthHUDOpen == true then return end
 
+    -- This is the ONE legitimate release.  Our gui.EnableScreenClicker guard
+    -- refuses every other (watchdog / radial-menu) disable while a minigame
+    -- board was painted recently.
+    WSZC._AllowClickerRelease = true
+    WSZC._HoldMinigameCursor = false
     if WoundSystem and WoundSystem.HealthGUI and WoundSystem.HealthGUI.SetScreenClickerOwned then
         pcall(WoundSystem.HealthGUI.SetScreenClickerOwned, false, "wszc_minigame")
     end
     if gui and gui.EnableScreenClicker then gui.EnableScreenClicker(false) end
+    WSZC._AllowClickerRelease = false
 end
 WSZC.DisableMinigameClicker = DisableMinigameClicker
 
@@ -100,13 +106,20 @@ WSZC.DisableMinigameClicker = DisableMinigameClicker
 -- NATIVE C:U minigames, so it used to steal the cursor from our namespaced
 -- copies.  Extend it once, lazily (C:U may load after us).
 local function PatchCUMinigameActive()
-    if WSZC._CUMinigameActivePatched then return end
     if type(WoundSystemIsAnyWoundMinigameActive) ~= "function" then return end
-    WSZC._CUMinigameActivePatched = true
+    -- C:U may (re)define this global after our autorun file loads, or a hot
+    -- reload may replace it.  A one-shot "already patched" flag used to leave
+    -- the watchdog reading a STALE probe, which then released the clicker.
+    -- Compare the current global with our wrapper and re-wrap whenever needed.
+    if WSZC._CUMinigameActiveWrapper == WoundSystemIsAnyWoundMinigameActive then return end
     local original = WoundSystemIsAnyWoundMinigameActive
-    WoundSystemIsAnyWoundMinigameActive = function()
-        return original() or WSZC.MinigameActive()
+    local function wrapped()
+        return original()
+            or WSZC.MinigameActive()
+            or (WSZC.MinigameDrawnRecently and WSZC.MinigameDrawnRecently())
     end
+    WoundSystemIsAnyWoundMinigameActive = wrapped
+    WSZC._CUMinigameActiveWrapper = wrapped
 end
 WSZC.PatchCUMinigameActive = PatchCUMinigameActive
 
@@ -235,7 +248,15 @@ end)
 
 hook.Add("Think", "WSZC_MinigameCursorWatch", function()
     PatchCUMinigameActive()
-    if not WSZC.MinigameActive() then return end
+    -- A C:U / ZCity game that our IsActive() probes missed still paints the
+    -- shared Clip.DrawBackdrop every frame.  That stamps _LastMinigameDraw, so
+    -- the cursor is held for it too: this is the "нельзя управлять курсором"
+    -- fix for games started from a ZCity SWEP without a WSZC_MinigameOpen
+    -- packet and for C:U tables replaced by a hot reload.
+    local running = WSZC.MinigameActive()
+        or (WSZC.MinigameDrawnRecently and WSZC.MinigameDrawnRecently())
+    WSZC._HoldMinigameCursor = running and true or false
+    if not running then return end
     -- Never fight the game/console menu for the cursor, but otherwise keep
     -- re-asserting it unconditionally.  Checking vgui.CursorVisible() here
     -- used to let C:U's watchdog steal it for one frame -> visible flicker.
@@ -243,7 +264,7 @@ hook.Add("Think", "WSZC_MinigameCursorWatch", function()
     if gui and gui.IsConsoleVisible and gui.IsConsoleVisible() then return end
     local now = CurTime and CurTime() or 0
     if (WSZC._NextCursorFix or 0) > now then return end
-    WSZC._NextCursorFix = now + 0.15
+    WSZC._NextCursorFix = now + 0.05
     EnableMinigameClicker()
 end)
 

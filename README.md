@@ -56,15 +56,15 @@
   спрайт и уводило нижнюю часть раны за экран. `1` — вернуть растяжение.
 * Убрана надпись «Not completed - nothing was applied» при закрытии мини-игры
   без дозы (`zc_woundsystem_compat_hide_empty_notice 0` — вернуть).
-* **Лишний текст и чёрные панели убраны во всех мини-играх** (5 нативных C:U
+* **Лишний текст убран, затемнение фона сохранено во всех мини-играх** (5 нативных C:U
   + 2 WSZC): «Shrapnel extraction (1/5)», три строки инструкций,
-  «Press RMB/ESC to exit», чёрная верхняя панель и полноэкранная подложка.
+  «Press RMB/ESC to exit», чёрная верхняя панель. Затемнение заднего фона (`Clip.DrawBackdrop`) возвращено.
   **`minigameshrapnel.png` НЕ удаляется** — это передний слой раны (нижняя
   часть, откуда достаётся осколок), а не чёрная панель; все игровые спрайты
   защищены белым списком `WSZC.IsMinigameGameplaySprite()`.
   `zc_woundsystem_compat_hide_minigame_text 1` обнуляет текст/панель в
-  `Clip.DrawHeader` (иконка остаётся), глушит `Clip.DrawExitGuide` /
-  `Clip.DrawBackdrop` и фильтрует chrome-шрифты
+  `Clip.DrawHeader` (иконка остаётся), глушит `Clip.DrawExitGuide`, **сохраняет `Clip.DrawBackdrop`** (затемнение фона)
+  и фильтрует chrome-шрифты
   (`RetroTooltipTitle*`, `RetroMinigameGuide*`) **и статус AED
   `WoundSystemAEDStatus`** пока мини-игра активна.
   Уведомления ZCity, статусные надписи C:U (кроме AED), красный death-текст, капли,
@@ -280,7 +280,7 @@ C:U умножает `matM` на чёрный `finalMiddle`, поэтому
 экспортированные таблицы C:U) и повтор в `PreDrawHUD`, чтобы геометрия не
 терялась при поздней регистрации `WoundDollAndPanel` в живом клиенте.
 
-**Лишний текст и чёрные панели мини-игр.** `zc_woundsystem_compat_hide_minigame_text 1`
+**Лишний текст мини-игр; затемнение фона сохранено.** `zc_woundsystem_compat_hide_minigame_text 1`
 убирает «Shrapnel extraction (1/5)», счётчик, три строки инструкций и
 `Press RMB/ESC to exit` во всех 5 нативных C:U и 2 WSZC мини-играх, а также
 чёрную верхнюю панель и полноэкранную подложку. **`minigameshrapnel.png` НЕ
@@ -288,7 +288,7 @@ C:U умножает `matM` на чёрный `finalMiddle`, поэтому
 а не чёрная панель; `WSZC.IsMinigameGameplaySprite()` защищает рану, осколок,
 руку, пинцет, `bandageOuter`, `Icons.*`. `Clip.DrawHeader`
 перевызывается с пустыми `title/value/guide` и `panelAlpha = 0`, но **иконка
-мини-игры остаётся**; `Clip.DrawExitGuide` / `Clip.DrawBackdrop` глушатся;
+мини-игры остаётся**; `Clip.DrawExitGuide` глушится, **`Clip.DrawBackdrop` сохранён** — затемнение заднего фона во всех мини-играх;
 `draw.SimpleText*` фильтруется по `WSZC.IsMinigameTextFont()` для
 chrome-шрифтов **и AED-статуса** и только пока мини-игра активна. Уведомления ZCity,
 красный death-текст, капли, белые иконки переломов, осколки и рука не
@@ -537,3 +537,49 @@ runtime-код **не изменялись**. Живой GMod агентом н�
 
 Все клавиши и команды ZCity: [`ZCity_binds.md`](ZCity_binds.md) и
 [`zcity_binds.cfg`](zcity_binds.cfg).
+
+## №10 (по `Screenshot_3-7.png` / `Screenshot_4-6.png`): доводка куклы, курсор и затемнение
+
+1. **Кукла «немного» по прошлому скриншоту.** `Screenshot_3-7.png` подтвердил
+   попиксельную калибровку №9: торс, живот, голова и ноги сошлись с
+   `Screenshot_2-10.png` в ±1..4 px, габарит `218..864` против `218..865`.
+   Оставались только **зазоры между лимбами** — на live они были `6..11 px`,
+   у нативной куклы `2..4 px`. `JOINT_ERODE` уменьшен `5 → 3` (MinFilter съедает
+   по 1 px вместо 2), предплечья расширены `102 → 110 px`. Итоговая симуляция
+   даёт зазоры `2..5 px` и размах рук `610 px` против `612 px`. Цвет, обводка,
+   POT-спрайты, `hoverW/hoverH`, симметрия `cx_R + cx_L = 1500` не менялись.
+
+2. **Затемнение заднего фона во ВСЕХ мини-играх, «как раньше».** Причина, по
+   которой фон на `Screenshot_4-6.png` оставался ярким: `WSZC.InstallMinigameTextFilter()`
+   глушил `WoundSystem.MinigameClip.DrawBackdrop`, а его `draw.RoundedBox`
+   дополнительно съедался `HiddenRegionRaw()` как «панель WoundView». Теперь
+   `DrawBackdrop` **сохранён** и обёрнут только для двух вещей: ставит
+   `_LastMinigameDraw` и на время своего вызова белит `HiddenRegionRaw()`
+   (`_MinigameBackdropDrawing`). Все 7 мини-игр C:U (бинт, шприц, осколок,
+   вывих, AED, selfharm) вызывают `DrawBackdrop`, поэтому тёмная подложка с
+   alpha 200 и мягким краем вернулась везде. `text=all`, `DrawHeader` (иконка
+   на месте), `DrawExitGuide`, WoundView-подложка (`..._hide_woundview_backdrop 1`)
+   и unconscious blackout не тронуты: мир в WoundView остаётся светлым.
+
+3. **Курсор в мини-игре бинта/шприца.** `gui.MousePos()` замирал, потому что
+   C:U `WoundSystem_ScreenClickerWatchdog` вызывает `ForceReleaseScreenClicker`,
+   когда его собственный probing `WoundSystemIsAnyWoundMinigameActive()` говорит
+   «игры нет» (наши namespaced-копии и игры, открытые из ZCity SWEP, туда не
+   попадают), а закрытие радиального меню ZCity снимает кликер ещё раз.
+   Исправлено тремя согласованными мерами:
+   * `PatchCUMinigameActive()` больше не «одноразовый» — он сравнивает текущую
+     глобаль с нашим wrapper'ом и пере-оборачивает её при hot reload / поздней
+     загрузке C:U; wrapper учитывает и `MinigameDrawnRecently()`;
+   * `WSZC_MinigameCursorWatch` держит `_HoldMinigameCursor = true` для любой
+     игры, которая **рисует** `DrawBackdrop` (даже если `IsActive()` её не знает),
+     и ре-ассертит кликер каждые `0.05 s`;
+   * `gui.EnableScreenClicker(false)` отклоняется, пока `_HoldMinigameCursor`
+     активен — кроме единственного легитимного снятия из
+     `DisableMinigameClicker()` (`_AllowClickerRelease`). Мышь по-прежнему НЕ
+     обнуляется (`SetMouseX/Y` не трогаются), камера заморожена через
+     `SetViewAngles`, а блок снимается сам через `0.35 s` после последнего кадра
+     мини-игры, поэтому курсор не может «залипнуть» после смерти или закрытия.
+
+Проверено: `S30/S45`, `R24/R32` (backdrop переживает фильтр, watchdog не крадёт
+курсор, наш Close всё ещё его отпускает), `ALL_LUA_OK`, `CJK_CLEAN`. Живой GMod
+не запускался — принятие по свежим live-скринам.
