@@ -1399,6 +1399,10 @@ local function Snapshot(ply, limbId)
         stamina = tonumber(body.stamina) or 100,
         painkiller = tonumber(body.painkiller) or 0,
         adrenaline = tonumber(body.adrenaline) or 0,
+        -- C:U stores the opioid dose here (FENTANYL adds 420, MORPHINE similar).
+        -- ZCity's organism reads org.analgesiaAdd instead, so without this
+        -- field the drug delta was invisible to the authoritative organism.
+        opiateAmount = tonumber(body.opiateAmount) or 0,
         limbBleed = type(state) == "table" and (tonumber(state.bleed) or 0) or 0,
         limbPain = type(state) == "table" and (tonumber(state.pain) or 0) or 0,
         limbMuscle = type(state) == "table" and (tonumber(state.muscle) or 100) or 100,
@@ -1437,6 +1441,14 @@ function WSZC.ApplyMedicalDelta(ply, limbId, before)
     -- cl_camera.lua compute a -500 FOV offset (the "adrenaline" screen warp).
     add("painkiller", (after.painkiller - before.painkiller) * 0.01, 0, 1)
     add("adrenaline", (after.adrenaline - before.adrenaline) * 0.02, 0, 2)
+    -- Morphine / fentanyl / painkillers: ZCity's SWEP:Heal short-circuits on
+    -- `WB.SwepHeal(...) ~= nil` and therefore never runs its own
+    -- `org.analgesiaAdd = min(org.analgesiaAdd + injected, 4)`.  C:U applies
+    -- the dose to body.opiateAmount when the syringe minigame finishes.  Mirror
+    -- the delta into the authoritative organism so the analgesic actually
+    -- works (pain relief, sedation, breathing).  0.006 maps a full 420-unit
+    -- fentanyl syringe to ~2.5 analgesia, inside ZCity's 0..4 range.
+    add("analgesiaAdd", (after.opiateAmount - before.opiateAmount) * 0.006, 0, 4)
     if type(org.stamina) == "table" then
         local max = math.max(tonumber(org.stamina.max) or 180, 1)
         org.stamina[1] = math.Clamp((tonumber(org.stamina[1]) or 0) +

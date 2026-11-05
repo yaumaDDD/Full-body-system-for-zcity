@@ -87,6 +87,9 @@ local function EnableMinigameClicker()
         pcall(WoundSystem.HealthGUI.SetScreenClickerOwned, true, "wszc_minigame")
     end
     if gui and gui.EnableScreenClicker then gui.EnableScreenClicker(true) end
+    -- SetScreenClickerOwned(true) is refused while IsExternalMenuOpen(), but
+    -- the arrow must still be visible and steerable.
+    if WSZC.RestoreMinigameCursor then WSZC.RestoreMinigameCursor(true) end
 end
 
 local function DisableMinigameClicker()

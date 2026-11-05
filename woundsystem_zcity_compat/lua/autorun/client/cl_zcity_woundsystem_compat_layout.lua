@@ -948,6 +948,14 @@ local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_scree
     "Cap the minigame hand width at this fraction of ScrW (0.1 .. 1)", 0.1, 1)
 local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "0", true, false,
     "0 = show the STANDARD OS arrow in minigames; 1 = blank it (drawn-hand mode)")
+-- Older builds saved "1" (shouldsave = true / FCVAR_ARCHIVE).  Changing the
+-- DEFAULT above does NOT overwrite an already saved client convar, so the
+-- player kept a blank cursor and literally could not see or steer the pointer
+-- in the bandage / syringe minigame ("почему я не вижу курсор в мини играх").
+-- Force the standard arrow once at load, and never blank it in Sync below.
+if cvHideCursor.GetBool and cvHideCursor:GetBool() and cvHideCursor.SetInt then
+    pcall(cvHideCursor.SetInt, cvHideCursor, 0)
+end
 local cvHideHand = CreateClientConVar("zc_woundsystem_compat_hide_minigame_hand", "1", true, false,
     "1 = draw NO hand sprite in minigames, the standard cursor is the pointer")
 local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "0", true, false,
@@ -1444,35 +1452,27 @@ local function WorldPanel()
     return nil
 end
 
+-- The standard OS arrow is the ONLY pointer now.  BlankMinigameCursor() is
+-- kept as an inert API for the opt-in drawn-hand mode but must NEVER hide the
+-- pointer: a saved `hide_minigame_cursor 1` from an older build left players
+-- with no visible cursor at all, so the syringe could not be dragged and the
+-- medicine never got applied.
 function WSZC.BlankMinigameCursor()
-    local panel = WorldPanel()
-    if not panel then return false end
-    if not cursorHidden and type(panel.GetCursor) == "function" then
-        local ok, cur = pcall(panel.GetCursor, panel)
-        if ok and type(cur) == "string" and cur ~= "blank" then savedCursor = cur end
-    end
-    pcall(panel.SetCursor, panel, "blank")
-    cursorHidden = true
-    return true
+    return false
 end
 
 function WSZC.RestoreMinigameCursor(force)
-    if not cursorHidden and not force then return false end
     local panel = WorldPanel()
-    if panel then pcall(panel.SetCursor, panel, savedCursor or "arrow") end
+    -- Force "arrow", not `savedCursor`: that value could itself be "blank"
+    -- from a previous session.
+    if panel then pcall(panel.SetCursor, panel, "arrow") end
     cursorHidden = false
     return true
 end
 
 function WSZC.SyncMinigameCursor()
-    if not cvHideCursor:GetBool() then
-        WSZC.RestoreMinigameCursor(true)
-        return false
-    end
-    local active = (WSZC.WSZCMinigameActive and WSZC.WSZCMinigameActive())
-        or (WSZC.NativeMinigameActive and WSZC.NativeMinigameActive())
-    if active then return WSZC.BlankMinigameCursor() end
-    return WSZC.RestoreMinigameCursor()
+    WSZC.RestoreMinigameCursor(true)
+    return false
 end
 
 --- Hard cleanup after a minigame closes.  C:U's ScreenClickerWatchdog only
@@ -1505,6 +1505,18 @@ hook.Add("Think", "WSZC_MinigameCursor", function()
     if now < nextCursorSync then return end
     nextCursorSync = now + 0.15
     WSZC.SyncMinigameCursor()
+    -- Ground truth: vgui.CursorVisible().  C:U's watchdog, the ZCity radial
+    -- menu or a stale ForceReleaseScreenClicker can disable the clicker mid
+    -- game; if the arrow disappeared, turn it straight back on.  Without this
+    -- the syringe/bandage minigame could never be completed, so morphine /
+    -- fentanyl never reached ply.organism.
+    local active = (WSZC.MinigameActive and WSZC.MinigameActive())
+        or (WSZC.WSZCMinigameActive and WSZC.WSZCMinigameActive())
+        or (WSZC.NativeMinigameActive and WSZC.NativeMinigameActive())
+    if active and vgui and vgui.CursorVisible and not vgui.CursorVisible() then
+        if gui and gui.EnableScreenClicker then gui.EnableScreenClicker(true) end
+        WSZC.RestoreMinigameCursor(true)
+    end
 end)
 
 -- Enabling the screen clicker resets the cursor image on some GMod builds.
@@ -1523,7 +1535,8 @@ if type(gui) == "table" and type(gui.EnableScreenClicker) == "function" then
             return
         end
         local res = origEnableScreenClicker(on, ...)
-        if on and cvHideCursor:GetBool() then WSZC.SyncMinigameCursor() end
+        -- Never blank the arrow when the clicker is enabled.
+        if on then WSZC.RestoreMinigameCursor(true) end
         return res
     end
 end

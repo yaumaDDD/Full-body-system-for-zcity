@@ -87,8 +87,12 @@ check('S07 hand pivot + size cap convars exist',
       all(x in layout_s for x in ('hand_pivot_x', 'hand_pivot_y', 'hand_max_screen')))
 check('S08 hand rect is derived from the cursor',
       'HandRectForCursor' in layout_s and '(0.5 - px) * nw' in layout_s)
-check('S09 opt-in drawn-hand mode can blank + restore the OS cursor',
-      'SetCursor, panel, "blank"' in layout_s and 'RestoreMinigameCursor' in layout_s)
+check('S09 the OS cursor is ALWAYS the standard arrow; blank API is inert',
+      'function WSZC.BlankMinigameCursor()' in layout_s
+      and '    return false' in layout_s
+      and 'panel.SetCursor, panel, "arrow"' in layout_s
+      and 'SetCursor, panel, "blank"' not in layout_s
+      and 'WSZC.RestoreMinigameCursor(true)' in layout_s)
 check('S10 glass shrapnel has both damage hooks',
       'hook.Add("EntityTakeDamage", "WSZC_GlassStrikePre"' in organism_s
       and 'hook.Add("PostEntityTakeDamage", "WSZC_GlassStrike"' in organism_s)
@@ -138,7 +142,8 @@ check('S26 standard cursor is default; archive hand is opt-in; status texts unto
       '"zc_woundsystem_compat_handanim", "0"' in layout_s
       and '"zc_woundsystem_compat_hide_minigame_hand", "1"' in layout_s
       and 'HGNotificationsThink' not in layout_s
-      and 'SetCursor, panel, "blank"' in layout_s)
+      and 'panel.SetCursor, panel, "arrow"' in layout_s
+      and 'SetCursor, panel, "blank"' not in layout_s)
 check('S27 the rejected native-doll experiment is fully rolled back',
       'cvNativeDoll' not in layout_s
       and 'native_doll' not in layout_s
@@ -192,10 +197,10 @@ check('S33 REFERENCE_BOXES = native Screenshot_2-10 pixel boxes, POT-calibrated'
       "'head':      (682.5, 267.0, 70, 102)" in generator_s
       and "'thorax':    (682.5, 385.5, 122, 131)" in generator_s
       and "'abdomen':   (682.5, 521.5, 132, 141)" in generator_s
-      and "'arm_R':     (578.9, 355.0, 82, 40)" in generator_s
-      and "'arm_L':     (786.1, 355.0, 82, 40)" in generator_s
-      and "'forearm_R': (480.0, 355.0, 110, 40)" in generator_s
-      and "'forearm_L': (885.0, 355.0, 110, 40)" in generator_s
+      and "'arm_R':     (578.9, 355.0, 82, 46)" in generator_s
+      and "'arm_L':     (786.1, 355.0, 82, 46)" in generator_s
+      and "'forearm_R': (480.0, 355.0, 110, 33)" in generator_s
+      and "'forearm_L': (885.0, 355.0, 110, 33)" in generator_s
       and "'hand_R':    (400.0, 355.0, 47, 40)" in generator_s
       and "'hand_L':    (965.0, 355.0, 47, 40)" in generator_s
       and "'thigh_R':   (652.5, 650.0, 60, 116)" in generator_s
@@ -285,6 +290,9 @@ check('S47 standard cursor, no drawn hand, action button offset, post-game relea
       and 'function WSZC.ShowMinigameHand()' in layout_s
       and 'if cvHideHand:GetBool() then return 0 end' in layout_s
       and 'if handHide then' in layout_s
+      and 'pcall(cvHideCursor.SetInt, cvHideCursor, 0)' in layout_s
+      and 'vgui.CursorVisible and not vgui.CursorVisible()' in layout_s
+      and 'if on then WSZC.RestoreMinigameCursor(true) end' in layout_s
       and 'cvHandanim:GetBool() or cvHideHand:GetBool()' in layout_s
       and 'local function PatchActionButtonOffset()' in layout_s
       and 'point.OffsetY = -14' in layout_s
@@ -297,15 +305,21 @@ check('S47 standard cursor, no drawn hand, action button offset, post-game relea
       and 'if WSZC.MinigameHUDOpen ~= true then return end' in minigames_s
       and 'if session and cmd.SetButtons then cmd:SetButtons(0) end'
           in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua'))
-check('S48 Screenshot_8 joint gaps + wedge boots fixed without moving geometry',
-      'Screenshot_8.png' in generator_s
-      and 'SEAM_LIMBS' in generator_s
-      and 'def CloseMask(mask):' in generator_s
-      and 'def FlattenLimbBand(mask):' in generator_s
+check('S48 arm silhouettes are NOT redrawn; only the forearm proportion changes',
+      'Screenshot_1-11.png' in generator_s
+      and 'Screenshot_8.png' in generator_s
+      and 'SEAM_LIMBS' not in generator_s
+      and 'def CloseMask(mask):' not in generator_s
+      and 'def FlattenLimbBand(mask):' not in generator_s
       and 'def SquareToe(mask):' in generator_s
-      and "limb_id.startswith('arm_')" in generator_s
       and "limb_id.startswith('foot_')" in generator_s
-      and 'hand_* keeps its authored fingers' in generator_s)
+      and 'Change ONLY' in generator_s
+      and "'forearm_R': (480.0, 355.0, 110, 33)" in generator_s
+      and "'arm_R':     (578.9, 355.0, 82, 46)" in generator_s)
+check('S49 opioid dose reaches the ZCity organism (morphine / fentanyl)',
+      'opiateAmount = tonumber(body.opiateAmount) or 0' in organism_s
+      and 'add("analgesiaAdd", (after.opiateAmount - before.opiateAmount) * 0.006, 0, 4)' in organism_s
+      and 'WSZC.BoneAnchor = BoneAnchor' in organism_s)
 check('S39 shrapnel survives ragdoll -> standing (authoritative organism)',
       '"wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation"' in organism_s
       and '_WSZCRagdollTransitionUntil' in organism_s
@@ -740,35 +754,37 @@ end)()
 end)()
 ''')
 
-    rt('R10 opt-in drawn-hand mode blanks the cursor while a minigame is open', '''
+    rt('R10 cursor stays the STANDARD arrow while a minigame is open', '''
 (function()
-    cursorValue = "arrow"
+    EnableDrawnHandMode()
+    cursorValue = "blank"
     WoundSystemShrapnelMinigame = { active = true }
     WSZC.SyncMinigameCursor()
-    local hidden = cursorValue == "blank"
+    local visible = cursorValue == "arrow"
+    local blankIsInert = WSZC.BlankMinigameCursor() == false
+        and cursorValue == "arrow"
     WoundSystemShrapnelMinigame = { active = false }
     WSZC.SyncMinigameCursor()
-    return hidden and cursorValue == "arrow"
+    return visible and blankIsInert and cursorValue == "arrow"
 end)()
 ''')
 
-    rt('R11 opt-in mode re-blanks the cursor when the clicker is enabled', '''
+    rt('R11 enabling the screen clicker keeps the arrow visible', '''
 (function()
-    cursorValue = "arrow"
+    EnableDrawnHandMode()
+    cursorValue = "blank"
     WoundSystemDislocationMinigame = { active = true }
-    WSZC.SyncMinigameCursor()
-    cursorValue = "arrow"
     gui.EnableScreenClicker(true)
-    local ok = cursorValue == "blank"
+    local ok = cursorValue == "arrow"
     WoundSystemDislocationMinigame = { active = false }
     WSZC.SyncMinigameCursor()
     return ok
 end)()
 ''')
 
-    rt('R12 hide_minigame_cursor 0 restores the arrow', '''
+    rt('R12 a SAVED hide_minigame_cursor 1 can no longer blank the arrow', '''
 (function()
-    convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "0"
+    convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "1"
     cursorValue = "blank"
     WoundSystemShrapnelMinigame = { active = true }
     WSZC.SyncMinigameCursor()

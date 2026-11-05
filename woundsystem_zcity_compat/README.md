@@ -1250,3 +1250,60 @@ GMod не запускался — принятие по свежему live-с�
 
 Проверено: `S47/S48`, `R33`, `S15 ALL_LUA_OK`, `S16 CJK_CLEAN`, полный suite.
 Живой GMod не запускался — принятие по свежему live-скрину.
+
+## №13 (по `Screenshot_1-11.png`): пропорция предплечья, видимый курсор, опиоиды
+
+1. **Только пропорция, без перерисовки.** В №12 я ошибся: чтобы закрыть щели,
+   применил `CloseMask()` / `FlattenLimbBand()` к рукам и тем изменил сам вид
+   (ровные прямоугольники с полосатой альфой). Владелец: «просто предплечие
+   пропорционально сделай нормальный к остальной руке а не меняй то как оно
+   выглядит». Все 15 силуэтов архива снова отдаются **VERBATIM** для рук и
+   кистей; `SEAM_LIMBS`, `CloseMask()`, `FlattenLimbBand()` удалены,
+   `SquareToe()` оставлен только для стоп (по кругу на `Screenshot_8`).
+   Пропорция исправлена ИСКЛЮЧИТЕЛЬНО числами `REFERENCE_BOXES`: высота
+   `arm_*` `40 → 46`, `forearm_*` `40 → 33`. Симуляция рендера C:U:
+   плечо `x=560/590` → `29/31 px`, предплечье `x=470/500` → `30 px`,
+   кисть `x=410` → `36 px` (пальцы). Раньше было `21-25` против `35`.
+   `cx/cy`, длины, POT-ширины, габарит `377..988 × 217..864`, симметрия
+   `cx_R+cx_L=1500`, чёрный цвет и обводка по форме не изменились.
+
+2. **Курсор в мини-играх.** Главная причина, по которой стрелку не было видно:
+   `CreateClientConVar` создан с `shouldsave = true`, и у игрока в
+   `config.vdf` осталось **`zc_woundsystem_compat_hide_minigame_cursor 1`** из
+   старой сборки. Смена дефолта на `0` НЕ перезаписывает сохранённое значение,
+   поэтому `SyncMinigameCursor()` продолжал ставить `SetCursor("blank")`.
+   Исправлено жёстко, без доверия конвару:
+   * при загрузке `cvHideCursor:SetInt(0)`;
+   * `BlankMinigameCursor()` теперь инертен (`return false`), пустой курсор
+     **никогда** не ставится;
+   * `RestoreMinigameCursor()` всегда форсит `"arrow"` (а не `savedCursor`,
+     который сам мог быть `"blank"`);
+   * `SyncMinigameCursor()` всегда восстанавливает стрелку;
+   * `WSZC_MinigameCursor` (Think) проверяет `vgui.CursorVisible()` и, если
+     C:U watchdog / радиальное меню ZCity выключили кликер посреди игры,
+     сразу делает `gui.EnableScreenClicker(true)` + `arrow`;
+   * `EnableMinigameClicker()` и wrapper `gui.EnableScreenClicker` тоже форсят
+     `arrow`.
+
+3. **Морфин / фентанил / обезболивающие.** Настоящая причина найдена в
+   `z_city/lua/homigrad/woundbridge/sv_woundbridge.lua` и
+   `z_city/lua/weapons/weapon_{fentanyl,morphine}.lua`:
+   `SWEP:Heal()` начинается с
+   `local wbr = hg.WoundBridge.SwepHeal(...); if wbr ~= nil then return wbr end`.
+   `WB.SwepHeal` для этих SWEP'ов открывает syringe-мини-игру и возвращает
+   `false` — значит нативный ZCity код `org.analgesiaAdd += injected` **не
+   выполняется никогда**, а эффект применяется только по завершении
+   мини-игры. Раз курсор не работал, мини-игра не завершалась и лекарство
+   не действовало (отсюда «после мини игр нету применения»). Дополнительно
+   нашёлся второй пропуск: C:U пишет дозу в `body.opiateAmount`
+   (`sh_fentanyl.lua`: `opiateAmount = 420`), а `WSZC.ApplyMedicalDelta()`
+   переносил в organism всё, КРОМЕ опиоида. Теперь `Snapshot()` хранит
+   `opiateAmount`, а `ApplyMedicalDelta()` пишет
+   `org.analgesiaAdd += ΔopiateAmount * 0.006` (кладется в диапазон `0..4`).
+   ZCity `sv_pain.lua:116` читает `org.analgesiaAdd > 0` и поднимает
+   `org.analgesia` до 4, так что обезболивание/седация реально работают.
+   Плюс от №12 сохраняются: снятие `SetButtons(0)` для нативных сессий,
+   `_MinigameForceOffUntil` и `ForceReleaseMinigameCursor()`.
+
+Проверено: `S48/S49`, `R10/R11/R12`, `S15 ALL_LUA_OK`, `S16 CJK_CLEAN`,
+полный suite. Живой GMod не запускался — принятие по свежему live-скрину.
