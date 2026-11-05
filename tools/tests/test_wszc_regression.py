@@ -79,15 +79,15 @@ check('S04 death-screen suppression keeps top priority',
 check('S05 WSZC minigames stay full-screen; native C:U games keep authored geometry',
       'MinigameFullscreenNative' in layout_s and 'NativeFullscreenK' in layout_s
       and 'WSZC.WSZCMinigameActive()' in layout_s)
-check('S06 full-screen native defaults OFF (no giant cropped shrapnel), cursor hiding on',
+check('S06 full-screen native defaults OFF; STANDARD cursor is on by default',
       '"zc_woundsystem_compat_fullscreen_native", "0"' in layout_s
       and '"zc_woundsystem_compat_native_minigame_zoom", "1"' in layout_s
-      and '"zc_woundsystem_compat_hide_minigame_cursor", "1"' in layout_s)
+      and '"zc_woundsystem_compat_hide_minigame_cursor", "0"' in layout_s)
 check('S07 hand pivot + size cap convars exist',
       all(x in layout_s for x in ('hand_pivot_x', 'hand_pivot_y', 'hand_max_screen')))
 check('S08 hand rect is derived from the cursor',
       'HandRectForCursor' in layout_s and '(0.5 - px) * nw' in layout_s)
-check('S09 the OS cursor is blanked and restored',
+check('S09 opt-in drawn-hand mode can blank + restore the OS cursor',
       'SetCursor, panel, "blank"' in layout_s and 'RestoreMinigameCursor' in layout_s)
 check('S10 glass shrapnel has both damage hooks',
       'hook.Add("EntityTakeDamage", "WSZC_GlassStrikePre"' in organism_s
@@ -130,12 +130,13 @@ check('S24 white tint is for *_fill.png ONLY (outline hover stays C:U-owned)',
       and 'IsDollLimbMaterial' in layout_s
       and 'lower:find("_fill", 1, true)' in layout_s
       and 'DollMiddleKind' not in layout_s)
-check('S25 archive hand is pinned to the real cursor (state + draw)',
+check('S25 opt-in archive hand can still be pinned to the real cursor',
       'zc_woundsystem_compat_hand_pin_cursor' in layout_s
       and 'PinNativeHandToCursor' in layout_s
       and 'mg.handScreenX, mg.handScreenY = mx, my' in layout_s)
-check('S26 archive hand stays default; status icons/texts are left alone',
-      '"zc_woundsystem_compat_handanim", "1"' in layout_s
+check('S26 standard cursor is default; archive hand is opt-in; status texts untouched',
+      '"zc_woundsystem_compat_handanim", "0"' in layout_s
+      and '"zc_woundsystem_compat_hide_minigame_hand", "1"' in layout_s
       and 'HGNotificationsThink' not in layout_s
       and 'SetCursor, panel, "blank"' in layout_s)
 check('S27 the rejected native-doll experiment is fully rolled back',
@@ -206,6 +207,7 @@ check('S33 REFERENCE_BOXES = native Screenshot_2-10 pixel boxes, POT-calibrated'
       and 'Screenshot_2-10.png' in generator_s
       and 'Screenshot_1-10.png' in generator_s
       and 'Screenshot_6-2.png' in generator_s
+      and 'Screenshot_8.png' in generator_s
       and '44 px thick' in generator_s
       and 'EDGE_WIDTH = 9' in generator_s
       and 'EDGE_PAD_MIN = 6' in generator_s
@@ -275,6 +277,35 @@ check('S46 one fracture point (middle limb) + one dislocation point (limb above)
       and 'limbSet("broken", Fractured(org, limbId, map))' in organism_s
       and 'limbSet("dislocated", out)' in organism_s
       and 'WSZC.BoneAnchor = BoneAnchor' in organism_s)
+check('S47 standard cursor, no drawn hand, action button offset, post-game release',
+      '"zc_woundsystem_compat_hide_minigame_cursor", "0"' in layout_s
+      and '"zc_woundsystem_compat_hide_minigame_hand", "1"' in layout_s
+      and '"zc_woundsystem_compat_handanim", "0"' in layout_s
+      and '"zc_woundsystem_compat_hand_pin_cursor", "0"' in layout_s
+      and 'function WSZC.ShowMinigameHand()' in layout_s
+      and 'if cvHideHand:GetBool() then return 0 end' in layout_s
+      and 'if handHide then' in layout_s
+      and 'cvHandanim:GetBool() or cvHideHand:GetBool()' in layout_s
+      and 'local function PatchActionButtonOffset()' in layout_s
+      and 'point.OffsetY = -14' in layout_s
+      and 'PatchActionButtonOffset()' in layout_s
+      and 'function WSZC.ForceReleaseMinigameCursor()' in layout_s
+      and 'WSZC.ForceReleaseMinigameCursor()' in minigames_s
+      and '_MinigameForceOffUntil' in layout_s and '_MinigameForceOffUntil' in minigames_s
+      and 'MinigameDrawnRecently() is deliberately NOT included here' in minigames_s
+      and 'if WSZC.MinigameHUDOpen == true and cmd.SetButtons' in minigames_s
+      and 'if WSZC.MinigameHUDOpen ~= true then return end' in minigames_s
+      and 'if session and cmd.SetButtons then cmd:SetButtons(0) end'
+          in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua'))
+check('S48 Screenshot_8 joint gaps + wedge boots fixed without moving geometry',
+      'Screenshot_8.png' in generator_s
+      and 'SEAM_LIMBS' in generator_s
+      and 'def CloseMask(mask):' in generator_s
+      and 'def FlattenLimbBand(mask):' in generator_s
+      and 'def SquareToe(mask):' in generator_s
+      and "limb_id.startswith('arm_')" in generator_s
+      and "limb_id.startswith('foot_')" in generator_s
+      and 'hand_* keeps its authored fingers' in generator_s)
 check('S39 shrapnel survives ragdoll -> standing (authoritative organism)',
       '"wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation"' in organism_s
       and '_WSZCRagdollTransitionUntil' in organism_s
@@ -576,6 +607,18 @@ Material = function(path)
     return m
 end
 file = { Exists = function(p) return p == "materials/homigrad/handanim/hand.png" end }
+EnableDrawnHandMode = function()
+    convars["zc_woundsystem_compat_hide_minigame_hand"]._v = "0"
+    convars["zc_woundsystem_compat_handanim"]._v = "1"
+    convars["zc_woundsystem_compat_hand_pin_cursor"]._v = "1"
+    convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "1"
+end
+RestoreStandardCursorMode = function()
+    convars["zc_woundsystem_compat_hide_minigame_hand"]._v = "1"
+    convars["zc_woundsystem_compat_handanim"]._v = "0"
+    convars["zc_woundsystem_compat_hand_pin_cursor"]._v = "0"
+    convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "0"
+end
 Icons = { fracture = Material("cu/fracture") }
 WoundSystemDislocationMinigame, WoundSystemShrapnelMinigame = { active = false }, { active = false }
 WSZC = { WSZCMinigameActive = function() return false end }
@@ -663,6 +706,7 @@ end)()
 
     rt('R07 the hand grip point lands exactly on the cursor', '''
 (function()
+    EnableDrawnHandMode()
     WoundSystemShrapnelMinigame = { active = true }
     surfaceCalls = {}
     surface.SetMaterial(Material("casunknown-images/shrapnelminigame/handGraspIdle1.png"))
@@ -678,6 +722,7 @@ end)()
 
     rt('R08 hand rotation is forced to zero', '''
 (function()
+    EnableDrawnHandMode()
     WoundSystemShrapnelMinigame = { active = true }
     surfaceCalls = {}
     surface.SetMaterial(Material("casunknown-images/shrapnelminigame/handGraspClick.png"))
@@ -689,12 +734,13 @@ end)()
 
     rt('R09 hand width is capped at 34% of the screen', '''
 (function()
+    EnableDrawnHandMode()
     local x, y, w, h = WSZC.HandRectForCursor(500, 400, 5000, 12000)
     return w <= 340.001 and w > 0 and h > 0
 end)()
 ''')
 
-    rt('R10 cursor is blank while a minigame is open', '''
+    rt('R10 opt-in drawn-hand mode blanks the cursor while a minigame is open', '''
 (function()
     cursorValue = "arrow"
     WoundSystemShrapnelMinigame = { active = true }
@@ -706,7 +752,7 @@ end)()
 end)()
 ''')
 
-    rt('R11 enabling the screen clicker re-blanks the cursor', '''
+    rt('R11 opt-in mode re-blanks the cursor when the clicker is enabled', '''
 (function()
     cursorValue = "arrow"
     WoundSystemDislocationMinigame = { active = true }
@@ -727,7 +773,7 @@ end)()
     WoundSystemShrapnelMinigame = { active = true }
     WSZC.SyncMinigameCursor()
     WoundSystemShrapnelMinigame = { active = false }
-    convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "1"
+    convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "0"
     return cursorValue == "arrow"
 end)()
 ''')
@@ -816,6 +862,7 @@ end)()
 
     rt('R19 hand pinned to the REAL cursor, C:U state kept in sync', '''
 (function()
+    EnableDrawnHandMode()
     mouseX, mouseY = 700, 300
     WoundSystemShrapnelMinigame = { active = true, handScreenX = 100, handScreenY = 100 }
     surfaceCalls = {}
@@ -835,6 +882,7 @@ end)()
 
     rt('R20 hand_pin_cursor 0 restores C:U\'s own hand position', '''
 (function()
+    EnableDrawnHandMode()
     convars["zc_woundsystem_compat_hand_pin_cursor"]._v = "0"
     mouseX, mouseY = 700, 300
     local x, y, w, h = WSZC.HandRectForCursor(200, 150, 512, 1260)
@@ -846,13 +894,15 @@ end)()
 end)()
 ''')
 
-    rt('R21 defaults: archive hand, black doll, native C:U minigames, empty-click close', '''
+    rt('R21 defaults: standard cursor, no drawn hand, black doll, empty-click close', '''
 (function()
-    return convars["zc_woundsystem_compat_handanim"]._v == "1"
-       and convars["zc_woundsystem_compat_hand_pin_cursor"]._v == "1"
+    RestoreStandardCursorMode()
+    return convars["zc_woundsystem_compat_handanim"]._v == "0"
+       and convars["zc_woundsystem_compat_hide_minigame_hand"]._v == "1"
+       and convars["zc_woundsystem_compat_hand_pin_cursor"]._v == "0"
        and convars["zc_woundsystem_compat_hide_woundview_backdrop"]._v == "1"
        and convars["zc_woundsystem_compat_unitmenu_tint"]._v == "1"
-       and convars["zc_woundsystem_compat_hide_minigame_cursor"]._v == "1"
+       and convars["zc_woundsystem_compat_hide_minigame_cursor"]._v == "0"
        and convars["zc_woundsystem_compat_hide_minigame_text"]._v == "1"
        and convars["zc_woundsystem_compat_fullscreen_native"]._v == "0"
        and convars["zc_woundsystem_compat_native_minigame_zoom"]._v == "1"
@@ -1089,6 +1139,38 @@ end)()
     hook.Remove("HUDPaint", "WSZCTestOtherHook")
     WSZC.ClearCULimbsCache()
     return found ~= nil and #found == 15 and found[1].id == "limb1"
+end)()
+''')
+
+    rt('R33 standard cursor + no hand + lower action button + hard post-game release', '''
+(function()
+    RestoreStandardCursorMode()
+    local arrowDefault = convars["zc_woundsystem_compat_hide_minigame_cursor"]._v == "0"
+        and convars["zc_woundsystem_compat_hide_minigame_hand"]._v == "1"
+        and convars["zc_woundsystem_compat_handanim"]._v == "0"
+    local noHand = WSZC.UnitmenuHandAlpha(153) == 0
+        and WSZC.ShowMinigameHand() == false
+
+    WoundSystemLimbUIConfig = { ShrapnelPoint = { OffsetY = -60,
+        Actions = { DISLOCATION = { OffsetY = -60 },
+                    SHRAPNEL = { OffsetY = -30 } } } }
+    WoundSystemActionButtonPos = { x = 100, y = 100 }
+    local patched = WSZC.PatchActionButtonOffset() == true
+        and WoundSystemLimbUIConfig.ShrapnelPoint.OffsetY == -14
+        and WoundSystemLimbUIConfig.ShrapnelPoint.Actions.DISLOCATION.OffsetY == -14
+        and WoundSystemLimbUIConfig.ShrapnelPoint.Actions.SHRAPNEL.OffsetY == -14
+        and WoundSystemActionButtonPos.y == nil
+    local twice = WSZC.PatchActionButtonOffset() == false
+
+    clickerOn = true
+    WSZC._HoldMinigameCursor = true
+    WSZC.BlankMinigameCursor()
+    WSZC.ForceReleaseMinigameCursor()
+    local released = clickerOn == false
+        and WSZC._HoldMinigameCursor == false
+        and worldPanel:GetCursor() == "arrow"
+        and (WSZC._MinigameForceOffUntil or 0) > CurTime()
+    return arrowDefault and noHand and patched and twice and released
 end)()
 ''')
 

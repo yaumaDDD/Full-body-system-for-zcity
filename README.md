@@ -234,7 +234,7 @@
   с pivot у кончиков пальцев и без поворота на 290°. Конвары:
   `zc_woundsystem_compat_unitmenu_doll 1`,
   `zc_woundsystem_compat_unitmenu_scale 0.24`,
-  `zc_woundsystem_compat_handanim 1`,
+  `zc_woundsystem_compat_handanim 0` (см. №12),
   `zc_woundsystem_compat_handanim_scale 0.55`. Исходные ZIP-аддоны не
   правятся; кадры `homigrad/handanim` теперь тоже лежат в самом коннекторе,
   поэтому WIP-аддон и чужие файлы больше не нужны. Если сборка GMod закрывает
@@ -302,7 +302,7 @@ C:U `HandPhysics` догоняет с задержкой и тряской от 
 захвата `zc_woundsystem_compat_hand_pivot_x 0.16` /
 `..._hand_pivot_y 0.45` ровно на курсоре, ширина ≤
 `..._hand_max_screen 0.34 * ScrW`. Системный курсор по-прежнему скрыт
-(`zc_woundsystem_compat_hide_minigame_cursor 1`). Вернуть инерцию C:U —
+(`zc_woundsystem_compat_hide_minigame_cursor 0` (см. №12)). Вернуть инерцию C:U —
 `zc_woundsystem_compat_hand_pin_cursor 0`.
 
 **Фон WoundView.** `WoundDollAndPanel` рисует полноэкранный `woundbg` с альфой
@@ -619,3 +619,63 @@ runtime-код **не изменялись**. Живой GMod агентом н�
 
 Проверено: `S33/S46`, `S15 ALL_LUA_OK`, `S16 CJK_CLEAN`, полный suite. Живой
 GMod не запускался — принятие по свежему live-скрину.
+
+## №12 (по `Screenshot_8.png` / `Screenshot_9.png`): стыки, кнопка, курсор, рука и лекарства
+
+1. **Стыки и стопы (красные круги на `Screenshot_8`).** Исходные слои архива
+   нарезаны под РОДНУЮ куклу C:U: у `arm_*` глубокий диагональный вырез
+   подмышки, у `hand_*` неровный торец, у `foot_*` клин-«сапог». После
+   POT-калибровки они давали белые щели на каждом суставе. В
+   `tools/build_unitmenu_materials.py` добавлены `CloseMask()` (morphological
+   closing), `FlattenLimbBand()` (ровная полоса постоянной высоты для
+   `arm_*`/`forearm_*`) и `SquareToe()` (прямая подошва для `foot_*`).
+   Кисти `hand_*` НЕ выпрямляются — пальцы сохранены. Геометрия
+   (`cx/cy/w/h/hoverW/hoverH`), цвет, обводка, симметрия и габарит
+   `377..988 × 217..864` не изменились; зазоры стали `3..5 px` против
+   эталонных `3..4 px` на `Screenshot_2-10.png`.
+
+2. **Кнопка `FIX DISLOCATION` слишком высоко.** C:U считает
+   `targetCenterY = limbScreenPoint.y + OffsetY * dollScale` с авторским
+   `OffsetY = -60` из `WoundSystemLimbUIConfig.ShrapnelPoint`. Наша кукла
+   упакована в `k = 0.24`, поэтому `dollScale ≈ 1.73` превращает -60 в
+   ~-104 ЭКРАННЫХ px — кнопка улетала на весь лимб вверх, на живот.
+   `WSZC.PatchActionButtonOffset()` пере-author'ивает `OffsetY = -14`
+   (≈ -24 px) для самой точки и всех `Actions` (SHRAPNEL / DISLOCATION /
+   TOURNIQUET / SPLINTED) в ГЛОБАЛЬНОМ конфиге, не правя C:U, и один раз
+   сбрасывает `WoundSystemActionButtonPos`, чтобы поправка применилась сразу,
+   а не за секунду Lerp'а.
+
+3. **Рука убрана, курсор стандартный.** `hand=archive` ОТМЕНЕНО по запросу
+   «убери руку из мини игр замени на стандартный курсор». Конвары по
+   умолчанию: `zc_woundsystem_compat_hide_minigame_cursor 0` (видна обычная
+   стрелка, никакого `blank`), `zc_woundsystem_compat_hide_minigame_hand 1`,
+   `zc_woundsystem_compat_handanim 0`, `zc_woundsystem_compat_hand_pin_cursor 0`.
+   `WSZC.UnitmenuHandAlpha()` возвращает `0`, поэтому наши копии бинта/шприца
+   сохраняют ВСЕ хитбоксы и вызовы отрисовки, но руку не видно;
+   `WSZC.InstallNativeHandOverride()` теперь ставится и в этом режиме и
+   подавляет нативные `handgrasp*` спрайты через флаг `handHide`. Пин к курсору
+   и inertia-подмена отключены — стрелка всегда там, где реальная мышь.
+
+4. **Курсор не пропадал после мини-игры.** `DisableMinigameClicker()` раньше
+   делал `return` при `WoundSystemHealthHUDOpen == true`, поэтому
+   `_HoldMinigameCursor`, `ScreenClickerOwned` и guard `EnableScreenClicker`
+   залипали навсегда. Добавлен `WSZC.ForceReleaseMinigameCursor()` (вызывается
+   из `WSZC_MinigameClose` и из watchdog при переходе `running -> false`):
+   сбрасывает все флаги, возвращает `arrow`, снимает владение C:U и один раз
+   отпускает кликер. `WoundSystemIsAnyWoundMinigameActive()` больше НЕ включает
+   `MinigameDrawnRecently()` — иначе C:U `DelayedRespawnCursorRelease` и
+   `ScreenClickerWatchdog` ещё 0.35 с считали игру активной. Защёлка
+   `_MinigameForceOffUntil` живёт 0.4 с (timestamp, не boolean), поэтому
+   следующая нативная мини-игра C:U не теряет курсор и заморозку камеры.
+
+5. **Фентанил и подобные не применялись после мини-игр.** Оба `SetupMove`
+   хука обнуляли `cmd:SetButtons(0)`, т.е. убивали `IN_ATTACK`, пока
+   `MinigameActive()` или нативная C:U `Sessions.Dislocation[ply]` залипали.
+   Теперь полный button-lock остаётся ТОЛЬКО у наших bandage/syringe сессий:
+   клиент проверяет `WSZC.MinigameHUDOpen == true`, сервер — наличие
+   `session`. Для нативных сессий замораживаются лишь движение и углы, а ЛКМ
+   проходит, поэтому ZCity медицинские SWEP'ы снова работают. Дополнительно
+   серверный watch снимает залипшую C:U Dislocation-сессию старше 20 с.
+
+Проверено: `S47/S48`, `R33`, `S15 ALL_LUA_OK`, `S16 CJK_CLEAN`, полный suite.
+Живой GMod не запускался — принятие по свежему live-скрину.

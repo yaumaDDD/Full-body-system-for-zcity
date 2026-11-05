@@ -650,6 +650,20 @@ hook.Add("SetupMove", "WSZC_MinigameServerLock", function(ply, mv, cmd)
     local dislocation = type(cuSessions) == "table"
         and type(cuSessions.Dislocation) == "table"
         and cuSessions.Dislocation[ply] or nil
+    -- C:U occasionally leaves a Dislocation session behind after the game
+    -- closed.  Cap its lifetime so it cannot pin SetupMove forever.
+    if dislocation and not session then
+        local now = CurTime and CurTime() or 0
+        ply._WSZCDislocationSeenAt = ply._WSZCDislocationSeenAt or now
+        if now - ply._WSZCDislocationSeenAt > 20 then
+            cuSessions.Dislocation[ply] = nil
+            dislocation = nil
+            ply._WSZCDislocationSeenAt = nil
+            ply._WSZCDislocationAngles = nil
+        end
+    else
+        ply._WSZCDislocationSeenAt = nil
+    end
     if not session and not dislocation then
         if ply then ply._WSZCDislocationAngles = nil end
         return
@@ -664,7 +678,12 @@ hook.Add("SetupMove", "WSZC_MinigameServerLock", function(ply, mv, cmd)
     if cmd.SetForwardMove then cmd:SetForwardMove(0) end
     if cmd.SetSideMove then cmd:SetSideMove(0) end
     if cmd.SetUpMove then cmd:SetUpMove(0) end
-    if cmd.SetButtons then cmd:SetButtons(0) end
+    -- Do NOT zero IN_ATTACK for a native C:U Dislocation session.  That kept
+    -- ZCity medical SWEPs (fentanyl, morphine, ...) from ever firing after a
+    -- minigame, because the reduction session can outlive the game.  Only OUR
+    -- bandage/syringe sessions need the full button lock; movement/view stay
+    -- frozen for both.
+    if session and cmd.SetButtons then cmd:SetButtons(0) end
     if cmd.SetMouseX then cmd:SetMouseX(0) end
     if cmd.SetMouseY then cmd:SetMouseY(0) end
     -- Zeroing the mouse delta is not enough: GMod already applied it to

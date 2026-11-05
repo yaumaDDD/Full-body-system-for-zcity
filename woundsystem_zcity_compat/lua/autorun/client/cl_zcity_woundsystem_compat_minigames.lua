@@ -26,20 +26,27 @@ function WSZC.MinigameActive()
     -- the cursor, camera freeze, SetupMove lock and PlayerBindPress block
     -- alive after death, making respawn impossible.
     if WSZC.MinigameContextOK and not WSZC.MinigameContextOK() then return false end
-    if WSZC.MinigameHUDOpen == true then return true end
+
+    -- Short post-close latch.  WSZC_MinigameClose / ForceReleaseMinigameCursor
+    -- set it for 0.4 s: during that window a stale MG.active or a lingering
+    -- C:U session cannot keep IN_ATTACK zeroed, which is why fentanyl and the
+    -- other ZCity medical SWEPs could not be used after a minigame.  It is a
+    -- TIMESTAMP, not a boolean: native C:U games (dislocation / shrapnel /
+    -- AED) never send WSZC_MinigameOpen, so a permanent latch would disable
+    -- their cursor and movement lock on the next game.
+    local now = CurTime and CurTime() or 0
+    if (WSZC._MinigameForceOffUntil or 0) > now then return false end
+
     local bandage, syringe = WSZCBandageMinigame, WSZCSyringeMinigame
-    if bandage and bandage.IsActive and bandage.IsActive() then return true end
-    if syringe and syringe.IsActive and syringe.IsActive() then return true end
-    -- C:U's native manual bone reduction (WoundView -> FIX DISLOCATION).
-    -- It owns the cursor and reads gui.MousePos(); include it so the movement
-    -- lock, camera freeze and cursor watchdog cover it too.
     local dislocation = WoundSystemDislocationMinigame
-    if dislocation and dislocation.active == true then return true end
-    -- Also cover the other native C:U games (shrapnel, AED, ...): they use the
-    -- same cursor owner and camera/movement lock.  The layout helper is loaded
-    -- first alphabetically, but stay defensive for hot reloads.
-    if WSZC.NativeMinigameActive and WSZC.NativeMinigameActive() then return true end
-    return false
+    local real = (bandage and bandage.IsActive and bandage.IsActive())
+        or (syringe and syringe.IsActive and syringe.IsActive())
+        or (dislocation and dislocation.active == true)
+        or (WSZC.NativeMinigameActive and WSZC.NativeMinigameActive())
+    -- An open packet that has not painted its first frame yet still owns the
+    -- cursor; this is the only latch-derived "active" state.
+    if WSZC.MinigameHUDOpen == true then return true end
+    return real and true or false
 end
 
 function WSZC.MinigameNextInputSeq(mg)
@@ -83,16 +90,23 @@ local function EnableMinigameClicker()
 end
 
 local function DisableMinigameClicker()
-    -- The C:U health/wound panel can be open behind a ZCity minigame (the
-    -- radial "Проверить травмы" button opens it).  Do not release the cursor
-    -- while that panel is still up; C:U releases it when the panel closes.
-    if WoundSystemHealthHUDOpen == true then return end
-
-    -- This is the ONE legitimate release.  Our gui.EnableScreenClicker guard
-    -- refuses every other (watchdog / radial-menu) disable while a minigame
-    -- board was painted recently.
+    -- ALWAYS clear our own state, even when the C:U health/wound panel is
+    -- still open behind the game.  The old early return left
+    -- _HoldMinigameCursor / ScreenClickerOwned stuck forever ("после мини
+    -- игры курсор не пропадает") and kept the movement lock alive.
     WSZC._AllowClickerRelease = true
     WSZC._HoldMinigameCursor = false
+    WSZC._MinigameBackdropDrawing = false
+    WSZC._LastMinigameDraw = -10
+    WSZC._NextCursorFix = 0
+    WSZC._MinigameForceOffUntil = (CurTime and CurTime() or 0) + 0.4
+    WSZC.RestoreMinigameCursor(true)   -- standard OS arrow again
+    if WoundSystemHealthHUDOpen == true then
+        -- C:U still needs a cursor for its own HUD, so only drop OUR
+        -- ownership.  It releases the clicker itself when the panel closes.
+        WSZC._AllowClickerRelease = false
+        return
+    end
     if WoundSystem and WoundSystem.HealthGUI and WoundSystem.HealthGUI.SetScreenClickerOwned then
         pcall(WoundSystem.HealthGUI.SetScreenClickerOwned, false, "wszc_minigame")
     end
@@ -114,9 +128,12 @@ local function PatchCUMinigameActive()
     if WSZC._CUMinigameActiveWrapper == WoundSystemIsAnyWoundMinigameActive then return end
     local original = WoundSystemIsAnyWoundMinigameActive
     local function wrapped()
-        return original()
-            or WSZC.MinigameActive()
-            or (WSZC.MinigameDrawnRecently and WSZC.MinigameDrawnRecently())
+        -- MinigameDrawnRecently() is deliberately NOT included here.  C:U's
+        -- DelayedRespawnCursorRelease / ScreenClickerWatchdog read this global
+        -- to decide whether to release the clicker; a 0.35 s "recently drew"
+        -- tail used to make them report "minigame active" after the game had
+        -- already closed.  The backdrop stamp is only for OUR cursor watchdog.
+        return original() or WSZC.MinigameActive()
     end
     WoundSystemIsAnyWoundMinigameActive = wrapped
     WSZC._CUMinigameActiveWrapper = wrapped
@@ -256,7 +273,19 @@ hook.Add("Think", "WSZC_MinigameCursorWatch", function()
     local running = WSZC.MinigameActive()
         or (WSZC.MinigameDrawnRecently and WSZC.MinigameDrawnRecently())
     WSZC._HoldMinigameCursor = running and true or false
-    if not running then return end
+    if not running then
+        -- Game ended (including native C:U games whose IsActive() we may
+        -- miss): run the hard cleanup exactly once so the clicker, camera
+        -- freeze and SetupMove lock cannot outlive the minigame.
+        if WSZC._MinigameWasRunning then
+            WSZC._MinigameWasRunning = false
+            if WSZC.ForceReleaseMinigameCursor then
+                WSZC.ForceReleaseMinigameCursor()
+            end
+        end
+        return
+    end
+    WSZC._MinigameWasRunning = true
     -- Never fight the game/console menu for the cursor, but otherwise keep
     -- re-asserting it unconditionally.  Checking vgui.CursorVisible() here
     -- used to let C:U's watchdog steal it for one frame -> visible flicker.
@@ -284,7 +313,11 @@ hook.Add("SetupMove", "WSZC_MinigameLockMovement", function(ply, mv, cmd)
     if cmd.SetForwardMove then cmd:SetForwardMove(0) end
     if cmd.SetSideMove then cmd:SetSideMove(0) end
     if cmd.SetUpMove then cmd:SetUpMove(0) end
-    if cmd.SetButtons then cmd:SetButtons(0) end
+    -- Only OUR bandage/syringe sessions (they set MinigameHUDOpen) need the
+    -- full IN_ATTACK lock.  For native C:U games a stale `active` flag must
+    -- never swallow the left click - ZCity medical SWEPs (fentanyl, ...)
+    -- would stop working after every minigame.
+    if WSZC.MinigameHUDOpen == true and cmd.SetButtons then cmd:SetButtons(0) end
     -- MouseX/MouseY are intentionally NOT zeroed in SetupMove either: the
     -- VGUI cursor still needs that delta while a minigame owns the clicker.
     -- Last line of defence: GMod already applied mouse delta to ViewAngles.
@@ -304,6 +337,11 @@ local MINIGAME_ALLOWED_BINDS = {
 }
 hook.Add("PlayerBindPress", "WSZC_MinigameBlockBinds", function(ply, bind, pressed)
     if not WSZC.MinigameActive() then return end
+    -- Only OUR bandage/syringe sessions need to suppress ZCity binds.  A
+    -- stale native C:U MG.active must never lock the player out of their
+    -- inventory: fentanyl / morphine are picked with a slot bind right after
+    -- a minigame, and the blocked bind looked like "medicine does not apply".
+    if WSZC.MinigameHUDOpen ~= true then return end
     if MINIGAME_ALLOWED_BINDS[bind] then return end
     return true
 end)
@@ -385,6 +423,7 @@ net.Receive("WSZC_MinigameOpen", function()
     SetVirtualSlot(slotIdx, itemId, durability, maxDur)
     WSZC.MinigameHUDOpen = true
     WSZC.MinigameOpenAt = CurTime and CurTime() or 0
+    WSZC._MinigameForceOffUntil = 0
     PatchCUMinigameActive()
     FreezeMinigameView()
     EnableMinigameClicker()
@@ -420,6 +459,9 @@ net.Receive("WSZC_MinigameClose", function()
     WSZC.PendingSyringeOpen = nil
     ReleaseMinigameView()
     DisableMinigameClicker()
+    -- Also clear C:U's ownership/watchdog state so the arrow disappears and
+    -- ZCity medical SWEPs (fentanyl, morphine, ...) get their clicks back.
+    if WSZC.ForceReleaseMinigameCursor then WSZC.ForceReleaseMinigameCursor() end
 end)
 
 net.Receive("WSZC_MinigameAck", function()

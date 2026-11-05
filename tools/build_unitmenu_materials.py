@@ -136,6 +136,15 @@ EDGE_WIDTH = 9                # MinFilter size -> ~4 px contour along the shape.
                               # Owner asked for the body outline to be a little
                               # thicker; 5 was a hairline, 9 reads as ~1.7 px.
 ERODE_MARGIN = 4              # MinFilter(JOINT_ERODE) eats 2 px per side
+JOINT_SQUARE_FRAC = 0.12      # Screenshot_8.png red circles: the archive arms
+                              # end in a diagonal notch (stepped shoulder /
+                              # wrist) and the feet are wedge "boots", leaving
+                              # white gaps at the joints.  Straighten only the
+                              # outer 12% of each joint face.
+SEAM_LIMBS = {
+    'arm_R', 'arm_L', 'forearm_R', 'forearm_L', 'hand_R', 'hand_L',
+    'foot_R', 'foot_L',
+}
 
 # Live calibration constants (see module docstring).
 LIVE_S = 0.4155
@@ -221,6 +230,64 @@ def cell(limb_id):
     return (left, top, left + w, top + h)
 
 
+def CloseMask(mask):
+    """Morphological closing: smooth notches without changing thickness."""
+    from PIL import ImageFilter
+    return mask.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.MinFilter(5))
+
+
+def FlattenLimbBand(mask):
+    """Straighten an arm/forearm into a flush, gap-free band.
+
+    The archive upper-arm layer ends in a deep diagonal underarm notch.  In
+    C:U's own doll that notch met a differently shaped torso; in our POT doll
+    it leaves a bright wedge between the upper arm, the forearm and the chest
+    (Screenshot_8.png red circles).  The native Screenshot_2-10.png doll has
+    straight horizontal arms with thin seam lines, so a constant rectangular
+    band - not a new anatomy - is the faithful shape.  Width/height/centre are
+    untouched; only the empty pixels INSIDE the inner box are filled.
+    """
+    px = mask.load()
+    w, h = mask.size
+    top, bottom = h, -1
+    for x in range(int(w * 0.30), int(w * 0.70)):
+        ys = [y for y in range(h) if px[x, y] > ALPHA_THRESHOLD]
+        if ys:
+            top, bottom = min(top, ys[0]), max(bottom, ys[-1])
+    if bottom <= top:
+        return mask
+    # Replace the whole inner box with one constant-height band.  Filling only
+    # downward left the original underarm notch BELOW `bottom` in place: that
+    # was the diagonal still visible on the first attempt.
+    for x in range(w):
+        for y in range(h):
+            px[x, y] = 255 if top <= y <= bottom else 0
+    return mask
+
+
+def SquareToe(mask):
+    """Turn the archive's wedge "boot" into a flat-soled shoe.
+
+    Screenshot_8.png bottom circle: our feet are trapezoids that taper to a
+    point, while the native doll wears straight-sided boots.  Fill the lowest
+    JOINT_SQUARE_FRAC of rows to the widest part of the foot so the sole is
+    horizontal; the ankle and the shaped top stay as authored.
+    """
+    px = mask.load()
+    w, h = mask.size
+    left, right = w, -1
+    for y in range(int(h * 0.45), h):
+        xs = [x for x in range(w) if px[x, y] > ALPHA_THRESHOLD]
+        if xs:
+            left, right = min(left, xs[0]), max(right, xs[-1])
+    if right <= left:
+        return mask
+    for y in range(h - max(2, int(h * JOINT_SQUARE_FRAC)), h):
+        for x in range(left, right + 1):
+            px[x, y] = 255
+    return mask
+
+
 def main():
     sys.path.insert(0, '/tmp/pil_pkg')
     from PIL import Image, ImageChops, ImageFilter
@@ -250,6 +317,14 @@ def main():
         assert bbox, limb_id
         assert inner_w > 8 and inner_h > 8, limb_id
         scaled = alpha.crop(bbox).resize((inner_w, inner_h), Image.Resampling.LANCZOS)
+        if limb_id in SEAM_LIMBS:
+            scaled = CloseMask(scaled)
+            if limb_id.startswith('arm_') or limb_id.startswith('forearm_'):
+                scaled = FlattenLimbBand(scaled)
+            elif limb_id.startswith('foot_'):
+                scaled = SquareToe(scaled)
+            # hand_* keeps its authored fingers - straightening them produced
+            # the square "claw" the owner rejected on Screenshot_8.png.
         cell_soft = Image.new('L', (w, h), 0)
         cell_soft.paste(scaled, (px, py))
         soft[limb_id] = cell_soft

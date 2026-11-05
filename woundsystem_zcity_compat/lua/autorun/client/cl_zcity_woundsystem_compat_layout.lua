@@ -929,8 +929,12 @@ local cvUnitmenuDoll = CreateClientConVar("zc_woundsystem_compat_unitmenu_doll",
     "1 = rebuild the WoundView doll from the repository unitmenu limb layers")
 local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "0.24", true, false,
     "Size of the unitmenu doll relative to C:U's dollScale (0.1 .. 0.8)", 0.1, 0.8)
-local cvHandanim = CreateClientConVar("zc_woundsystem_compat_handanim", "1", true, false,
-    "1 = use the repository handanim frames instead of the 512x1260 C:U hand")
+-- Owner (2026-11-05): "убери руку из мини игр замени на стандартный курсор".
+-- The archive hand / C:U handgrasp pointer is OFF by default; a plain OS arrow
+-- is the pointer.  The convars remain so a server can opt back in, but they no
+-- longer override the cursor out of the box.
+local cvHandanim = CreateClientConVar("zc_woundsystem_compat_handanim", "0", true, false,
+    "0 = keep C:U's own hand frames; 1 = use the repository handanim frames")
 local cvHandanimScale = CreateClientConVar("zc_woundsystem_compat_handanim_scale", "0.55", true, false,
     "Size of the realistic minigame hand (0.2 .. 1.5)", 0.2, 1.5)
 -- C:U centres the rotated hand rectangle ON the cursor, but our realistic
@@ -942,9 +946,11 @@ local cvHandPivotY = CreateClientConVar("zc_woundsystem_compat_hand_pivot_y", "0
     "Grip point inside the hand sprite, Y fraction 0..1", 0, 1)
 local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_screen", "0.34", true, false,
     "Cap the minigame hand width at this fraction of ScrW (0.1 .. 1)", 0.1, 1)
-local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "1", true, false,
-    "1 = hide the OS cursor while any C:U / WSZC minigame is open")
-local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "1", true, false,
+local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "0", true, false,
+    "0 = show the STANDARD OS arrow in minigames; 1 = blank it (drawn-hand mode)")
+local cvHideHand = CreateClientConVar("zc_woundsystem_compat_hide_minigame_hand", "1", true, false,
+    "1 = draw NO hand sprite in minigames, the standard cursor is the pointer")
+local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "0", true, false,
     "1 = put the archive hand on the REAL cursor, bypassing C:U hand inertia/pain shake")
 local cvDollTint = CreateClientConVar("zc_woundsystem_compat_unitmenu_tint", "1", true, false,
     "1 = draw the slate limbs with a white tint so they do not render pure black")
@@ -1042,7 +1048,17 @@ function WSZC.UnitmenuHandGeometry(srcW, srcH, scale)
 end
 
 function WSZC.UnitmenuHandAlpha(fallback)
+    -- With the standard cursor as the pointer there must be NO hand picture
+    -- at all.  Returning alpha 0 keeps every C:U/WSZC draw call and hitbox
+    -- intact (no code path changes) while making the sprite invisible.
+    if cvHideHand:GetBool() then return 0 end
     return UnitmenuHandMaterials() and 255 or (fallback or 153)
+end
+
+--- True only in the opt-in "drawn hand" mode.  Native games use this to
+--- suppress their handgrasp* sprites when the arrow is the pointer.
+function WSZC.ShowMinigameHand()
+    return not cvHideHand:GetBool()
 end
 
 --- C:U rotates its tall hand by up to 290 degrees.  A horizontal hand only
@@ -1223,7 +1239,7 @@ WSZC.ApplyUnitmenuIcons = ApplyUnitmenuIcons
 -- material and the rectangle it is drawn into; MG.handDrawW/H (and therefore
 -- every hitbox) stay exactly as C:U computed them.
 ---------------------------------------------------------------------------
-local nativeHandInstalled, handSwap = false, false
+local nativeHandInstalled, handSwap, handHide = false, false, false
 local materialTrackerInstalled = false
 local origSetMaterial, origRectRotated, origTexturedRect, origSetDrawColor
 
@@ -1297,11 +1313,19 @@ function WSZC.InstallNativeHandOverride()
     origTexturedRect = surface.DrawTexturedRect
 
     WSZC._OnSetMaterial = function(mat)
-        handSwap = false
-        if cvHandanim:GetBool() and UnitmenuHandMaterials()
-            and WSZC.NativeMinigameActive and WSZC.NativeMinigameActive() then
-            local clicked = CUHandKind(mat)
-            if clicked ~= nil then
+        local clicked = CUHandKind(mat)
+        -- Clear the pending flags only when a DIFFERENT material is bound, so
+        -- a second SetMaterial between the hand's bind and its draw call does
+        -- not accidentally re-enable the sprite.
+        if clicked == nil then handSwap, handHide = false, false end
+        if clicked ~= nil and WSZC.NativeMinigameActive
+            and WSZC.NativeMinigameActive() then
+            -- Standard cursor mode: no drawn hand at all, native games too.
+            if not WSZC.ShowMinigameHand() then
+                handHide = true
+                return nil
+            end
+            if cvHandanim:GetBool() and UnitmenuHandMaterials() then
                 local repl = WSZC.UnitmenuHandMat(clicked)
                 if repl then
                     handSwap = true
@@ -1377,6 +1401,10 @@ function WSZC.InstallNativeHandOverride()
     end
 
     surface.DrawTexturedRectRotated = function(x, y, w, h, rot, ...)
+        if handHide then
+            handHide = false
+            return
+        end
         if handSwap then
             local nx, ny, nw, nh = WSZC.HandRectForCursor(x, y, w, h)
             handSwap = false
@@ -1386,6 +1414,10 @@ function WSZC.InstallNativeHandOverride()
         return origRectRotated(x, y, w, h, rot, ...)
     end
     surface.DrawTexturedRect = function(x, y, w, h, ...)
+        if handHide then
+            handHide = false
+            return
+        end
         if handSwap then
             -- Non-rotated rects are top-left based; only resize them.
             local nw, nh = HandDrawSize(w, h)
@@ -1443,6 +1475,31 @@ function WSZC.SyncMinigameCursor()
     return WSZC.RestoreMinigameCursor()
 end
 
+--- Hard cleanup after a minigame closes.  C:U's ScreenClickerWatchdog only
+--- releases the clicker when WoundSystemHealthHUDOpen == false AND its own
+--- IsAnyWoundMinigameActive() says false; a stale flag on either side used to
+--- leave the arrow visible forever and kept `IN_ATTACK` zeroed, so fentanyl
+--- and the other ZCity medical SWEPs could not be applied afterwards.
+function WSZC.ForceReleaseMinigameCursor()
+    WSZC._HoldMinigameCursor = false
+    WSZC._MinigameBackdropDrawing = false
+    WSZC._LastMinigameDraw = -10
+    WSZC._NextCursorFix = 0
+    WSZC._MinigameForceOffUntil = (CurTime and CurTime() or 0) + 0.4
+    WSZC.RestoreMinigameCursor(true)      -- standard OS arrow, always
+    if WoundSystemHealthHUDOpen == true then return true end
+    WSZC._AllowClickerRelease = true
+    local hg = WoundSystem and WoundSystem.HealthGUI
+    if hg and type(hg.ForceReleaseScreenClicker) == "function" then
+        pcall(hg.ForceReleaseScreenClicker, false, "wszc_minigame_closed")
+    elseif hg and type(hg.SetScreenClickerOwned) == "function" then
+        pcall(hg.SetScreenClickerOwned, false, "wszc_minigame")
+    end
+    if gui and gui.EnableScreenClicker then gui.EnableScreenClicker(false) end
+    WSZC._AllowClickerRelease = false
+    return true
+end
+
 hook.Add("Think", "WSZC_MinigameCursor", function()
     local now = CurTime and CurTime() or 0
     if now < nextCursorSync then return end
@@ -1471,12 +1528,39 @@ if type(gui) == "table" and type(gui.EnableScreenClicker) == "function" then
     end
 end
 
+--- Screenshot_9.png: the "FIX DISLOCATION" / "REMOVE SHRAPNEL" label sat a
+--- whole limb ABOVE the injured limb.  C:U computes
+---   targetCenterY = limbScreenPoint.y + OffsetY * dollScale
+--- with OffsetY = -60 authored for its own 1500x1500 doll.  Our POT doll is
+--- packed into k = 0.24, so dollScale (~1.73) turns -60 into ~-104 SCREEN px
+--- instead of the intended ~-25.  Re-author the offset in the global config
+--- (never editing C:U) so the label stays next to the limb it belongs to.
+local function PatchActionButtonOffset()
+    local cfg = _G.WoundSystemLimbUIConfig
+    local point = cfg and cfg.ShrapnelPoint
+    if type(point) ~= "table" or point._WSZCOffsetPatched then return false end
+    point._WSZCOffsetPatched = true
+    point.OffsetY = -14
+    if type(point.Actions) == "table" then
+        for _, a in pairs(point.Actions) do
+            if type(a) == "table" then a.OffsetY = -14 end
+        end
+    end
+    -- The global position is lerped; reset it once so the correction applies
+    -- immediately instead of sliding down over a second.
+    local pos = _G.WoundSystemActionButtonPos
+    if type(pos) == "table" then pos.x, pos.y = nil, nil end
+    return true
+end
+WSZC.PatchActionButtonOffset = PatchActionButtonOffset
+
 WSZC.NextUnitmenuInstall = 0
 hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     local now = CurTime and CurTime() or 0
     if now < (WSZC.NextUnitmenuInstall or 0) then return end
     WSZC.NextUnitmenuInstall = now + 1
     WSZC.InstallMaterialTracker()
+    PatchActionButtonOffset()
 
     if cvUnitmenuDoll:GetBool() then
         local mats = BuildUnitmenuMaterials()
@@ -1491,7 +1575,11 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     elseif dollPatched then
         WSZC.RestoreUnitmenuDoll()
     end
-    if cvHandanim:GetBool() then WSZC.InstallNativeHandOverride() end
+    -- Install even in standard-cursor mode: the override is what suppresses
+    -- C:U's native handgrasp* sprites so only the OS arrow remains.
+    if cvHandanim:GetBool() or cvHideHand:GetBool() then
+        WSZC.InstallNativeHandOverride()
+    end
 end)
 
 -- C:U registers `WoundDollAndPanel` at file load; on some clients another HUD
