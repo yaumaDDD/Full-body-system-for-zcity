@@ -73,6 +73,19 @@ padded POT sprite there would make every hover rect far too big.
 `finalMiddle`); `*_edge.png` is deliberately NOT overridden so C:U keeps
 control of the outline colour and its hover animation.
 
+LIVE PROPORTION CORRECTION (Screenshot_6-2.png / Screenshot_7.png)
+------------------------------------------------------------------
+Pixel-column profiling against Screenshot_2-10.png showed the doll was NOT
+mis-positioned: head (98 vs 100 px), thorax (129/133 vs 128/139 px), thighs
+(114 vs 112 px) and calves (99 vs 101 px) all matched within 1-3 px.  The
+mismatch was limb THICKNESS - all six arm sprites rendered 44 px tall
+(y 333..377) where the native doll is 33..36 px (y 337..373), i.e. the arms
+looked like thick rectangular bars instead of human limbs.  The six arm
+REFERENCE_BOXES heights went 50 -> 40; the centre is unchanged, so the top
+and bottom edges each move 4 px toward the middle.  POT height drops from
+256 to 128 for those sprites, but the opaque inner box stays centred, so
+C:U's `mat:Height() * scale` still places the visible silhouette correctly.
+
 Usage: python3 tools/build_unitmenu_materials.py [path/to/ui.zip]
 Requires Pillow.
 """
@@ -137,12 +150,18 @@ REFERENCE_BOXES = {
     'head':      (682.5, 267.0, 70, 102),
     'thorax':    (682.5, 385.5, 122, 131),
     'abdomen':   (682.5, 521.5, 132, 141),
-    'arm_R':     (578.9, 355.0, 82, 50),
-    'arm_L':     (786.1, 355.0, 82, 50),
-    'forearm_R': (480.0, 355.0, 110, 50),
-    'forearm_L': (885.0, 355.0, 110, 50),
-    'hand_R':    (400.0, 355.0, 47, 50),
-    'hand_L':    (965.0, 355.0, 47, 50),
+    # Screenshot_6-2.png / Screenshot_7.png live measurement: the arms were
+    # 44 px thick (y 333..377) while the native Screenshot_2-10.png doll is
+    # 33..36 px (y 337..373).  Head/torso/thighs/calves already matched in
+    # +/-1..3 px, so this is a PROPORTION fix, not a repositioning: shrinking
+    # the height about the same centre automatically moves the top edge down
+    # 4 px and the bottom edge up 4 px, exactly onto the native band.
+    'arm_R':     (578.9, 355.0, 82, 40),
+    'arm_L':     (786.1, 355.0, 82, 40),
+    'forearm_R': (480.0, 355.0, 110, 40),
+    'forearm_L': (885.0, 355.0, 110, 40),
+    'hand_R':    (400.0, 355.0, 47, 40),
+    'hand_L':    (965.0, 355.0, 47, 40),
     'thigh_R':   (652.5, 650.0, 60, 116),
     'thigh_L':   (712.5, 650.0, 60, 116),
     'crus_R':    (649.5, 759.0, 46, 102),

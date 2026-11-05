@@ -77,10 +77,10 @@ GMod. Исходные ZIP-аддоны не изменяются: всё пат
 
 | Требование | Реализация |
 |---|---|
-| Мини-игра вправления костей вручную в WoundView | Родная `WoundSystemDislocationMinigame` (C:U `cl_dislocation.lua` + `Sessions.Dislocation` в `sv_health.lua`), кнопка `FIX DISLOCATION` из `WoundSystemDrawLimbActionPoint()`. `WSZC.SyncDislocation()`/`WSZC.RestoreBones()` в `sv_..._organism.lua` связывают `state.dislocated` с `org.*dislocation`; успех снимает флаг всей группы (`DISLOC_FLAGS`), пишет `org.painadd + 10` и `ply.fullsend`, а не откатывается shadow. Свежий вывих получает `state.dislocationTimer = WSZC.DislocationStartTimer()` (по умолчанию 35), прогресс сессии не перезаписывается |
+| Мини-игра вправления костей вручную в WoundView | Родная `WoundSystemDislocationMinigame` (C:U `cl_dislocation.lua` + `Sessions.Dislocation` в `sv_health.lua`), кнопка `FIX DISLOCATION` из `WoundSystemDrawLimbActionPoint()`. `WSZC.SyncDislocation()`/`WSZC.RestoreBones()` в `sv_..._organism.lua` связывают `state.dislocated` с `org.*dislocation` **только на лимбе выше перелома**; успех снимает флаг всей группы (`DISLOC_FLAGS`, один лимб на флаг), пишет `org.painadd + 10` и `ply.fullsend`, а не откатывается shadow. Свежий вывих получает `state.dislocationTimer = WSZC.DislocationStartTimer()` (по умолчанию 35), прогресс сессии не перезаписывается |
 | Вывих не теряется в ragdoll | `RestoreShrapnelSoon()` дополнительно зовёт `WSZC.RestoreBones()`; `SyncShrapnel()` теперь ВСЕГДА обновляет `ply._WSZCLimbsRef` (раньше `RestoreShrapnel` выходил раньше при пустом `org.wszc_shrapnel`, из-за чего игрок без осколков вечно выглядел «новым ragdoll» и вправление откатывалось) |
 | Мини-игра проходима при боли | `WSZC.DislocationActive()` читает `WSZC.CUSessions.Dislocation[ply]`; на время сессии `body.avgPain` ограничен 60 (C:U `DislocationPainBlock = 75`), `ply.organism.pain` не меняется. `WSZC.MinigameActive()` на клиенте и `WSZC_MinigameServerLock` на сервере тоже знают про нативную сессию: курсор, frozen angles, нулевое движение |
-| Переломы «как в ZCity» | `Fractured()` читает `org.<limb> >= 0.85` и `org.brokenribs > 0`; `PushShadow` пишет только `state.broken`/`state.boneHealTimer`. Создание — ванильный `sv_bone.lua`, регенерация — `sv_pain.lua`, лечение — ZCity SWEP → `WSZC.ApplyMedicalDelta()`. Своей мини-игры и своей симуляции костей нет |
+| Переломы «как в ZCity» | `Fractured()` читает `org.<limb> >= 0.85` и `org.brokenribs > 0`, но **только на среднем лимбе** (`forearm_*`/`crus_*`) — см. №11; `PushShadow` пишет `state.broken`/`state.boneHealTimer`. Создание — ванильный `sv_bone.lua`, регенерация — `sv_pain.lua`, лечение — ZCity SWEP → `WSZC.ApplyMedicalDelta()`. Своей мини-игры и своей симуляции костей нет |
 | Убрать инвентарь C:U | `cl_..._layout.lua`: прокси `WoundSystemInventorySlots` возвращает `{type="empty"}` для `1..5`, игнорирует запись в них и честно хранит слот `6`; `RequestInventoryMove` → no-op; снимаются `WoundSystem_WorldItemInput/WorldItemCheck/WorldItemDraw/BodyUseHeldItemInput`, гасится `WoundSystemDragState`. Конвар `zc_woundsystem_compat_hide_cu_inventory` |
 | Убрать панель unit и инвентарь (runtime-фикс) | `WSZC.InstallCUHudFilter()` заменяет хук `WoundDollAndPanel` через `hook.Add(...)` (запись в `hook.GetTable()` была несостоятельна на сборках с копией таблицы); `WSZC.CUHudHiddenRegion()` + обёртки `draw.SimpleText`, `draw.RoundedBox`, `surface.DrawTexturedRect( Rotated )`, `surface.DrawRect`, **`surface.DrawOutlinedRect`**, `WoundSystemQueueLocaleTooltip`/`slot_*` direct-tooltip глушат зону `UNI-HEALTH` и 5 слотов. Зоны считаются с `woundsys_ui_scale` (0.6..1.6) и не глушат полноэкранный фон. **Дополнительно обёрнуты `surface.DrawTexturedRectUV`, `surface.DrawLine`, `surface.DrawPoly`, `surface.DrawText`, `draw.SimpleTextOutlined`** — именно ими C:U рисует зелёные полосы сканера, лёгкие, бицепс и ЭКГ, которые оставались слева после `e70bfb5`. `WSZC.CUDeathVisualsHidden` глушит ВСЕ примитивы на время хука экрана смерти (включая полноэкранный чёрный прямоугольник). `PreDrawHUD`/`PostDrawHUD` — запасной контур, включается только если обёртку хука установить не удалось. WoundView полностью не рисуется, пока активна мини-игра. Конвары `zc_woundsystem_compat_hide_unit_panel`, `zc_woundsystem_compat_hide_cu_inventory` |
 | Скрыть предметы в руках | `PreDrawViewModel` / `PreDrawPlayerHands` возвращают `true`, Think один раз переключает `SetNoDraw` на viewmodel, пока `WSZC.MinigameActive()`. |
@@ -194,3 +194,39 @@ ragdoll→standing, `RestoreBones`, `ReconcileSpawnShrapnel`, мини-игры 
 Проверено: `S30/S45`, `R24/R32` (backdrop переживает фильтр, watchdog не крадёт
 курсор, наш Close всё ещё его отпускает), `ALL_LUA_OK`, `CJK_CLEAN`. Живой GMod
 не запускался — принятие по свежим live-скринам.
+
+## №11 (по `Screenshot_6-2.png` / `Screenshot_7.png`): пропорции куклы и одна точка перелома
+
+1. **Пропорции, а не позиции.** Построчное и поколоночное сравнение live с
+   `Screenshot_2-10.png` показало, что кукла НЕ сдвинута: голова `98` против
+   `100 px`, торс `129/133` против `128/139 px`, бёдра `114` против `112 px`,
+   голени `99` против `101 px` — всё в ±1..3 px. Расходилась **толщина рук**:
+   все шесть спрайтов давали `44 px` (`y 333..377`) вместо нативных `33..36 px`
+   (`y 337..373`), из-за чего конечности выглядели прямоугольными брусками.
+   Высота `arm_* / forearm_* / hand_*` в `REFERENCE_BOXES` уменьшена `50 → 40`
+   при том же центре: верх и низ сходятся к середине на 4 px каждый. POT-высота
+   этих спрайтов стала `128` вместо `256`, но непрозрачный inner box остаётся
+   отцентрирован, поэтому `mat:Height() * scale` C:U ставит видимый силуэт на
+   прежнее место. Симуляция рендера: `x=470` → `337-373 (37 px)`, `x=500` →
+   `336-372 (37 px)`, `x=860/920` → `336-372 (37 px)` против эталона
+   `338-373 / 337-372 / 339-371`. Цвет, обводка по форме, POT-ширины,
+   `cx/cy`, симметрия `cx_R + cx_L = 1500`, hitbox'ы и шрапнель не менялись.
+
+2. **Перелом в одной точке, вывих на один лимб выше.** ZCity хранит ОДИН флаг
+   на всю конечность (`org.larm`, `org.lleg` и `*.dislocation`), а C:U рисует
+   ТРИ лимба (`arm/forearm/hand`, `thigh/crus/foot`). Раньше один флаг
+   помечал `broken` и `dislocated` сразу на всех трёх — на `Screenshot_7.png`
+   это колонка иконок перелома и жёлтых капель вдоль всей ноги. Введён
+   `BONE_ANCHOR` + `WSZC.BoneAnchor(limbId, kind)`:
+   * **перелом** — только средний лимб: `forearm_L/R`, `crus_L/R`;
+   * **вывих** — только лимб выше: `arm_L/R`, `thigh_L/R`;
+   * `head` (череп) и `thorax` (рёбра) остаются своими одиночными точками.
+   `DISLOC_FLAGS` сужен до одного лимба на флаг, поэтому `FIX DISLOCATION` и
+   `WSZC.SyncDislocation()` проверяют вправление именно по якорю, а не по
+   устаревшему `false` на соседнем лимбе. Оба пути записи — `RestoreBones()`
+   (ragdoll→standing) и 4 Гц `PushShadow` — используют один и тот же якорь.
+   Источник истины по-прежнему ванильный `sv_bone.lua` ZCity;organism
+   authoritative, Hemogen не задействован, мини-игры и конвары не тронуты.
+
+Проверено: `S33/S46`, `S15 ALL_LUA_OK`, `S16 CJK_CLEAN`, полный suite. Живой
+GMod не запускался — принятие по свежему live-скрину.

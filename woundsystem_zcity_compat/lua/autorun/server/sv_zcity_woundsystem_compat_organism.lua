@@ -136,6 +136,34 @@ local LIMB_ORG = {
     foot_R    = { dmg = "rleg", amp = "rlegamputated", dis = "rlegdislocation" },
 }
 
+-- Owner (2026-11-05): "переломы должны создавать только в одной точке тоесть
+-- по середине ноги или руки там же три лимба а вывих на один лимб выше".
+-- ZCity keeps ONE flag for a whole arm/leg (org.larm / org.rarm / org.lleg /
+-- org.rleg and the matching *dislocation), while C:U has THREE limbs there:
+--   arm/forearm/hand  and  thigh/crus/foot.
+-- Before this anchor, the single flag painted `broken` AND `dislocated` onto
+-- all three limbs at once, so the WoundView showed a column of fracture /
+-- dislocation icons down the whole leg (Screenshot_7.png).  Now:
+--   fracture    -> ONLY the MIDDLE limb:  forearm_L/R, crus_L/R
+--   dislocation -> ONLY ONE limb ABOVE:   arm_L/R, thigh_L/R
+-- head (skull) and thorax (brokenribs) already are single points and stay so.
+local BONE_ANCHOR = {
+    fracture    = { forearm_L = true, forearm_R = true,
+                    crus_L = true,    crus_R = true },
+    dislocation = { arm_L = true, arm_R = true,
+                    thigh_L = true, thigh_R = true },
+}
+
+--- True when this C:U limb is the ONE point that owns a bone state.
+--- Head/thorax are their own single points (ribs, skull); every other limb
+--- must be in the anchor set or it is deliberately left healthy-looking.
+local function BoneAnchor(limbId, kind)
+    if limbId == "head" or limbId == "thorax" then return true end
+    local set = BONE_ANCHOR[kind]
+    return set ~= nil and set[limbId] == true
+end
+WSZC.BoneAnchor = BoneAnchor
+
 -- Built defensively: GMod defines these, but a headless test runtime may not.
 local HITGROUP_LIMB = {}
 local function AddHitgroup(id, limbId)
@@ -547,14 +575,15 @@ local PullShrapnel = SyncShrapnel -- keep the old internal name working
 --   org.brokenribs > 0 -> fractured ribs (thorax)
 -- C:U only draws the WoundView icons and runs the manual reduction minigame.
 -- The three C:U limbs of one arm/leg share ONE ZCity flag, exactly like
--- WB.Sync()'s AnyDislocated() did.  A successful reduction on any of them
--- clears the whole ZCity group.
-
+-- WB.Sync()'s AnyDislocated() did.  But only the anchor limb (one above the
+-- fracture's middle limb) is MARKED, so a successful reduction on THAT limb
+-- clears the whole ZCity group.  Listing all three here would let a stale
+-- false on a non-anchor limb be mistaken for a manual reduction.
 local DISLOC_FLAGS = {
-    larmdislocation = { "arm_L", "forearm_L", "hand_L" },
-    rarmdislocation = { "arm_R", "forearm_R", "hand_R" },
-    llegdislocation = { "thigh_L", "crus_L", "foot_L" },
-    rlegdislocation = { "thigh_R", "crus_R", "foot_R" },
+    larmdislocation = { "arm_L" },
+    rarmdislocation = { "arm_R" },
+    llegdislocation = { "thigh_L" },
+    rlegdislocation = { "thigh_R" },
 }
 
 --- C:U multiplies this by DislocationStartSpread = 5 to place the bone away
@@ -574,6 +603,9 @@ WSZC.DislocationStartTimer = DislocationStartTimer
 local FRACTURE_DAMAGE = 0.85
 
 local function Fractured(org, limbId, map)
+    -- Only the middle limb of an arm/leg owns the fracture icon.  Otherwise
+    -- one org.larm >= 0.85 would mark arm, forearm AND hand at once.
+    if not BoneAnchor(limbId, "fracture") then return false end
     if limbId == "thorax" and (tonumber(org.brokenribs) or 0) > 0 then return true end
     return (tonumber(org[map and map.dmg]) or 0) >= FRACTURE_DAMAGE
 end
@@ -614,7 +646,10 @@ function WSZC.RestoreBones(ply)
                 if ok then state = created end
             end
             if type(state) == "table" then
-                local out = map.dis and org[map.dis] == true or false
+                -- Dislocation lives on the limb ABOVE the fracture's middle
+                -- limb, and nowhere else.  A non-anchor limb is always healthy.
+                local out = map.dis and BoneAnchor(limbId, "dislocation")
+                    and org[map.dis] == true or false
                 state.dislocated = out
                 state.dislocationTimer = out and DislocationStartTimer() or 0
                 state.broken = Fractured(org, limbId, map)
@@ -1309,7 +1344,11 @@ local function PushShadow(ply, org)
                 limbSet("broken", Fractured(org, limbId, map))
                 limbSet("boneHealTimer", math.Clamp((1 - dmg) * 100, 0, 100))
                 if map.dis then
-                    local out = org[map.dis] == true
+                    -- One point per dislocation: the limb above the fracture.
+                    -- All other limbs of this arm/leg get `false`, so the
+                    -- WoundView can no longer show three joints at once.
+                    local out = BoneAnchor(limbId, "dislocation")
+                        and org[map.dis] == true or false
                     limbSet("dislocated", out)
                     -- C:U's WoundSystem_DislocationStart() uses this as the
                     -- bone's starting distance.  A fresh ZCity dislocation

@@ -191,12 +191,12 @@ check('S33 REFERENCE_BOXES = native Screenshot_2-10 pixel boxes, POT-calibrated'
       "'head':      (682.5, 267.0, 70, 102)" in generator_s
       and "'thorax':    (682.5, 385.5, 122, 131)" in generator_s
       and "'abdomen':   (682.5, 521.5, 132, 141)" in generator_s
-      and "'arm_R':     (578.9, 355.0, 82, 50)" in generator_s
-      and "'arm_L':     (786.1, 355.0, 82, 50)" in generator_s
-      and "'forearm_R': (480.0, 355.0, 110, 50)" in generator_s
-      and "'forearm_L': (885.0, 355.0, 110, 50)" in generator_s
-      and "'hand_R':    (400.0, 355.0, 47, 50)" in generator_s
-      and "'hand_L':    (965.0, 355.0, 47, 50)" in generator_s
+      and "'arm_R':     (578.9, 355.0, 82, 40)" in generator_s
+      and "'arm_L':     (786.1, 355.0, 82, 40)" in generator_s
+      and "'forearm_R': (480.0, 355.0, 110, 40)" in generator_s
+      and "'forearm_L': (885.0, 355.0, 110, 40)" in generator_s
+      and "'hand_R':    (400.0, 355.0, 47, 40)" in generator_s
+      and "'hand_L':    (965.0, 355.0, 47, 40)" in generator_s
       and "'thigh_R':   (652.5, 650.0, 60, 116)" in generator_s
       and "'thigh_L':   (712.5, 650.0, 60, 116)" in generator_s
       and "'crus_R':    (649.5, 759.0, 46, 102)" in generator_s
@@ -205,6 +205,8 @@ check('S33 REFERENCE_BOXES = native Screenshot_2-10 pixel boxes, POT-calibrated'
       and "'foot_L':    (715.0, 837.5, 45, 55)" in generator_s
       and 'Screenshot_2-10.png' in generator_s
       and 'Screenshot_1-10.png' in generator_s
+      and 'Screenshot_6-2.png' in generator_s
+      and '44 px thick' in generator_s
       and 'EDGE_WIDTH = 9' in generator_s
       and 'EDGE_PAD_MIN = 6' in generator_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s
@@ -250,6 +252,29 @@ check('S45 minigame cursor is held for games our IsActive() probes miss',
       and 'WSZC._NextCursorFix = now + 0.05' in minigames_s
       and minigames_s.count('cmd:SetMouseX(0)') == 0
       and minigames_s.count('cmd:SetMouseY(0)') == 0)
+# One fracture / one dislocation point per arm or leg (owner 2026-11-05).
+# Parse the actual Lua anchor table so a future edit cannot silently smear
+# bone states back onto all three C:U limbs of an arm/leg.
+import re as _re
+_anchor = _re.search(r'local BONE_ANCHOR = \{(.*?)\n\}', organism_s, _re.S)
+_anchor_sets = {}
+if _anchor:
+    for _kind, _body in _re.findall(r'(\w+)\s*=\s*\{(.*?)\}', _anchor.group(1), _re.S):
+        _anchor_sets[_kind] = set(_re.findall(r'(\w+)\s*=\s*true', _body))
+_disloc = _re.search(r'local DISLOC_FLAGS = \{(.*?)\n\}', organism_s, _re.S)
+_disloc_limbs = _re.findall(r'\{ "(\w+)" \}', _disloc.group(1)) if _disloc else []
+check('S46 one fracture point (middle limb) + one dislocation point (limb above)',
+      _anchor_sets.get('fracture') ==
+          {'forearm_L', 'forearm_R', 'crus_L', 'crus_R'}
+      and _anchor_sets.get('dislocation') ==
+          {'arm_L', 'arm_R', 'thigh_L', 'thigh_R'}
+      and len(_disloc_limbs) == 4
+      and set(_disloc_limbs) == {'arm_L', 'arm_R', 'thigh_L', 'thigh_R'}
+      and 'if not BoneAnchor(limbId, "fracture") then return false end' in organism_s
+      and organism_s.count('BoneAnchor(limbId, "dislocation")') == 2
+      and 'limbSet("broken", Fractured(org, limbId, map))' in organism_s
+      and 'limbSet("dislocated", out)' in organism_s
+      and 'WSZC.BoneAnchor = BoneAnchor' in organism_s)
 check('S39 shrapnel survives ragdoll -> standing (authoritative organism)',
       '"wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation"' in organism_s
       and '_WSZCRagdollTransitionUntil' in organism_s
