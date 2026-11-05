@@ -81,11 +81,12 @@ function WSZC.MinigameContextOK()
             local ok, unconscious = pcall(ply.GetNWBool, ply, "WoundSystemUnconscious", false)
             if ok and unconscious == true then return false end
         end
-        if IsValid and IsValid(ply.FakeRagdoll) then return false end
+        -- FakeRagdoll / org.fake describe BODY posture, not operator
+        -- incapacity.  ZCity also supports conscious ragdoll movement and
+        -- medical use; treating those flags as unconscious closed every game.
         local org = ply.organism
         if type(org) == "table" then
-            if org.otrub == true or org.needotrub == true
-                or org.fake == true or org.needfake == true then return false end
+            if org.otrub == true or org.needotrub == true then return false end
             local consciousness = tonumber(org.consciousness)
             if consciousness and consciousness < 0.4 then return false end
         end
@@ -907,6 +908,10 @@ hook.Add("Think", "WSZC_CUInventoryLayout", function()
     -- The material tracker must exist even when the hide convars are off: it
     -- is what keeps the doll / status icons out of HiddenRegion().
     WSZC.InstallMaterialTracker()
+    -- Register the client half of the stump status after C:U's shared status
+    -- module has loaded.  The server syncs only this extra customStatus key;
+    -- native Statuses.GetActive() draws it before every arterial bleed icon.
+    if WSZC.InstallAmputationStatus then WSZC.InstallAmputationStatus() end
     WSZC.InstallMinigameTextFilter()
     if not (cvHideInventory:GetBool() or cvHideUnitPanel:GetBool()) then return end
     InstallDrawWrappers()

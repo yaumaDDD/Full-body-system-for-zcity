@@ -365,11 +365,12 @@ end
 local function PlayerIncapacitated(ply)
     if not IsValid(ply) or not ply:Alive() then return true end
     if ply.GetNWBool and ply:GetNWBool("WoundSystemUnconscious", false) then return true end
-    if IsValid(ply.FakeRagdoll) then return true end
+    -- A FakeRagdoll / org.fake is posture, NOT loss of operator capacity.
+    -- The patient may be ragdolled too; only the medic's own death/otrub or
+    -- genuinely low consciousness may force-close this session.
     local org = ply.organism
     if type(org) == "table" then
-        if org.otrub == true or org.needotrub == true
-            or org.fake == true or org.needfake == true then return true end
+        if org.otrub == true or org.needotrub == true then return true end
         local consciousness = tonumber(org.consciousness)
         if consciousness and consciousness < 0.4 then return true end
     end
@@ -757,7 +758,13 @@ hook.Add("PlayerDeath", "WSZC_MinigameDeath", function(ply)
 end)
 
 hook.Add("PlayerSpawn", "WSZC_MinigameSpawn", function(ply)
-    if WSZC.MinigameSessions[ply] then StopMinigame(ply, "respawn") end
+    -- ZCity sets this GLOBAL only around FakeUp's internal ply:Spawn().  It is
+    -- the exact discriminator, unlike Alive()/consciousness after a respawn.
+    if OverrideSpawn == true then return end
+    -- A genuine spawn is always authoritative cleanup, including native C:U
+    -- sessions and a client that missed PlayerDeath.  The force-close packet
+    -- also releases WoundView, its cursor and every movement/bind lock.
+    StopAllMinigames(ply, "respawn", true)
 end)
 
 hook.Add("PlayerDisconnected", "WSZC_MinigameDisconnect", function(ply)
@@ -879,5 +886,16 @@ hook.Add("HG_OnOtrub", "WSZC_MinigameUnconscious", function(ply)
     StopAllMinigames(ply, "unconscious", true)
 end)
 hook.Add("Fake", "WSZC_MinigameUnconscious", function(ply)
-    StopAllMinigames(ply, "unconscious", true)
+    -- HG_OnOtrub is the immediate authoritative unconscious signal.  A plain
+    -- Fake transition may be conscious, so close only if the operator's own
+    -- organism proves incapacity; re-check next tick for late native flags.
+    if PlayerIncapacitated(ply) then
+        StopAllMinigames(ply, "unconscious", true)
+        return
+    end
+    timer.Simple(0, function()
+        if IsValid(ply) and PlayerIncapacitated(ply) then
+            StopAllMinigames(ply, "unconscious", true)
+        end
+    end)
 end)

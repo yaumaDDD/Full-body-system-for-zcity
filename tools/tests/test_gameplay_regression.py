@@ -29,6 +29,10 @@ with ZipFile(ROOT / "zcity.zip") as zcity_zip:
     tourniquet_swep_s = zcity_zip.read("z_city/lua/weapons/weapon_tourniquet.lua").decode("utf-8-sig")
     bandage_swep_s = zcity_zip.read("z_city/lua/weapons/weapon_bandage_sh.lua").decode("utf-8-sig")
     woundbridge_s = zcity_zip.read("z_city/lua/homigrad/woundbridge/sv_woundbridge.lua").decode("utf-8-sig")
+with ZipFile(ROOT / "zcity_full_pack.zip") as full_pack:
+    limb_statuses_s = full_pack.read(
+        "garrysmod/addons/casualties_unknown_health_system_beta/lua/woundsystem/shared/sh_limb_statuses.lua"
+    ).decode("utf-8-sig")
 
 client_context = layout_s.split("function WSZC.MinigameContextOK()", 1)[1].split("function WSZC.MinigameScale", 1)[0]
 check("S01 unconscious closes WSZC + native games on both realms",
@@ -92,6 +96,32 @@ check("S10 tourniquet route precedes treatment and native renderer gets real vec
       and "NormalizeNativeWound(visualWound)" in organism_s
       and "TOURNIQUET_VISUAL_BONES[limbId]" in organism_s
       and "wound[1]:GetNegated()" in bandage_swep_s)
+shared_s = (CONN / 'lua/autorun/sh_zcity_woundsystem_compat.lua').read_text(encoding='utf-8')
+check("S11 amputation is a distinct native-ZCity shadow and outranks bleed icons",
+      'WSZC_AMPUTATION' in shared_s and 'InstallAmputationStatus' in shared_s
+      and 'order = -10000' in shared_s
+      and 'arm_R     = { dmg = "rarm", amp = nil' in organism_s
+      and 'thigh_R   = { dmg = "rleg", amp = nil' in organism_s
+      and 'WSZC_AMPUTATION' in organism_s)
+check("S12 tourniquet selection has a real-amputation tier, never a fake bleed bonus",
+      'function WSZC.BestTourniquetLimb' in organism_s
+      and 'function WSZC.TourniquetApplicationSite' in organism_s
+      and 'AMPUTATION_APPLICATION_SITE' in organism_s
+      and 'BestTourniquetLimb' in organism_s
+      and 'bleed = 1000' not in organism_s)
+check("S13 FakeUp internal spawn preserves the complete native organism",
+      'SnapshotRagdollOrganism' in organism_s
+      and 'RestoreRagdollOrganism' in organism_s
+      and 'OverrideSpawn == true' in organism_s
+      and 'hook.Add("Fake Up", "WSZC_ShrapnelRagdollKeep"' in organism_s)
+check("S14 conscious ragdoll is not an incapacitated minigame operator",
+      'or org.fake == true or org.needfake == true' not in server_mg_s
+      and 'or org.fake == true or org.needfake == true' not in layout_s
+      and 'IsValid(ply.FakeRagdoll)' not in server_mg_s.split('local function PlayerIncapacitated', 1)[1].split('local function ValidSession', 1)[0]
+      and 'if WSZC.MinigameContextOK() then return end' in client_mg_s)
+check("S15 a generic Fake transition closes only a genuinely incapacitated operator",
+      'hook.Add("Fake", "WSZC_MinigameUnconscious"' in server_mg_s
+      and 'if PlayerIncapacitated(ply) then' in server_mg_s.split('hook.Add("Fake", "WSZC_MinigameUnconscious"', 1)[1])
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -775,6 +805,131 @@ return installed and blocked == true and nestedDamageCalls == 1
 ''')
     check("R27 player->FakeRagdoll->native hook injects once even when Post is suppressed", native_wrapper)
 
+    amputation = lua.execute(r'''
+if type(WSZC.SyncOrganismShadow) ~= "function" then return false, false end
+WoundSystem.Statuses = { Stored = {}, Order = {} }
+WoundSystem.Statuses.Register = function(id, data)
+    WoundSystem.Statuses.Stored[id] = data
+    table.insert(WoundSystem.Statuses.Order, id)
+    table.sort(WoundSystem.Statuses.Order, function(a, b)
+        return WoundSystem.Statuses.Stored[a].order < WoundSystem.Statuses.Stored[b].order
+    end)
+    return data
+end
+local ply = MakePlayer()
+for _, id in ipairs({ "arm_R", "hand_R", "arm_L", "forearm_L", "hand_L",
+    "thigh_R", "crus_R", "foot_R", "thigh_L", "crus_L", "foot_L" }) do
+    ply._limbs[id] = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+        customStatuses = {} }
+end
+ply._limbs.arm_R.customStatuses = {}
+ply._limbs.forearm_R.customStatuses = {}
+ply._limbs.hand_R.customStatuses = {}
+ply.organism.rarmamputated = true
+ply.organism.arterialwounds = {
+    { 10, Vector(1, 2, 3), Angle(4, 5, 6), "ValveBiped.Bip01_R_UpperArm", 0,
+      Vector(-100, 0, 0), "rarmartery" },
+}
+local originalArtery = ply.organism.arterialwounds[1]
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local anatomy = ply._limbs.arm_R.dismembered == false
+    and ply._limbs.forearm_R.dismembered == true
+    and ply._limbs.hand_R.dismembered == true
+    and ply._limbs.thigh_R.dismembered == false
+local independent = ply.organism.rarmamputated == true
+    and ply.organism.arterialwounds[1] == originalArtery
+    and originalArtery[1] == 10 and ply._limbs.arm_R.bleed == 30
+    and ply._limbs.arm_R.customStatuses.WSZC_AMPUTATION == true
+    and ply._limbs.forearm_R.customStatuses.WSZC_AMPUTATION == nil
+return anatomy, independent
+''')
+    check("R35 ZCity forearm amputation keeps the upper-arm stump, not a whole-arm deletion", amputation[0])
+    check("R36 amputation status and arterial wound remain independent in shadow/UI", amputation[1])
+
+    amputation_priority = lua.execute(r'''
+if type(WSZC.BestTourniquetLimb) ~= "function" then return false, false, false end
+local ply = MakePlayer()
+for _, id in ipairs({ "arm_R", "forearm_R", "hand_R", "thigh_L", "crus_L", "foot_L" }) do
+    ply._limbs[id] = { bleed = 0, dismembered = false, tourniqueted = false }
+end
+ply.organism.rarmamputated = true
+ply.organism.arterialwounds = {
+    { 5, Vector(), Angle(), "ValveBiped.Bip01_R_UpperArm", 0, Vector(), "rarmartery" },
+    { 40, Vector(), Angle(), "ValveBiped.Bip01_L_Thigh", 0, Vector(), "llegartery" },
+}
+ply._limbs.arm_R.bleed = 15
+ply._limbs.thigh_L.bleed = 100
+local selected = WSZC.BestTourniquetLimb(ply, { item = "TOURNIQUET", pick = "extremity" })
+local noFakeBleed = ply._limbs.arm_R.bleed == 15 and ply._limbs.thigh_L.bleed == 100
+WSZC.TourniquetLimbOverride = { ply = ply, limbId = "forearm_R" }
+local routed = WSZC.BestTourniquetLimb(ply, { item = "TOURNIQUET", pick = "extremity" })
+WSZC.TourniquetLimbOverride = nil
+ply.organism.arterialwounds[1][1] = 0
+ply._limbs.arm_R.bleed = 0
+local ordinaryFallback = WSZC.BestTourniquetLimb(ply, { item = "TOURNIQUET", pick = "extremity" })
+return selected == "arm_R" and noFakeBleed, routed == "arm_R", ordinaryFallback == "thigh_L"
+''')
+    check("R37 a bleeding amputation stump outranks a heavier ordinary artery", amputation_priority[0])
+    check("R38 aimed distal bone on an amputated arm resolves to its proximal stump", amputation_priority[1])
+    check("R39 without stump bleeding the tourniquet falls back to the real artery", amputation_priority[2])
+
+    fakeup_snapshot = lua.execute(r'''
+local ply = MakePlayer()
+ply.organism.fake = true
+ply.organism.rarmamputated = true
+ply.organism.llegamputated = true
+ply.organism.wounds = { { 7, Vector(1, 2, 3), Angle(), "ValveBiped.Bip01_R_UpperArm", 0 } }
+ply.organism.arterialwounds = {
+    { 10, Vector(4, 5, 6), Angle(), "ValveBiped.Bip01_R_UpperArm", 0, Vector(), "rarmartery" },
+}
+ply.organism.blood = 2345
+ply.organism.consciousness = 0.71
+ply.organism.customNativeOrgan = { nested = { value = 42 } }
+OverrideSpawn = true -- native hg.FakeUp sets this around its internal ply:Spawn()
+hg.organism.Clear(ply.organism)
+OverrideSpawn = nil
+local preserved = ply.organism.rarmamputated == true
+    and ply.organism.llegamputated == true
+    and ply.organism.blood == 2345 and ply.organism.consciousness == 0.71
+    and #ply.organism.wounds == 1 and ply.organism.wounds[1][1] == 7
+    and #ply.organism.arterialwounds == 1 and ply.organism.arterialwounds[1][1] == 10
+    and ply.organism.customNativeOrgan.nested.value == 42
+    and ply.organism.owner == ply
+ply.organism.rarmamputated = true
+hg.WoundBridge.ResetOrganism(ply)
+local explicitStillClears = ply.organism.rarmamputated ~= true
+    and ply.organism.llegamputated ~= true and #ply.organism.arterialwounds == 0
+return preserved, explicitStillClears
+''')
+    check("R40 FakeUp spawn retains native wounds, arteries, amputations and custom organs", fakeup_snapshot[0])
+    check("R41 explicit organism reset still clears every amputation and artery", fakeup_snapshot[1])
+
+    context_client = LuaRuntime(unpack_returned_tuples=True)
+    context_client.execute(r'''
+CLIENT = true; SERVER = false
+WSZC = {}
+IsValid = function(v) return v ~= nil and v ~= false end
+local ply = { Alive = function() return true end, GetNWBool = function() return false end }
+LocalPlayer = function() return ply end
+function SetContextPlayer(value) ply = value end
+''')
+    context_fn = layout_s.split('function WSZC.MinigameContextOK()', 1)[1].split('--- Only OUR', 1)[0]
+    context_client.execute('function WSZC.MinigameContextOK()' + context_fn)
+    ragdoll_context = context_client.execute(r'''
+local conscious = { Alive = function() return true end, GetNWBool = function() return false end,
+    FakeRagdoll = {}, organism = { fake = true, needfake = true, consciousness = 1 } }
+SetContextPlayer(conscious)
+local consciousAllowed = WSZC.MinigameContextOK()
+conscious.organism.otrub = true
+local otrubClosed = not WSZC.MinigameContextOK()
+conscious.organism.otrub = false
+conscious.organism.consciousness = 0.39
+local lowConsciousnessClosed = not WSZC.MinigameContextOK()
+return consciousAllowed, otrubClosed and lowConsciousnessClosed
+''')
+    check("R42 client keeps minigames alive in a conscious fake/ragdoll", ragdoll_context[0])
+    check("R43 client still blocks otrub and consciousness below 0.4", ragdoll_context[1])
+
     client = LuaRuntime(unpack_returned_tuples=True)
     client.execute(r'''
 CLIENT = true; SERVER = false
@@ -782,7 +937,9 @@ CurTime = function() return 100 end
 IsValid = function(v) return v ~= nil and v ~= false end
 include = function() end
 timer = { Simple = function() end, Create = function() end, Remove = function() end }
-hook = { GetTable = function() return {} end, Add = function() end, Remove = function() end, Call = function() end }
+hook = { _t = {}, GetTable = function() return hook._t end,
+         Add = function(e, n, f) hook._t[e] = hook._t[e] or {}; hook._t[e][n] = f end,
+         Remove = function() end, Call = function() end }
 net = { _receivers = {}, Receive = function(name, fn) net._receivers[name] = fn end,
         ReadString = function() return net._reason or "unconscious" end,
         Start = function() end, SendToServer = function() end, WriteString = function() end,
@@ -827,6 +984,21 @@ return closed, requested == 1 and WSZCBandageMinigame.active == false
 ''')
     check("R08 force-close removes native/WSZC UI without a duplicate request", cleanup[0])
     check("R09 death cleanup still requests authoritative closure", cleanup[1])
+
+    spawn_transition = client.execute(r'''
+WSZCBandageMinigame.active = true
+WoundSystemHealthHUDOpen = true
+WSZC.MinigameContextOK = function() return true end
+hook._t.PlayerSpawn.WSZC_MinigameSpawnCleanup({})
+local consciousSpawnKept = WSZCBandageMinigame.active == true and WoundSystemHealthHUDOpen == true
+WSZCBandageMinigame.active = true
+WSZC.MinigameContextOK = function() return false end
+hook._t.PlayerSpawn.WSZC_MinigameSpawnCleanup({})
+local deadSpawnClosed = WSZCBandageMinigame.active == false
+return consciousSpawnKept, deadSpawnClosed
+''')
+    check("R44 FakeUp PlayerSpawn does not destroy an active conscious minigame", spawn_transition[0])
+    check("R45 PlayerSpawn still cleans a dead/incapacitated client context", spawn_transition[1])
 
     server = LuaRuntime(unpack_returned_tuples=True)
     server.execute(r'''
@@ -884,6 +1056,79 @@ return patientDoesNotIncapacitateMedic and medicIncapacitated, allClosed and for
 ''')
     check("R10 only the operator's incapacity controls the session", native_close[0])
     check("R11 unconscious closes every native session plus WSZC", native_close[1])
+
+    ragdoll_server = server.execute(r'''
+local medic = { organism = { fake = true, needfake = true, consciousness = 1 },
+    FakeRagdoll = {}, IsPlayer = function() return true end,
+    Alive = function() return true end, GetNWBool = function() return false end }
+local consciousAllowed = not WSZC.PlayerMinigameIncapacitated(medic)
+WSZC.MinigameSessions[medic] = { kind = "bandage", id = 11, deferredUsed = 0, startAmount = 0 }
+OverrideSpawn = true -- native FakeUp's internal ply:Spawn(), not a real respawn
+hook._t.PlayerSpawn.WSZC_MinigameSpawn(medic)
+OverrideSpawn = nil
+local spawnKept = WSZC.MinigameSessions[medic] ~= nil
+hook._t.Fake.WSZC_MinigameUnconscious(medic)
+local fakeKept = WSZC.MinigameSessions[medic] ~= nil
+medic.organism.otrub = true
+hook._t.Fake.WSZC_MinigameUnconscious(medic)
+local otrubClosed = WSZC.MinigameSessions[medic] == nil
+return consciousAllowed and spawnKept and fakeKept, otrubClosed
+''')
+    check("R46 server PlayerSpawn/Fake preserve a conscious operator's session", ragdoll_server[0])
+    check("R47 Fake still force-closes when that operator is actually in otrub", ragdoll_server[1])
+
+    genuine_respawn = server.execute(r'''
+local medic = { organism = { consciousness = 1 }, IsPlayer = function() return true end,
+    Alive = function() return true end, GetNWBool = function() return false end }
+WSZC.MinigameSessions[medic] = { kind = "bandage", id = 12, deferredUsed = 0, startAmount = 0 }
+OverrideSpawn = nil
+hook._t.PlayerSpawn.WSZC_MinigameSpawn(medic)
+local closed = WSZC.MinigameSessions[medic] == nil
+local forced = false
+for _, name in ipairs(net.sent) do if name == "WSZC_MinigameForceClose" then forced = true end end
+return closed and forced
+''')
+    check("R48 genuine PlayerSpawn still force-closes a missed-death client/session", genuine_respawn)
+
+    selector_upvalue = lua.execute(r'''
+local ply = MakePlayer()
+ply._limbs.arm_R = { bleed = 15, dismembered = false, tourniqueted = false }
+ply._limbs.thigh_L = { bleed = 100, dismembered = false, tourniqueted = false }
+ply.organism.rarmamputated = true
+ply.organism.arterialwounds = {
+    { 5, Vector(), Angle(), "ValveBiped.Bip01_R_UpperArm", 0, Vector(), "rarmartery" },
+    { 40, Vector(), Angle(), "ValveBiped.Bip01_L_Thigh", 0, Vector(), "llegartery" },
+}
+local BestLimb = function() return "native_bandage_site" end
+local NativeSwepHeal = function(target, spec, preferred)
+    return BestLimb(target, spec, preferred)
+end
+local patched = WSZC.PatchTourniquetBestLimb(NativeSwepHeal)
+local tourniquet = NativeSwepHeal(ply, { kind = "apply", item = "TOURNIQUET", pick = "extremity" })
+local bandage = NativeSwepHeal(ply, { kind = "bandage", item = "GAUZE" })
+return patched and tourniquet == "arm_R" and bandage == "native_bandage_site"
+''')
+    check("R49 installed BestLimb upvalue prioritizes only tourniquet, never bandage", selector_upvalue)
+
+    status_client = LuaRuntime(unpack_returned_tuples=True)
+    status_client.execute(r'''
+CLIENT = true; SERVER = false
+WSZC = {}
+WoundSystem = {}
+string.Trim = function(value) return value end
+''')
+    status_client.execute(limb_statuses_s)
+    status_registration = shared_s.split('WSZC.AMPUTATION_STATUS_ID =', 1)[1].split('-- Short-lived context flag:', 1)[0]
+    status_client.execute('WSZC.AMPUTATION_STATUS_ID =' + status_registration)
+    native_status_order = status_client.execute(r'''
+WoundSystem.Statuses.Register("TOURNIQUET", { title = "Tourniquet", order = 30, type = "number" })
+assert(WSZC.InstallAmputationStatus())
+local state = { customStatuses = { TOURNIQUET = 4, WSZC_AMPUTATION = true } }
+local active = WoundSystem.Statuses.GetActive(state)
+return #active == 2 and active[1].id == "WSZC_AMPUTATION" and active[2].id == "TOURNIQUET"
+    and active[1].data.icon == "casunknown-images/moodles/amputation.png"
+''')
+    check("R50 native Statuses.GetActive draws amputation before tourniquet/bleed statuses", native_status_order)
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

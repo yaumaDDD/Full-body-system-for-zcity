@@ -146,19 +146,78 @@ local LIMB_ORG = {
     head      = { dmg = "skull",  amp = "headamputated", dis = nil },
     thorax    = { dmg = "chest",  amp = nil,              dis = nil },
     abdomen   = { dmg = "pelvis", amp = nil,              dis = nil },
-    arm_L     = { dmg = "larm", amp = "larmamputated", dis = "larmdislocation" },
+    -- Native AmputateLimb() starts at the FOREARM / CALF, exactly like
+    -- WB.ZLimbToWS (larm -> forearm_L, lleg -> crus_L).  The upper arm/thigh
+    -- is the remaining stump and must NOT be marked dismembered.  The previous
+    -- whole-group mapping deleted that stump from both the 3D visual and UI.
+    arm_L     = { dmg = "larm", amp = nil, dis = "larmdislocation" },
     forearm_L = { dmg = "larm", amp = "larmamputated", dis = "larmdislocation" },
     hand_L    = { dmg = "larm", amp = "larmamputated", dis = "larmdislocation" },
-    arm_R     = { dmg = "rarm", amp = "rarmamputated", dis = "rarmdislocation" },
+    arm_R     = { dmg = "rarm", amp = nil, dis = "rarmdislocation" },
     forearm_R = { dmg = "rarm", amp = "rarmamputated", dis = "rarmdislocation" },
     hand_R    = { dmg = "rarm", amp = "rarmamputated", dis = "rarmdislocation" },
-    thigh_L   = { dmg = "lleg", amp = "llegamputated", dis = "llegdislocation" },
+    thigh_L   = { dmg = "lleg", amp = nil, dis = "llegdislocation" },
     crus_L    = { dmg = "lleg", amp = "llegamputated", dis = "llegdislocation" },
     foot_L    = { dmg = "lleg", amp = "llegamputated", dis = "llegdislocation" },
-    thigh_R   = { dmg = "rleg", amp = "rlegamputated", dis = "rlegdislocation" },
+    thigh_R   = { dmg = "rleg", amp = nil, dis = "rlegdislocation" },
     crus_R    = { dmg = "rleg", amp = "rlegamputated", dis = "rlegdislocation" },
     foot_R    = { dmg = "rleg", amp = "rlegamputated", dis = "rlegdislocation" },
 }
+
+-- The only treatment site for a ZCity amputation is the remaining proximal
+-- stump.  Distal trace hits can still arrive from an old ragdoll for one tick;
+-- route those to the same stump without changing ordinary aimed-limb routing.
+local AMPUTATION_APPLICATION_SITE = {
+    arm_L = "arm_L", forearm_L = "arm_L", hand_L = "arm_L",
+    arm_R = "arm_R", forearm_R = "arm_R", hand_R = "arm_R",
+    thigh_L = "thigh_L", crus_L = "thigh_L", foot_L = "thigh_L",
+    thigh_R = "thigh_R", crus_R = "thigh_R", foot_R = "thigh_R",
+}
+local AMPUTATION_STUMP_FLAG = {
+    arm_L = "larmamputated", arm_R = "rarmamputated",
+    thigh_L = "llegamputated", thigh_R = "rlegamputated",
+}
+
+--- Project native ZCity amputation flags into C:U presentation only.  The
+--- organism tables/flags themselves are never rewritten.  A separate status
+--- is placed on the visible stump; the absent distal sprites stay hidden by
+--- the stock WoundView, while its real arterial wound remains independent.
+local function SyncAmputationShadow(org, limbs)
+    local dirty = {}
+    if type(org) ~= "table" or type(limbs) ~= "table" then return dirty end
+    if WSZC.InstallAmputationStatus then WSZC.InstallAmputationStatus() end
+    local statusId = WSZC.AMPUTATION_STATUS_ID or "WSZC_AMPUTATION"
+
+    for limbId, map in pairs(LIMB_ORG) do
+        local state = limbs[limbId]
+        if type(state) == "table" then
+            local dismembered = map.amp ~= nil and org[map.amp] == true or false
+            if state.dismembered ~= dismembered then
+                state.dismembered = dismembered
+                dirty[limbId] = true
+            end
+
+            local stumpFlag = AMPUTATION_STUMP_FLAG[limbId]
+            local showStatus = stumpFlag ~= nil and org[stumpFlag] == true
+            local statuses = state.customStatuses
+            if showStatus then
+                if type(statuses) ~= "table" then
+                    statuses = {}
+                    state.customStatuses = statuses
+                end
+                if statuses[statusId] ~= true then
+                    statuses[statusId] = true
+                    dirty[limbId] = true
+                end
+            elseif type(statuses) == "table" and statuses[statusId] ~= nil then
+                statuses[statusId] = nil
+                dirty[limbId] = true
+            end
+        end
+    end
+    return dirty
+end
+WSZC.SyncAmputationShadow = SyncAmputationShadow
 
 -- Owner (2026-11-05): "переломы должны создавать только в одной точке тоесть
 -- по середине ноги или руки там же три лимба а вывих на один лимб выше".
@@ -323,6 +382,12 @@ local function LimbBleedMap(ply, org)
     local function add(limbId, amount)
         limbId = NormalizeLimb(limbId)
         if not limbId or amount <= 0 then return end
+        -- A legacy rarmartery/llegartery normally belongs to the distal limb.
+        -- Once ZCity amputates that part, its still-real bleeding is presented
+        -- on the remaining stump.  This changes no wound[7], bone or severity.
+        local stump = AMPUTATION_APPLICATION_SITE[limbId]
+        local flag = stump and AMPUTATION_STUMP_FLAG[stump] or nil
+        if flag and org[flag] == true then limbId = stump end
         map[limbId] = (map[limbId] or 0) + amount
     end
 
@@ -599,6 +664,100 @@ local TOURNIQUET_DOWNSTREAM = {
 -- Native ZCity has tourniquet offsets only for upper arm/forearm/thigh/calf.
 -- Anchor the visual to the SELECTED application site, not to an arbitrary
 -- downstream wound.  Hands/feet use their nearest supported proximal bone.
+--- Redirect only a genuinely amputated group to its remaining stump.  On a
+--- healthy limb the exact aimed forearm/hand/crus/foot remains unchanged.
+function WSZC.TourniquetApplicationSite(ply, limbId)
+    limbId = NormalizeLimb(limbId)
+    if not limbId or not TOURNIQUET_DOWNSTREAM[limbId] then return nil end
+    local org = IsValid(ply) and ply.organism or nil
+    local stump = AMPUTATION_APPLICATION_SITE[limbId]
+    local flag = stump and AMPUTATION_STUMP_FLAG[stump] or nil
+    if type(org) == "table" and flag and org[flag] == true then return stump end
+    return limbId
+end
+
+--- Native WB.BestLimb() skips EVERY dismembered limb and otherwise picks only
+--- the largest bleed number.  In authority mode select from the real ZCity
+--- wound map instead: a bleeding amputation stump is tier 1, every other
+--- extremity is tier 0.  No synthetic bleed bonus is written to C:U state.
+function WSZC.BestTourniquetLimb(ply, spec, preferred)
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    local org = IsValid(ply) and ply.organism or nil
+    if type(limbs) ~= "table" then return nil end
+    local bleedMap = type(org) == "table" and LimbBleedMap(ply, org) or {}
+
+    local function candidate(limbId, allowMissing)
+        limbId = WSZC.TourniquetApplicationSite(ply, limbId)
+        if not limbId then return nil end
+        local state = limbs[limbId]
+        if type(state) ~= "table" or state.tourniqueted then return nil end
+        local flag = AMPUTATION_STUMP_FLAG[limbId]
+        local amputated = flag ~= nil and type(org) == "table" and org[flag] == true
+        if state.dismembered and not (amputated and allowMissing ~= false) then return nil end
+        local bleed = math.max(tonumber(bleedMap[limbId]) or 0, 0)
+        if type(org) ~= "table" then bleed = math.max(tonumber(state.bleed) or 0, 0) end
+        if bleed <= 0.1 then return nil end
+        return { id = limbId, tier = amputated and 1 or 0, bleed = bleed }
+    end
+
+    -- InstallMedicalBridge resolves self-use and ragdoll PhysicsBones before
+    -- this function.  That exact site wins; only its amputated group is
+    -- redirected to the anatomically remaining stump.
+    local route = WSZC.TourniquetLimbOverride
+    if type(route) == "table" and route.ply == ply then
+        local selected = candidate(route.limbId)
+        if selected then return selected.id end
+    end
+    if preferred then
+        local selected = candidate(preferred)
+        if selected then return selected.id end
+    end
+
+    local best
+    for limbId, state in pairs(limbs) do
+        if type(state) == "table" and TOURNIQUET_DOWNSTREAM[limbId] then
+            local current = candidate(limbId)
+            if current and (not best or current.tier > best.tier
+                or (current.tier == best.tier and (current.bleed > best.bleed
+                or (current.bleed == best.bleed and current.id < best.id)))) then
+                best = current
+            end
+        end
+    end
+    return best and best.id or nil
+end
+
+--- Replace only WB.SwepHeal's private BestLimb upvalue.  Bandages, syringes
+--- and non-authority mode keep the stock function byte-for-byte; tourniquets
+--- use the two-tier selector above and cannot be vetoed by a dismembered flag.
+local patchedTourniquetSelectors = setmetatable({}, { __mode = "k" })
+local function PatchTourniquetBestLimb(swepHeal)
+    if type(swepHeal) ~= "function" or not (debug and debug.getupvalue and debug.setupvalue) then
+        return false
+    end
+    for i = 1, 64 do
+        local name, bestLimb = debug.getupvalue(swepHeal, i)
+        if not name then break end
+        if name == "BestLimb" and type(bestLimb) == "function" then
+            if patchedTourniquetSelectors[bestLimb] then return true end
+            local wrapped = function(ply, spec, preferred)
+                local isTourniquet = type(spec) == "table" and spec.kind == "apply"
+                    and string.upper(tostring(spec.item or "")) == "TOURNIQUET"
+                if Authority() and isTourniquet then
+                    return WSZC.BestTourniquetLimb(ply, spec, preferred)
+                end
+                return bestLimb(ply, spec, preferred)
+            end
+            patchedTourniquetSelectors[wrapped] = true
+            debug.setupvalue(swepHeal, i, wrapped)
+            return true
+        end
+    end
+    return false
+end
+WSZC.PatchTourniquetBestLimb = PatchTourniquetBestLimb
+
 local TOURNIQUET_VISUAL_BONES = {
     arm_R = "ValveBiped.Bip01_R_UpperArm", forearm_R = "ValveBiped.Bip01_R_Forearm",
     hand_R = "ValveBiped.Bip01_R_Forearm",
@@ -1435,6 +1594,10 @@ function WSZC.RestoreBones(ply)
     local limbs = h and h.GetLimbs and h.GetLimbs(ply)
     if type(limbs) ~= "table" then return false end
 
+    -- C:U InitPlayer() also resets dismembered/customStatuses.  Re-assert the
+    -- native amputation anatomy together with fractures/dislocations on every
+    -- ragdoll transition instead of waiting for the next 4 Hz shadow pass.
+    SyncAmputationShadow(org, limbs)
     ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
     for limbId, map in pairs(LIMB_ORG) do
         if map.dmg then
@@ -1520,6 +1683,9 @@ local function RestoreShrapnelSoon(ply)
 end
 WSZC.RestoreShrapnelSoon = RestoreShrapnelSoon
 hook.Add("Fake", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
+-- Server ZCity emits "Fake Up" immediately BEFORE its internal ply:Spawn();
+-- client ZCity uses "FakeUp".  Listen to both names, never just the client one.
+hook.Add("Fake Up", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
 hook.Add("FakeUp", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
 hook.Add("HG_OnWakeOtrub", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
 
@@ -2062,6 +2228,7 @@ local function PushShadow(ply, org)
     local now = CurTime and CurTime() or 0
     if (ply._WSZCShadowNext or 0) > now then return end
     ply._WSZCShadowNext = now + 0.25 -- 4 Hz is plenty for a HUD
+    local amputationDirty = SyncAmputationShadow(org, limbs)
 
     local bodyChanged = false
     local dirtyLimbs = {}
@@ -2141,8 +2308,9 @@ local function PushShadow(ply, org)
             local function limbSet(key, value)
                 limbChanged = SetIfChanged(state, key, value) or limbChanged
             end
-            -- `shrapnel`, `isBandaged`, `hasInjection` and customStatuses are
-            -- owned by the C:U minigames: never overwrite them here.
+            -- `shrapnel`, `isBandaged`, `hasInjection` and the minigames'
+            -- custom statuses stay C:U-owned.  SyncAmputationShadow() touches
+            -- ONLY WSZC_AMPUTATION and never clears the other status keys.
             local limbBleed
             if woundMap then
                 local fromWounds = woundMap[limbId] or 0
@@ -2203,9 +2371,11 @@ local function PushShadow(ply, org)
 
     if bodyChanged and h.SendCardioUpdate then pcall(h.SendCardioUpdate, ply, true) end
     if h.SendLimbUpdate then
+        for limbId in pairs(amputationDirty) do dirtyLimbs[limbId] = true end
         for limbId in pairs(dirtyLimbs) do pcall(h.SendLimbUpdate, ply, limbId, false) end
     end
 end
+WSZC.SyncOrganismShadow = PushShadow -- diagnostics / source-faithful regressions
 
 ---------------------------------------------------------------------------
 -- Medical effects: mirror C:U treatment deltas back into ply.organism
@@ -2465,6 +2635,7 @@ local function InstallMedicalBridge()
     if wb._WSZCSwepHealPatched then return true end
     wb._WSZCSwepHealPatched = true
     local original = wb.SwepHeal
+    PatchTourniquetBestLimb(original)
     wb.SwepHeal = function(swep, ent, mode, bone)
         if not Authority() then return original(swep, ent, mode, bone) end
         local ply = OwnerOf(ent) or (IsValid(ent) and ent:IsPlayer() and ent)
@@ -2475,6 +2646,9 @@ local function InstallMedicalBridge()
             local routeOk, resolved = pcall(WSZC.ResolveTourniquetLimb, swep, ent, mode, bone)
             if routeOk then routedLimb = resolved
             else Warn("tourniquet aim resolve failed: " .. tostring(resolved)) end
+        end
+        if routedLimb then
+            routedLimb = WSZC.TourniquetApplicationSite(ply, routedLimb) or routedLimb
         end
         if routedLimb then
             WSZC.TourniquetLimbOverride = { ply = ply, limbId = routedLimb }
@@ -2585,6 +2759,43 @@ local function SnapshotZCityStructure(org, preserveShrapnel)
         for _, key in ipairs(SHRAPNEL_SHADOW_KEYS) do snap[key] = org[key] end
     end
     return snap
+end
+
+--- hg.FakeUp() calls ply:Spawn() internally with OverrideSpawn=true.  ZCity's
+--- Player Spawn hook consequently runs Org Clear on a character who is merely
+--- standing up, not respawning.  A selective shrapnel/down snapshot is not
+--- enough here: it loses native wounds, arterialwounds, amputations, organs and
+--- third-party organism fields.  Snapshot the COMPLETE organism (except its
+--- entity owner), with cycle-safe table copies, and restore it after all native
+--- Org Clear hooks have run.  Explicit admin reset and genuine respawn never
+--- enter this path and still clear injuries normally.
+local function CopyRagdollValue(value, seen)
+    if type(value) ~= "table" then return value end
+    seen = seen or {}
+    if seen[value] then return seen[value] end
+    local copy = {}
+    seen[value] = copy
+    for key, nested in pairs(value) do
+        copy[key] = CopyRagdollValue(nested, seen)
+    end
+    if setmetatable and getmetatable then setmetatable(copy, getmetatable(value)) end
+    return copy
+end
+
+local function SnapshotRagdollOrganism(org)
+    if type(org) ~= "table" then return nil end
+    local snap = {}
+    for key, value in pairs(org) do
+        if key ~= "owner" then snap[key] = CopyRagdollValue(value) end
+    end
+    return snap
+end
+
+local function RestoreRagdollOrganism(org, snap)
+    if type(org) ~= "table" or type(snap) ~= "table" then return end
+    for key, value in pairs(snap) do
+        if key ~= "owner" then org[key] = value end
+    end
 end
 
 local function IsExplicitReset(ply)
@@ -2722,10 +2933,10 @@ local function ClearMovementPenalties(org)
 end
 WSZC.ClearMovementPenalties = ClearMovementPenalties
 
-local function RestoreZCityStructure(org, snap)
+local function RestoreZCityStructure(org, snap, preserveMovement)
     if type(org) ~= "table" or type(snap) ~= "table" then return end
     for key, value in pairs(snap) do org[key] = value end
-    ClearMovementPenalties(org)
+    if not preserveMovement then ClearMovementPenalties(org) end
     local owner = org.owner
     if IsValid(owner) then owner.fullsend = true end
     if hg then
@@ -2756,11 +2967,14 @@ function WSZC.InstallResetStructureGuard()
         if type(org) ~= "table" then return originalClear(org, ...) end
         local owner = org.owner
         local explicit = IsExplicitReset(owner)
-        local down = (IsValid(owner) and IsValid(owner.FakeRagdoll))
+        local fakeUpSpawn = not explicit and OverrideSpawn == true
+        local down = fakeUpSpawn or (IsValid(owner) and IsValid(owner.FakeRagdoll))
             or org.otrub == true or org.fake == true
         local snap = SnapshotZCityStructure(org, not explicit)
+        local ragdollSnap = fakeUpSpawn and SnapshotRagdollOrganism(org) or nil
         CarryShrapnelShadow(owner, org)
         local a, b, c = originalClear(org, ...)
+        if ragdollSnap then RestoreRagdollOrganism(org, ragdollSnap) end
 
         if explicit then
             -- This branch is ONLY hg_organism_clear / WB.ResetOrganism, never
@@ -2776,7 +2990,7 @@ function WSZC.InstallResetStructureGuard()
             ClearMovementPenalties(org)
             return a, b, c
         end
-        RestoreZCityStructure(org, snap)
+        RestoreZCityStructure(org, snap, fakeUpSpawn)
         return a, b, c
     end
     WSZC._ResetClearOriginal = originalClear

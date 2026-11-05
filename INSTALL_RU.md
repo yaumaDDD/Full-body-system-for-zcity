@@ -38,13 +38,14 @@
 | Кровотечение только на раненых лимбах | `zc_woundsystem_compat_limb_bleed 1` |
 | Бинт лечит обычные раны и показывает прогресс | Вместе с `zc_woundsystem_compat_minigames 1`: уменьшается severity только `org.wounds`; `STOP N%` и кольцо показывают фактически остановленную долю обычного кровотечения, повторная перевязка разрешена до 100% |
 | Артерия останавливается только жгутом | Бинт не трогает `org.arterialwounds` / artery-флаг и не тратится при artery-only ране. Жгут через `WB.SwepHeal → H.ApplyItemToBody` использует прицельную конечность также при self-use, реально удаляет её артериальную рану и ставит `Tourniquets` на ту же кость; synthetic wounds содержат валидные `Vector`/`Angle` для native renderer |
+| Ампутация оставляет видимую культю и отдельный статус | Native `forearm + hand` / `crus + foot` скрыты, proximal `arm/thigh` остаются. `WSZC_AMPUTATION` не удаляет arterial wound и рисуется раньше bleed/tourniquet; кровоточащая культя имеет приоритет для жгута, distal aim перенаправляется на неё |
 | Шрапнель от дробовика/взрыва | `zc_woundsystem_compat_shrapnel 1`, `zc_woundsystem_compat_shrapnel_on_blocked 1` |
 | Только эффекты ZCity: все эффекты C:U выключены | `zc_woundsystem_compat_disable_cu_fx 1` |
 | Кровь C:U убрана, ванильная кровь ZCity/Hemogen возвращена | `zc_woundsystem_compat_disable_cu_blood 1` |
 | В мини-игре персонаж не ходит, не крутит камерой и виден курсор | включается вместе с `zc_woundsystem_compat_minigames 1` (без отдельного конвара) |
 | Шрапнель только от дробовика и взрыва, не от пистолетов | `zc_woundsystem_compat_shrapnel_only_shotgun_blast 1` |
 | Дробовик/взрыв оставляют осколки в фактически раненой части (`org.dmgstack` / `HitBones`), не только в кистях/стопах; стекло отдельно сохраняет правило `hand_L/R` / `foot_L/R` | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
-| `reset organism` не поднимает персонажа, сохраняет down-структуру и полностью очищает раны/шрапнель/инфекцию/повязки/жгуты/C:U residue | `zc_woundsystem_compat_preserve_reset_structure 1`; обычный ragdoll→standing сохраняет шрапнель и накопленную инфекцию |
+| `reset organism` не поднимает персонажа, сохраняет down-структуру и полностью очищает раны/шрапнель/инфекцию/повязки/жгуты/C:U residue | `zc_woundsystem_compat_preserve_reset_structure 1`; внутренний FakeUp (`OverrideSpawn`) сохраняет весь organism, включая wounds/arteries/ампутации/third-party поля, а настоящий respawn очищает его |
 | Шрапнель сохраняется при падении/подъёме из ragdoll | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
 | Стекло в ragdoll (руки/ноги) даёт осколки | `zc_woundsystem_compat_glass_shrapnel 1` |
 | Ошибки в shrapnel-мини-игре → боль и нарастающее кровотечение | включается вместе с `zc_woundsystem_compat_shadow 1` |
@@ -77,7 +78,7 @@
 | Рука в мини-игре ровно на курсоре | `zc_woundsystem_compat_hand_pivot_x 0.16`, `zc_woundsystem_compat_hand_pivot_y 0.45`, поворот `0`, лимит `zc_woundsystem_compat_hand_max_screen 0.34` |
 | Системный курсор в мини-игре не виден | `zc_woundsystem_compat_hide_minigame_cursor 0` (см. №12) → VGUI-курсор `"blank"`, мышь работает; `0` — вернуть стрелку |
 | После смерти не «залипают» мини-игры/курсор/лок движения | включается вместе с `zc_woundsystem_compat_minigames 1` |
-| Потеря сознания закрывает WSZC и нативные мини-игры, overlay, WoundView, cursor/view/input | серверный force-close `WSZC_MinigameForceClose`; проверяется владелец сессии, а не пациент медика |
+| Потеря сознания закрывает WSZC и нативные мини-игры, overlay, WoundView, cursor/view/input; conscious ragdoll не закрывает | серверный force-close `WSZC_MinigameForceClose`; проверяется владелец сессии, а не пациент медика. `FakeRagdoll/fake` — posture; death/otrub/NW unconscious/`consciousness < 0.4` — incapacity. FakeUp сохраняет игру, настоящий respawn закрывает её принудительно |
 | Любой неизвлечённый fragment наращивает реальную боль и кровотечение | `zc_woundsystem_compat_shrapnel_lodged_effects 1`; последний extracted fragment удаляет tagged-рану/source/irritation |
 | Дополнительные WoundView-карточки/polish удалены | Конвара `woundview_polish` больше нет; сохранены прежние откалиброванные позиции/размеры doll и hitboxes, чёрная анатомия, shaped outlines и hover |
 | Бинт можно наложить на шрапнель, но закрытый фрагмент заражает рану | `zc_woundsystem_compat_bandaged_shrapnel_infection 1`, скорость `zc_woundsystem_compat_shrapnel_infection_rate 0.1` (%/с до масштабирования по числу фрагментов); после 20 постепенно растут internal bleed, боль и потеря крови |

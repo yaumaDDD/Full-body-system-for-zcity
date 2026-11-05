@@ -246,6 +246,12 @@ hook.Add("PlayerDeath", "WSZC_MinigameDeathCleanup", function(ply)
 end)
 hook.Add("PlayerSpawn", "WSZC_MinigameSpawnCleanup", function(ply)
     if LocalPlayer and ply ~= LocalPlayer() then return end
+    -- hg.FakeUp() also runs PlayerSpawn internally.  A conscious operator in
+    -- that transition keeps the active board/cursor; death and real otrub are
+    -- still cleaned here and by the every-frame context watchdog below.
+    if WSZC.MinigameContextOK then
+        if WSZC.MinigameContextOK() then return end
+    end
     ClearAllMinigameState(true)
 end)
 

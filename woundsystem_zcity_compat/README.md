@@ -151,15 +151,31 @@ map и irritation; обычные раны остаются. Откат рост
 `zc_woundsystem_compat_bandage_strength`,
 `zc_woundsystem_compat_bleeding_multiplier`.
 
+Ампутация не является синонимом arterial bleeding. Native
+`hg.organism.AmputateLimb()` создаёт arterial wound и ОТДЕЛЬНО ставит
+`org.<limb>amputated`; обе структуры сохраняются. По `WB.ZLimbToWS` ZCity
+ампутирует от предплечья/голени, поэтому C:U `dismembered` ставится только на
+`forearm + hand` / `crus + foot`. Верхние `arm/thigh` — оставшийся stump. На нём
+регистрируется `WSZC_AMPUTATION` (`order = -10000`, штатная
+`casunknown-images/moodles/amputation.png`), который native
+`Statuses.GetActive()` отдаёт перед bleed-статусами. Кровотечение удалённой
+distal-зоны лишь для UI/выбора сайта проецируется на stump; severity, кость и
+artery key в organism не меняются. `BestTourniquetLimb()` выбирает сначала
+реально кровоточащий stump, затем обычную артерию, без подмены bleed значений.
+
 Явный `hg_organism_clear` / `WB.ResetOrganism` полностью удаляет все фрагменты,
 источники, tagged-раны, накопленную инфекцию, ZCity `bandaged_limbs` /
-`tourniquets` и C:U residue. Этот explicit-reset context отделён от обычного
-`ragdoll → standing`, где шрапнель и накопленная инфекция сохраняются.
+`tourniquets`, ампутации/раны и C:U residue. Этот explicit-reset context отделён
+от внутреннего `ragdoll → standing`, где сохраняется весь organism.
 
-Потеря сознания владельца сессии (`otrub/needotrub`, `fake/needfake`,
-`FakeRagdoll`, `consciousness < 0.4`) закрывает WSZC и нативные C:U мини-игры,
-освобождает cursor/view/input и скрывает WoundView. Если медик в сознании, то
-бессознательное состояние его пациента мини-игру медика не закрывает.
+Потеря сознания владельца сессии (`otrub/needotrub`, NW unconscious,
+`consciousness < 0.4`) либо его смерть закрывает WSZC и нативные C:U мини-игры,
+освобождает cursor/view/input и скрывает WoundView. `FakeRagdoll` и
+`fake/needfake` — признаки posture, а не incapacity, поэтому в conscious
+ragdoll интерфейс/мини-игры не закрываются. Если медик в сознании,
+бессознательное состояние пациента его мини-игру не закрывает. На внутреннем
+FakeUp `PlayerSpawn` сервер видит `OverrideSpawn == true` и сохраняет сессию;
+на настоящем respawn принудительно закрывает все сессии и клиентские lock'и.
 
 Вход в мини-игру — кнопка «Проверить травмы» → родная панель C:U → точка
 `REMOVE SHRAPNEL`. Инструмент не требуется: `slotIdx = 0`, `hasTweezers = false`,
@@ -528,8 +544,13 @@ no-op (иначе отложенный таймер поднял бы игрок
 `false`/ошибке WB выполняется родной `hg.organism.Clear` fallback с traceback.
 Death-ragdoll разрешается через `organism.owner`; штатный `reset_org` получает
 владельца только на время callback, поэтому его `ent:Nick()` не вызывается на
-ragdoll. Это не применяется к обычному ragdoll-clear: там snapshot сохраняет
-шрапнель/infection. Откат: `zc_woundsystem_compat_preserve_reset_structure 0`.
+ragdoll. Отдельный путь — родной `hg.FakeUp`: он вызывает `ply:Spawn()` с
+`OverrideSpawn == true`, и обычный `Player Spawn → Org Clear` не должен стереть
+медицину. Для этого `SnapshotRagdollOrganism()` cycle-safe копирует ВЕСЬ
+organism (кроме entity `owner`) до native Clear, а `RestoreRagdollOrganism()`
+возвращает native/third-party поля, wounds/arterialwounds, amputations,
+шрапнель и infection после него. Настоящий respawn и explicit reset в этот
+путь не входят. Откат: `zc_woundsystem_compat_preserve_reset_structure 0`.
 
 ## Камера в мини-игре
 
@@ -550,8 +571,9 @@ ragdoll. Это не применяется к обычному ragdoll-clear: �
 сравнивает ссылку на таблицу: если она новая, `WSZC.RestoreShrapnel()`
 восстанавливает осколки ИЗ `ply.organism` (создавая недостающий limb через
 `H.GetLimbState`), если та же — честно принимает результат извлечения из
-shrapnel-мини-игры. Хуки `Fake` / `FakeUp` / `HG_OnWakeOtrub` дополнительно переутверждают
-состояние на следующем кадре (дополнительно).
+shrapnel-мини-игры. Хуки `Fake` / серверный `Fake Up` / клиентский `FakeUp` /
+`HG_OnWakeOtrub` дополнительно переутверждают состояние на следующем кадре;
+`RestoreBones()` одновременно восстанавливает и amputation shadow.
 
 **Стекло в ragdoll.** Раньше glass-обработчик висел `pre`-функцией на ZCity
 хуке `Ragdoll Collide / organism` и дублировал его фильтры урона
