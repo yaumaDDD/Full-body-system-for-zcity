@@ -941,7 +941,9 @@ end)
 
 local cvUnitmenuDoll = CreateClientConVar("zc_woundsystem_compat_unitmenu_doll", "1", true, false,
     "1 = rebuild the WoundView doll from the repository unitmenu limb layers")
-local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "0.24", true, false,
+-- Native Screenshot_1.png geometry is authored at 0.24; 0.25 is the owner's
+-- requested "slightly larger" final doll (+4.17% linear, outline included).
+local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "0.25", true, false,
     "Size of the unitmenu doll relative to C:U's dollScale (0.1 .. 0.8)", 0.1, 0.8)
 -- Owner (2026-11-05): "убери руку из мини игр замени на стандартный курсор".
 -- The archive hand / C:U handgrasp pointer is OFF by default; a plain OS arrow

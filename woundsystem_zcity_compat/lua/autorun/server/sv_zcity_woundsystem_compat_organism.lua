@@ -92,6 +92,7 @@ local cvDebug = CreateConVar("zc_woundsystem_compat_organism_debug", "0",
     "Print organism-authority diagnostics", 0, 1)
 
 local TAG = "[ZCity/CU compat] "
+local Unpack = table.unpack or unpack -- GMod Lua 5.1 / newer regression runtimes
 
 local function Debug(fmt, ...)
     if not (cvDebug and cvDebug:GetBool()) then return end
@@ -736,20 +737,37 @@ function WSZC.ApplyShrapnelComplication(ply, org, limbId, bleedDelta, painDelta)
     return true
 end
 
--- Resolve the player who owns a damaged player or fake ragdoll.
-local function OwnerOf(ent)
+-- Resolve the player who owns a damaged player or fake ragdoll.  Damage never
+-- accepts a dead owner; an explicit admin reset may also target a death ragdoll.
+local function OwnerOf(ent, allowDead, skipNativeResolver)
     if not IsValid(ent) then return nil end
-    if ent:IsPlayer() then return ent end
-    local ragdollOwner = hg and hg.RagdollOwner
+    if ent:IsPlayer() then return (allowDead or ent:Alive()) and ent or nil end
+    local ragdollOwner = not skipNativeResolver and hg and hg.RagdollOwner or nil
     if ragdollOwner then
         local ok, ply = pcall(ragdollOwner, ent)
-        if ok and IsValid(ply) and ply:IsPlayer() and ply:Alive() then return ply end
+        if ok and IsValid(ply) and ply:IsPlayer() and (allowDead or ply:Alive()) then return ply end
     end
+
+    -- hg.RagdollOwner() rejects a dead player.  The ragdoll's organism still
+    -- points at that player, which is exactly what death-ragdoll reset needs.
+    local entOrg = ent.organism
+    local orgOwner = type(entOrg) == "table" and entOrg.owner or nil
+    if IsValid(orgOwner) and orgOwner:IsPlayer() and (allowDead or orgOwner:Alive()) then
+        return orgOwner
+    end
+
     -- FakeRagdoll also stores the owner as an NW entity; some ZCity ragdolls
     -- (collision proxies, death ragdolls) have no `ragdoll.ply` Lua field.
     if ent.GetNWEntity then
-        local ok, ply = pcall(ent.GetNWEntity, ent, "ply")
-        if ok and IsValid(ply) and ply:IsPlayer() and ply:Alive() then return ply end
+        for _, key in ipairs({ "ply", "Owner", "RagdollOwner" }) do
+            local ok, ply = pcall(ent.GetNWEntity, ent, key)
+            if ok and IsValid(ply) and ply:IsPlayer() and (allowDead or ply:Alive()) then return ply end
+        end
+    end
+    if allowDead then
+        for _, ply in ipairs(player.GetAll()) do
+            if ply.FakeRagdoll == ent or ply.DeathRagdoll == ent or ply.Ragdoll == ent then return ply end
+        end
     end
     return nil
 end
@@ -1697,8 +1715,10 @@ function WSZC.InjectDamageShrapnel(ent, dmginfo, hitgroup, rawOverride)
     if not (cvShrapnel and cvShrapnel:GetBool()) then return end
     if not (IsValid(ent) and dmginfo) then return end
     if WSZC.ShrapnelHandled[dmginfo] then return end
-    WSZC.ShrapnelHandled[dmginfo] = true
 
+    -- Do NOT mark an unresolved proxy hit as handled.  ZCity can deliver the
+    -- same CTakeDamageInfo to npc_bullseye first and to the real player/ragdoll
+    -- immediately afterwards; marking here used to suppress the real wound.
     local ply = OwnerOf(ent)
     if not ply then return end
 
@@ -1718,6 +1738,10 @@ function WSZC.InjectDamageShrapnel(ent, dmginfo, hitgroup, rawOverride)
         Debug("shrapnel skipped: no reliable injured limb for %s", tostring(ent))
         return
     end
+
+    -- Only a resolved player + limb consumes this DamageInfo.  From here on a
+    -- duplicate player/ragdoll callback must not roll the HEV chance twice.
+    WSZC.ShrapnelHandled[dmginfo] = true
     local shotgunAdded, blastAdded = 0, 0
 
     -- One separate shotgun fragment group per confirmed SHOTGUN hit only
@@ -1865,12 +1889,11 @@ hook.Add("Ragdoll Collide", "WSZC_GlassRagdoll", RagdollGlassShrapnel)
 hook.Add("PostEntityTakeDamage", "WSZC_AuthorityDamagePost", function(ent, dmginfo, took)
     if not (Authority() and IsValid(ent) and dmginfo) then return end
     local raw = WSZC.RawDamage[dmginfo]
-    if took == false and not (cvOnBlocked and cvOnBlocked:GetBool()) then
-        WSZC.RawDamage[dmginfo] = nil
-        return
-    end
+    if took == false and not (cvOnBlocked and cvOnBlocked:GetBool()) then return end
     WSZC.InjectDamageShrapnel(ent, dmginfo, nil, raw)
-    WSZC.RawDamage[dmginfo] = nil
+    -- Do not clear RawDamage here: a nested ragdoll Post can run BEFORE the
+    -- outer player hook returns.  Weak keys already prevent leaks, and the
+    -- outer unresolved hit may still need the original unscaled damage.
 end)
 
 --- Shared by BOTH damage hooks.  ZCity's fists (weapon_hands_sh.lua:1653)
@@ -2236,11 +2259,10 @@ local wrappedByKey = {}
 local wrappedFns = setmetatable({}, { __mode = "k" })
 
 --- Wrap an existing ZCity hook so it runs with WB.IsBridged() == false.
---- `pre` (optional) runs before the original, still inside the vanilla context.
---- GMod iterates hook tables with pairs(), so hook registration order is NOT a
---- reliable way to observe damage before ZCity scales it; doing it inside the
---- wrapper is.
-local function WrapHook(event, name, pre)
+--- `pre` / `post` (optional) run before / after the original, still inside the
+--- vanilla context.  GMod iterates hook tables with pairs(), so registration
+--- order cannot guarantee this position around ZCity's own damage code.
+local function WrapHook(event, name, pre, post)
     local key = event .. "/" .. name
     local hooks = hook.GetTable()[event]
     local current = hooks and hooks[name]
@@ -2253,10 +2275,20 @@ local function WrapHook(event, name, pre)
     local original = current
 
     local inner
-    if pre then
+    if pre or post then
         inner = function(...)
-            pcall(pre, ...)
-            return original(...)
+            if pre then
+                local ok, err = pcall(pre, ...)
+                if not ok then Warn(event .. "/" .. name .. " pre: " .. tostring(err)) end
+            end
+            -- EntityTakeDamage (the only post-wrapped hook) has one meaningful
+            -- return value; preserve several anyway for third-party variants.
+            local a, b, c, d = original(...)
+            if post then
+                local ok, err = pcall(post, ...)
+                if not ok then Warn(event .. "/" .. name .. " post: " .. tostring(err)) end
+            end
+            return a, b, c, d
         end
     else
         inner = original
@@ -2281,7 +2313,15 @@ local function CaptureRawDamage(ent, dmginfo)
     if ok then WSZC.RawDamage[dmginfo] = raw end
     -- Deliberately NO injection here: ZCity writes org.dmgstack[hitgroup] and
     -- ply.HitBones INSIDE this hook, and the shrapnel must land on that exact
-    -- limb.  WSZC_AuthorityDamagePost runs afterwards (also for took=false).
+    -- limb.  InjectAfterZCityDamage runs immediately after those writes.
+end
+
+local function InjectAfterZCityDamage(ent, dmginfo)
+    if not (Authority() and IsValid(ent) and dmginfo) then return end
+    -- PostEntityTakeDamage is not guaranteed when homigrad-damage returns true
+    -- (its normal player/ragdoll path).  Inject here as well; ShrapnelHandled
+    -- de-duplicates the public post hook and nested player -> ragdoll damage.
+    WSZC.InjectDamageShrapnel(ent, dmginfo, nil)
 end
 
 -- Plain no-op replacements for the ZCity bridge entry points.  With these in
@@ -2435,6 +2475,7 @@ function WSZC.ClearAllShrapnel(ply, org)
         org.pain, org.avgpain, org.painadd = 0, 0, 0
         org.shock, org.hurt, org.hurtadd = 0, 0, 0
         org.immobilization, org.disorientation = 0, 0
+        org.dmgstack, org.LodgedEntities = {}, nil
         for _, flag in ipairs({ "arteria", "rarmartery", "larmartery",
             "rlegartery", "llegartery", "spineartery", "neckartery" }) do
             org[flag] = 0
@@ -2488,6 +2529,8 @@ function WSZC.ClearAllShrapnel(ply, org)
         ply._WSZCExpectedBleed, ply._WSZCExpectedPain = {}, {}
         ply._WSZCExpectedDislocation = {}
         ply._WSZCShrapnelCarry = nil
+        ply._WSZCRagdollTransitionUntil = nil
+        ply.HitBones = {}
         ply._WSZCLastComplication, ply._WSZCLastComplicationLimb = nil, nil
         ply.fullsend = true
         if ply.SetNetVar and type(org) == "table" then
@@ -2569,13 +2612,16 @@ local function RestoreZCityStructure(org, snap)
 end
 
 function WSZC.InstallResetStructureGuard()
-    if WSZC._ResetGuardPatched then return true end
     local wb = WB()
     local clear = hg and hg.organism and hg.organism.Clear
     if not (wb and type(clear) == "function") then return false end
+    -- Re-check late properties/commands as well as replaced ZCity functions.
+    -- Saved native originals below make this idempotent (no wrapper nesting).
     WSZC._ResetGuardPatched = true
 
-    local originalClear = clear
+    -- A later addon may replace either function.  Re-wrap that new function on
+    -- the 5-second authority pass, but never wrap our own wrapper recursively.
+    local originalClear = (clear == WSZC._ResetClearWrapper and WSZC._ResetClearOriginal) or clear
     hg.organism.Clear = function(org, ...)
         if not (cvPreserveReset and cvPreserveReset:GetBool() and Authority()) then
             return originalClear(org, ...)
@@ -2606,35 +2652,120 @@ function WSZC.InstallResetStructureGuard()
         RestoreZCityStructure(org, snap)
         return a, b, c
     end
+    WSZC._ResetClearOriginal = originalClear
+    WSZC._ResetClearWrapper = hg.organism.Clear
 
     if type(wb.ResetOrganism) == "function" then
-        local originalReset = wb.ResetOrganism
+        local originalReset = (wb.ResetOrganism == WSZC._ResetWBWrapper and WSZC._ResetWBOriginal)
+            or wb.ResetOrganism
         local originalRestore = wb.RestoreRagdoll
         wb.ResetOrganism = function(ent, ...)
             if not (cvPreserveReset and cvPreserveReset:GetBool() and Authority()) then
                 return originalReset(ent, ...)
             end
-            local ply = (wb.GetPlayer and wb.GetPlayer(ent))
-                or (IsValid(ent) and ent.IsPlayer and ent:IsPlayer() and ent) or nil
+
+            local ply
+            if wb.GetPlayer then
+                local ok, resolved = pcall(wb.GetPlayer, ent)
+                if ok then ply = resolved end
+            end
+            ply = ply or OwnerOf(ent, true)
             local org = IsValid(ply) and ply.organism or nil
             if IsValid(ply) then ply._WSZCExplicitReset = true end
+            WSZC._ExplicitResetDepth = (WSZC._ExplicitResetDepth or 0) + 1
             CarryShrapnelShadow(ply, org)
             local snap = type(org) == "table" and SnapshotZCityStructure(org, false) or nil
-            -- Suppress the explicit "stand up if the old state kept him on the
-            -- floor" call.  Its timer.Simple(0) would otherwise run AFTER this
-            -- wrapper returns and undo everything.
+
+            -- Suppress only WB's explicit stand-up call, and ALWAYS restore the
+            -- function, including a native error.  Keep a real traceback in the
+            -- server console so an incompatible ZCity build is diagnosable.
             wb.RestoreRagdoll = function() return true end
-            local ok, res = pcall(originalReset, ent, ...)
+            local argv = { n = select("#", ...), ... }
+            local function traceback(err)
+                return debug and debug.traceback and debug.traceback(tostring(err), 2) or tostring(err)
+            end
+            local ok, res = xpcall(function()
+                return originalReset(ent, Unpack(argv, 1, argv.n))
+            end, traceback)
             wb.RestoreRagdoll = originalRestore
-            WSZC.ClearAllShrapnel(ply, org)
-            if snap then RestoreZCityStructure(org, snap) end
-            ClearMovementPenalties(org)
+
+            local cleanupOK, cleanupErr = xpcall(function()
+                -- H.ResetPlayer / third-party hooks may replace the organism
+                -- or C:U limb tables.  Never clean a stale pre-reset table.
+                local currentOrg = IsValid(ply) and ply.organism or org
+                if (not ok or res == false) and type(currentOrg) == "table" then
+                    -- WB.GetPlayer rejects dead players and WB.IsEnabled() can
+                    -- be false on mixed builds.  Use the stock native fallback.
+                    local clearOK, clearErr = xpcall(function()
+                        originalClear(currentOrg)
+                        return true
+                    end, traceback)
+                    if not clearOK then Warn("hg.organism.Clear reset fallback failed: " .. tostring(clearErr)) end
+                end
+                WSZC.ClearAllShrapnel(ply, currentOrg)
+                if snap and type(currentOrg) == "table" then RestoreZCityStructure(currentOrg, snap) end
+                ClearMovementPenalties(currentOrg)
+                if IsValid(ply) and type(currentOrg) == "table" then
+                    ply.fullsend = true
+                    if hg.send_organism then pcall(hg.send_organism, currentOrg, ply) end
+                    if hg.send_bareinfo then pcall(hg.send_bareinfo, currentOrg) end
+                end
+                return true
+            end, traceback)
+
+            -- Finally, on BOTH native and cleanup failures: later ragdoll Clear
+            -- calls must never inherit a stale explicit-reset marker.
+            WSZC._ExplicitResetDepth = math.max((WSZC._ExplicitResetDepth or 1) - 1, 0)
             if IsValid(ply) then ply._WSZCExplicitReset = nil end
             if not ok then
-                Warn("WB.ResetOrganism failed: " .. tostring(res))
-                return false
+                Warn("WB.ResetOrganism failed; native Clear fallback was attempted:\n" .. tostring(res))
             end
-            return res
+            if not cleanupOK then
+                Warn("WB.ResetOrganism cleanup failed:\n" .. tostring(cleanupErr))
+            end
+            return (ok and cleanupOK) and res or false
+        end
+        WSZC._ResetWBOriginal = originalReset
+        WSZC._ResetWBWrapper = wb.ResetOrganism
+    end
+
+    -- Stock reset_org maps a ragdoll through hg.RagdollOwner(), then prints
+    -- ent:Nick().  For a DEATH ragdoll the native resolver returns nil, so the
+    -- old callback both failed to identify the player and called Player:Nick
+    -- on a ragdoll.  Supply the dead owner ONLY during this admin callback;
+    -- normal damage/ragdoll ownership semantics remain unchanged.
+    if properties and properties.GetTable then
+        local ok, list = pcall(properties.GetTable)
+        local entry = ok and type(list) == "table" and list.reset_org or nil
+        if type(entry) == "table" and type(entry.Receive) == "function"
+            and not entry._WSZCResetReceivePatched then
+            local originalReceive = entry.Receive
+            entry._WSZCResetReceivePatched = true
+            entry._WSZCOriginalReceive = originalReceive
+            entry.Receive = function(self, ...)
+                local originalResolver = hg.RagdollOwner
+                hg.RagdollOwner = function(ent, ...)
+                    if originalResolver then
+                        local ok, owner = pcall(originalResolver, ent, ...)
+                        if ok and IsValid(owner) then return owner end
+                    end
+                    return OwnerOf(ent, true, true)
+                end
+                WSZC._ExplicitResetDepth = (WSZC._ExplicitResetDepth or 0) + 1
+                local argv = { n = select("#", ...), ... }
+                local ok, res = xpcall(function()
+                    return originalReceive(self, Unpack(argv, 1, argv.n))
+                end, function(err)
+                    return debug and debug.traceback and debug.traceback(tostring(err), 2) or tostring(err)
+                end)
+                WSZC._ExplicitResetDepth = math.max((WSZC._ExplicitResetDepth or 1) - 1, 0)
+                hg.RagdollOwner = originalResolver
+                if not ok then
+                    Warn("reset_org Receive failed:\n" .. tostring(res))
+                    return false
+                end
+                return res
+            end
         end
     end
 
@@ -2670,7 +2801,7 @@ local function InstallVanillaHooks()
     -- `pre` captures the unscaled damage: takeRagdollDamage() calls
     -- dmginfo:ScaleDamage(0.15), so PostEntityTakeDamage would otherwise see
     -- only 15% of the real blast damage and C:U's thresholds would never fire.
-    WrapHook("EntityTakeDamage", "homigrad-damage", CaptureRawDamage)
+    WrapHook("EntityTakeDamage", "homigrad-damage", CaptureRawDamage, InjectAfterZCityDamage)
     -- Ragdoll collisions: lets the vanilla glass -> AddWoundManual path run.
     -- Glass shrapnel is a separate hook below so it always fires, even if the
     -- ZCity hook was re-registered after us.

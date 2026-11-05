@@ -193,28 +193,27 @@ check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
 # inverts C:U's linear placement with the live calibration measured from
 # Screenshot_1-10.png and emits POT sprites (C:U sizes limbs by mat:Width(),
 # which GMod rounds to a power of two).  A uniform scale of w/h can never work.
-check('S33 REFERENCE_BOXES = native Screenshot_2-10 pixel boxes, POT-calibrated',
+check('S33 REFERENCE_BOXES = independent native Screenshot_1 boxes, POT-calibrated',
       "'head':      (682.5, 268.0, 67, 102)" in generator_s
-      and "'thorax':    (681.5, 385.5, 124, 129)" in generator_s
-      and "'abdomen':   (681.5, 521.5, 129, 140)" in generator_s
-      and "'arm_R':     (576.9, 361.0, 86, 54)" in generator_s
-      and "'arm_L':     (788.1, 361.0, 86, 54)" in generator_s
-      and "'forearm_R': (479.0, 356.0, 110, 38)" in generator_s
-      and "'forearm_L': (886.0, 356.0, 110, 38)" in generator_s
-      and "'hand_R':    (399.0, 355.0, 47, 42)" in generator_s
-      and "'hand_L':    (966.0, 355.0, 47, 42)" in generator_s
-      and "'thigh_R':   (652.5, 650.0, 58, 114)" in generator_s
-      and "'thigh_L':   (712.5, 650.0, 58, 114)" in generator_s
-      and "'crus_R':    (650.5, 760.0, 48, 101)" in generator_s
-      and "'crus_L':    (714.5, 760.0, 48, 101)" in generator_s
-      and "'foot_R':    (648.0, 842.0, 38, 50)" in generator_s
-      and "'foot_L':    (717.0, 842.0, 38, 50)" in generator_s
-      and 'Screenshot_2-10.png' in generator_s
-      and 'Screenshot_1-10.png' in generator_s
+      and "'thorax':    (681.5, 385.5, 125, 129)" in generator_s
+      and "'abdomen':   (681.5, 521.5, 128, 138)" in generator_s
+      and "'arm_R':     (576.9, 361.0, 83, 57)" in generator_s
+      and "'arm_L':     (787.1, 364.0, 85, 58)" in generator_s
+      and "'forearm_R': (481.0, 356.0, 111, 38)" in generator_s
+      and "'forearm_L': (879.0, 356.0, 94, 36)" in generator_s
+      and "'hand_R':    (395.0, 356.0, 54, 43)" in generator_s
+      and "'hand_L':    (955.0, 354.0, 54, 43)" in generator_s
+      and "'thigh_R':   (652.5, 650.0, 58, 112)" in generator_s
+      and "'thigh_L':   (711.5, 650.0, 56, 114)" in generator_s
+      and "'crus_R':    (649.5, 761.0, 45, 104)" in generator_s
+      and "'crus_L':    (714.5, 761.0, 47, 104)" in generator_s
+      and "'foot_R':    (646.0, 843.0, 46, 50)" in generator_s
+      and "'foot_L':    (719.0, 843.0, 46, 47)" in generator_s
+      and 'Screenshot_1.png' in generator_s
       and 'Screenshot_6-2.png' in generator_s
       and 'Screenshot_8.png' in generator_s
-      and 'IoU 0.8497 -> 0.9090' in generator_s
-      and '44 px thick' in generator_s
+      and 'independently for every limb' in generator_s
+      and '44 px arm sprites' in generator_s
       and 'tools/fit_unitmenu_geometry.py' in generator_s
       and 'EDGE_WIDTH = 9' in generator_s
       and 'EDGE_PAD_MIN = 6' in generator_s
@@ -308,7 +307,7 @@ check('S47 standard cursor, no drawn hand, action button offset, post-game relea
       and 'if WSZC.MinigameHUDOpen ~= true then return end' in minigames_s
       and 'if session and cmd.SetButtons then cmd:SetButtons(0) end'
           in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua'))
-check('S48 arm silhouettes are NOT redrawn; only the forearm proportion changes',
+check('S48 silhouettes are NOT redrawn; only native limb boxes change',
       'Screenshot_1-11.png' in generator_s
       and 'Screenshot_8.png' in generator_s
       and 'SEAM_LIMBS' not in generator_s
@@ -316,9 +315,9 @@ check('S48 arm silhouettes are NOT redrawn; only the forearm proportion changes'
       and 'def FlattenLimbBand(mask):' not in generator_s
       and 'def SquareToe(mask):' in generator_s
       and "limb_id.startswith('foot_')" in generator_s
-      and 'ONLY these numbers change' in generator_s
-      and "'forearm_R': (479.0, 356.0, 110, 38)" in generator_s
-      and "'arm_R':     (576.9, 361.0, 86, 54)" in generator_s)
+      and 'no shape editing' in generator_s
+      and "'forearm_R': (481.0, 356.0, 111, 38)" in generator_s
+      and "'arm_R':     (576.9, 361.0, 83, 57)" in generator_s)
 check('S49 opioid dose reaches the ZCity organism (morphine / fentanyl)',
       'opiateAmount = tonumber(body.opiateAmount) or 0' in organism_s
       and 'add("analgesiaAdd", (after.opiateAmount - before.opiateAmount) * 0.006, 0, 4)' in organism_s
@@ -330,9 +329,12 @@ check('S50 geometry is measured against the native reference, not eyeballed',
       and 'def optimize(' in fit_s
       and 'def render(' in fit_s
       and 'G.REFERENCE_BOXES' in fit_s
-      and 'Screenshot_2-10.png' in fit_s
-      and 'mirror-symmetric' in fit_s
-      and 'NOT ONE silhouette pixel is redrawn' in fit_s
+      and 'Screenshot_1.png' in fit_s
+      and "ORDER = tuple(k for k in G.LIMB_LAYERS if k != 'head')" in fit_s
+      and 'PAIRS =' not in fit_s
+      and 'NOT ONE silhouette pixel' in fit_s
+      and 'SEEDS = {' in fit_s
+      and 'include_head=False' in fit_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s)
 check('S39 shrapnel survives ragdoll -> standing (authoritative organism)',
       '"wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation"' in organism_s
@@ -470,7 +472,7 @@ try:
     # leg/torso ratio of ~0.73, not the ~0.95 of the rejected Screenshot_4-5
     # iteration.  Keep the shape/width/symmetry relations, but measure the
     # ratio against the NEW reference seams.
-    check('S20 limb sizes follow Screenshot_2-10 native proportions',
+    check('S20 limb sizes follow Screenshot_1 native proportions',
           leg_h >= 0.70 * torso_h
           and leg_h <= 0.80 * torso_h
           and g['thorax'][2] > g['head'][2]
@@ -479,8 +481,8 @@ try:
           and g['forearm_R'][2] > g['arm_R'][2]
           and g['hand_R'][2] < g['forearm_R'][2]
           and g['foot_R'][2] <= g['crus_R'][2]
-          and abs(g['arm_R'][0] + g['arm_L'][0] - 1500) < 1
-          and abs(g['thigh_R'][0] + g['thigh_L'][0] - 1500) < 1
+          and abs(g['arm_R'][0] + g['arm_L'][0] - 1497.5) < 0.2
+          and abs(g['thigh_R'][0] + g['thigh_L'][0] - 1497.6) < 0.2
           and abs(g['foot_R'][1] - g['foot_L'][1]) < 1
           # C:U reads mat:Width()/Height(); GMod rounds PNG textures to a
           # power of two, so EVERY emitted sprite must already be POT-sized.
@@ -831,7 +833,7 @@ end)()
 
     rt('R15 unitmenu doll defaults and hand pivots', '''
 (function()
-    return convars["zc_woundsystem_compat_unitmenu_scale"]._v == "0.24"
+    return convars["zc_woundsystem_compat_unitmenu_scale"]._v == "0.25"
        and convars["zc_woundsystem_compat_hand_pivot_x"]._v == "0.16"
        and convars["zc_woundsystem_compat_hand_pivot_y"]._v == "0.45"
        and convars["zc_woundsystem_compat_unitmenu_doll"]._v == "1"
@@ -847,7 +849,8 @@ end)()
     return n == 15 and g.head.cy < g.thorax.cy and g.thorax.cy < g.thigh_R.cy
        and g.thigh_R.cy < g.crus_R.cy and g.crus_R.cy < g.foot_R.cy
        and g.thorax.w > g.head.w and g.thigh_R.w < g.thorax.w
-       and g.arm_R.cx + g.arm_L.cx == 1500
+       and math.abs(g.arm_R.cx + g.arm_L.cx - 1497.5) < 0.11
+       and g.hand_R.cx == 58.1 and g.hand_L.cx == 1405.8
 end)()
 ''')
 
@@ -1095,18 +1098,19 @@ end)()
 end)()
 ''')
 
-    rt('R28 ApplyDoll writes human geometry and keeps a restore snapshot', '''
+    rt('R28 ApplyDoll writes native geometry, 0.25 scale and visible hitboxes', '''
 (function()
     local mats, limbs = {}, {}
     for id, g in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do
         mats[id] = { fill = Material("wszc/unitmenu/limbs/" .. id .. "_fill.png"),
                      edge = Material("wszc/unitmenu/limbs/" .. id .. "_edge.png"),
-                     cx = g.cx, cy = g.cy, w = g.w, h = g.h }
+                     cx = g.cx, cy = g.cy, w = g.w, h = g.h,
+                     hoverW = g.hoverW, hoverH = g.hoverH }
         limbs[#limbs + 1] = { id = id, matM = Material("cu/m"), matO = Material("cu/o"),
                               ox = 0, oy = 0, size = 2, sourceW = 64, sourceH = 64,
                               texturePadding = 1, flip = true }
     end
-    local k = 0.24
+    local k = convars["zc_woundsystem_compat_unitmenu_scale"]:GetFloat()
     WSZC.ApplyUnitmenuDoll(limbs, mats, k)
     local head
     for _, l in ipairs(limbs) do if l.id == "head" then head = l end end
@@ -1115,7 +1119,7 @@ end)()
        and head.matM == mats.head.fill and head.matO == mats.head.edge
        and math.abs(head.ox - (gh.cx - 750) * k) < 0.001
        and math.abs(head.oy - (gh.cy - 750) * k) < 0.001
-       and head.size == k and head.sourceW == gh.w and head.sourceH == gh.h
+       and head.size == 0.25 and head.sourceW == gh.hoverW and head.sourceH == gh.hoverH
        and head.texturePadding == 0 and head.flip == false
        and head._WSZCUnitmenuOriginal.matM ~= nil
 end)()

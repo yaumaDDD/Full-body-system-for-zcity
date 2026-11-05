@@ -6,22 +6,23 @@ The owner's standing requirement is "бля ну одинаково делай �
 that follows each limb's own shape).  This tool makes that measurable instead
 of eyeballed:
 
-  1. build a target mask from Screenshot_2-10.png.  The doll is true black
+  1. build a target mask from Screenshot_1.png.  The doll is true black
      (RGB 0..8) while the woven room background is RGB 30..80, so
      ``max(RGB) < 20`` isolates the doll without touching it;
   2. render the 15 VERBATIM archive silhouettes into SCREEN space using the
      exact same linear placement C:U uses (S=0.4155, centre=(682.5,558.2),
      mat:Width()/Height() are the POT sprite sizes);
   3. report intersection-over-union, and optionally run a bounded coordinate
-     descent over the REFERENCE_BOXES numbers (tx, ty, w, h).  Pairs stay
-     mirror-symmetric about x=682.5, widths/heights stay within +/-35% of
-     the checked-in values, and NOT ONE silhouette pixel is redrawn.
+     descent over the REFERENCE_BOXES numbers (tx, ty, w, h).  Every limb is
+     independent (native arms are asymmetric), widths/heights stay within
+     +/-35% of the checked-in values, and NOT ONE silhouette pixel is redrawn.
+     The translucent head is excluded from the black-mask metric.
 
 Only the four numbers per limb ever change: position and proportion, never
-shape, colour, outline, T-pose or symmetry.
+shape, colour, outline or T-pose.
 
 Usage:
-    python3 tools/fit_unitmenu_geometry.py --reference /path/Screenshot_2-10.png
+    python3 tools/fit_unitmenu_geometry.py --reference /path/Screenshot_1.png
     python3 tools/fit_unitmenu_geometry.py --reference ... --optimize
     python3 tools/fit_unitmenu_geometry.py --reference ... --overlay /tmp/overlay.png
 
@@ -45,21 +46,56 @@ import build_unitmenu_materials as G  # noqa: E402
 W, H = 1365, 1079
 ROI = (300, 200, 1050, 900)
 S, CX, CY = G.LIVE_S, G.LIVE_CX, G.LIVE_CY
-PAIRS = (('arm_R', 'arm_L'), ('forearm_R', 'forearm_L'), ('hand_R', 'hand_L'),
-         ('thigh_R', 'thigh_L'), ('crus_R', 'crus_L'), ('foot_R', 'foot_L'))
-SINGLES = ('head', 'thorax', 'abdomen')
+# The native arms/hands are measurably asymmetric.  Fit every limb separately;
+# the semi-transparent head is contour-checked separately, not threshold-fitted.
+ORDER = tuple(k for k in G.LIMB_LAYERS if k != 'head')
+SEEDS = {
+    'thorax': (682, 400), 'abdomen': (682, 500),
+    'arm_R': (580, 350), 'arm_L': (780, 350),
+    'forearm_R': (480, 350), 'forearm_L': (880, 360),
+    'hand_R': (390, 350), 'hand_L': (950, 350),
+    'thigh_R': (650, 650), 'thigh_L': (710, 650),
+    'crus_R': (650, 750), 'crus_L': (715, 750),
+    'foot_R': (645, 845), 'foot_L': (720, 845),
+}
 
 
 def target_mask(path):
     src = Image.open(path).convert('RGB')
     px = src.load()
-    out = Image.new('L', (W, H), 0)
-    op = out.load()
+    raw = Image.new('L', (W, H), 0)
+    op = raw.load()
     for y in range(ROI[1], ROI[3]):
         for x in range(ROI[0], ROI[2]):
             if max(px[x, y]) < 20:
                 op[x, y] = 255
-    return out.filter(ImageFilter.MedianFilter(3)).crop(ROI)
+    raw = raw.filter(ImageFilter.MedianFilter(3)).crop(ROI)
+
+    # A shelf crosses the head and several background props pass the same dark
+    # threshold.  Keep only the 14 connected components seeded inside native
+    # body parts.  The head's translucent material needs a different colour
+    # model and is deliberately excluded from this black-mask metric.
+    rp = raw.load()
+    rw, rh = raw.size
+    kept = set()
+    for sx, sy in SEEDS.values():
+        start = (sx - ROI[0], sy - ROI[1])
+        if not (0 <= start[0] < rw and 0 <= start[1] < rh and rp[start]):
+            raise ValueError('native reference does not match the expected body layout: %r' % (start,))
+        stack = [start]
+        kept.add(start)
+        while stack:
+            x, y = stack.pop()
+            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                p = (nx, ny)
+                if 0 <= nx < rw and 0 <= ny < rh and rp[p] and p not in kept:
+                    kept.add(p)
+                    stack.append(p)
+    out = Image.new('L', raw.size, 0)
+    op = out.load()
+    for x, y in kept:
+        op[x, y] = 255
+    return out
 
 
 def archive_alphas():
@@ -91,13 +127,10 @@ def layout_for(boxes):
         if px < G.EDGE_PAD_MIN or py < G.EDGE_PAD_MIN:
             return None
         out[k] = (round(cx, 1), round(cy, 1), w, h, px, py, iw, ih)
-    for a, b in PAIRS:
-        if abs(out[a][0] + out[b][0] - 1500.0) > 0.05:
-            return None
     return out
 
 
-def render(boxes, alphas):
+def render(boxes, alphas, include_head=True):
     """Black fill mask in screen space, exactly what C:U will draw."""
     lay = layout_for(boxes)
     if lay is None:
@@ -105,6 +138,8 @@ def render(boxes, alphas):
     canvas = Image.new('L', (W, H), 0)
     white = {}
     for limb, (cx, cy, w, h, px, py, iw, ih) in lay.items():
+        if limb == 'head' and not include_head:
+            continue
         scaled = alphas[limb].resize((iw, ih), Image.Resampling.LANCZOS)
         if limb.startswith('foot_'):
             scaled = G.SquareToe(scaled)   # Screenshot_8 flat sole, unchanged
@@ -135,17 +170,13 @@ def iou(img, target_bytes, target_n):
 
 
 def unpack(base):
-    v = [[float(x) for x in base[k]] for k in SINGLES]
-    for a, _ in PAIRS:
-        v.append([float(x) for x in base[a]])
-    return v
+    return [[float(x) for x in base[k]] for k in ORDER]
 
 
-def repack(v):
-    boxes = {k: tuple(p) for k, p in zip(SINGLES, v)}
-    for (a, b), p in zip(PAIRS, v[3:]):
-        tx, ty, w, h = p
-        boxes[a], boxes[b] = (tx, ty, w, h), (1365 - tx, ty, w, h)
+def repack(v, base):
+    boxes = {k: tuple(p) for k, p in base.items()}
+    for k, p in zip(ORDER, v):
+        boxes[k] = tuple(p)
     return boxes
 
 
@@ -154,7 +185,7 @@ def optimize(base, alphas, target_bytes, target_n, sweeps=5):
     cur = [p[:] for p in v0]
 
     def score(v):
-        img = render(repack(v), alphas)
+        img = render(repack(v, base), alphas, include_head=False)
         if img is None:
             return -1.0
         penalty = sum(abs(p[i] - q[i]) for p, q in zip(v, v0) for i in range(4))
@@ -184,7 +215,7 @@ def optimize(base, alphas, target_bytes, target_n, sweeps=5):
         print('  sweep %d: penalised %.5f' % (sweep, best))
         if not improved:
             break
-    return repack(cur)
+    return repack(cur, base)
 
 
 def overlay(img, target, path):
@@ -207,7 +238,7 @@ def overlay(img, target, path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--reference', default='/tmp/arena-coding-uploads/Screenshot_2-10.png')
+    ap.add_argument('--reference', default='/tmp/arena-coding-uploads/Screenshot_1.png')
     ap.add_argument('--optimize', action='store_true')
     ap.add_argument('--overlay')
     args = ap.parse_args()
@@ -216,12 +247,12 @@ def main():
     alphas = archive_alphas()
     target = target_mask(args.reference)
     tb, tn = target.tobytes(), sum(1 for x in target.tobytes() if x)
-    img = render(base, alphas)
+    img = render(base, alphas, include_head=False)
     print('reference doll pixels: %d' % tn)
-    print('IoU (checked-in geometry): %.4f' % iou(img, tb, tn))
+    print('IoU (checked-in geometry, 14 black-mask body parts): %.4f' % iou(img, tb, tn))
     if args.optimize:
         fitted = optimize(base, alphas, tb, tn)
-        img = render(fitted, alphas)
+        img = render(fitted, alphas, include_head=False)
         print('IoU (fitted): %.4f' % iou(img, tb, tn))
         for k in G.LIMB_LAYERS:
             print('    %-11s (%.1f, %.1f, %d, %d),' % (k, *fitted[k]))

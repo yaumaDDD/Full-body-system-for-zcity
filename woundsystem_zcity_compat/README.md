@@ -354,7 +354,7 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_shrapnel_infection_rate` | этот аддон (server) | **`0.1`** — базовые проценты инфекции в секунду до масштабирования по числу осколков; диапазон `0.001..2`. |
 | `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | `0.45` — множитель спрайта руки 512×1260 в мини-играх бинта/шприца; диапазон `0.2..1`. |
 | `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 слоёв `unitmenu/limbs` архива; `0` — родные спрайты C:U. |
-| `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.24` — размер куклы относительно `dollScale` C:U; диапазон `0.1..0.8`. |
+| `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.25` — native-калибровка `0.24` + 4.17% линейного размера; диапазон `0.1..0.8`. |
 | `zc_woundsystem_compat_unitmenu_tint` | этот аддон (client) | `1` — белый `SetDrawColor` для `*_fill.png` (стандартный чёрный иначе умножается на чёрный `finalMiddle`). `*_edge.png` не трогается: обводка по форме лимба и её затемнение при наведении остаются за C:U. |
 | `zc_woundsystem_compat_hide_minigame_text` | этот аддон (client) | `1` — убрать заголовок / счётчик / три строки инструкций / `Press RMB/ESC to exit` и верхнюю панель во **всех** 5 C:U + 2 WSZC мини-играх. **Тёмное затемнение заднего фона (`Clip.DrawBackdrop`) сохранено** — по запросу владельца «во всех мини играх было затемнение заднего фона как раньше». AED-статус `WoundSystemAEDStatus` убран только внутри активной мини-игры. **`minigameshrapnel.png` — передний слой раны, НЕ удаляется.** Иконки, осколок, рука, пинцет, `bandageOuter`, уведомления ZCity, красный death-текст, капли и `Icons.*` остаются. `0` — вернуть как было. |
 | `zc_woundsystem_compat_handanim` | этот аддон (client) | `1` — кадры `homigrad/handanim/hand.png` и `3_3.png` вместо руки 512×1260; `0` — родная рука C:U. |
@@ -499,9 +499,12 @@ xm1014, spas12, saiga12, remington870, roullet, doublebarrel_short), shotgun
 пишет туда урон и `CurTime()`), затем `ply:LastHitGroup()`, `ply.HitBones`,
 и только потом позиция с жёстким порогом 55 юнитов. Если ни один источник не
 дал конечность — осколок **не создаётся**, а не падает в случайный `thorax`.
-Инъекция перенесена из pre-хука в `PostEntityTakeDamage`: `org.dmgstack`
-заполняется внутри ZCity-хука, и только после него limb известен.
-`took == false` по-прежнему обрабатывается (это норма для ZCity).
+Инъекция выполняется сразу после родного `homigrad-damage` внутри его wrapper:
+`org.dmgstack` / `ply.HitBones` уже заполнены, а `return true` больше не может
+подавить обработку. `PostEntityTakeDamage` остаётся fallback для сторонних
+путей и обрабатывает `took == false`. Один DamageInfo, прошедший
+player→FakeRagdoll или collision-proxy→player, дедуплицируется; proxy без
+владельца/конечности НЕ помечается обработанным и не блокирует настоящий hit.
 
 ## `reset organism` не встаёт сам
 
@@ -512,16 +515,19 @@ xm1014, spas12, saiga12, remington870, roullet, doublebarrel_short), shotgun
 
 `WSZC.InstallResetStructureGuard()` оборачивает `hg.organism.Clear` и
 `WB.ResetOrganism`: на время `ResetOrganism` `WB.RestoreRagdoll` подменяется на
-no-op (иначе отложенный таймер поднял бы игрока уже после обёртки), а состояние
-`otrub / needotrub / fake / needfake / canmove / alive / stun / consciousness` / ...
-сохраняется и возвращается после очистки. Травмы и `health` при этом очищаются как обычно —
-сохраняется именно **структура ZCity**, а не C:U body/limbs. После восстановления
-повторно шлются `hg.send_organism` / `hg.send_bareinfo` и обновляется shadow C:U.
+no-op (иначе отложенный таймер поднял бы игрока уже после обёртки), а только
+`otrub / needotrub / fake / needfake / alive / otrub_start / unconscious`
+сохраняются и возвращаются после очистки. Травмы, blood/pain и `health`
+очищаются как обычно. После восстановления повторно шлются
+`hg.send_organism` / `hg.send_bareinfo` и обновляется shadow C:U.
 При явном reset `SnapshotZCityStructure(..., false)` и `ClearAllShrapnel()` не
-оставляют ни фрагментов, ни tagged-ран, ни source/irritation/C:U residue. Это
-не применяется к обычному ragdoll-clear: там snapshot по-прежнему сохраняет
-шрапнель. Обычный `Player Spawn` (нет `FakeRagdoll`, нет `otrub`) не затрагивается.
-Откат: `zc_woundsystem_compat_preserve_reset_structure 0`.
+оставляют ни фрагментов, ни tagged-ран, ни source/irritation/C:U residue.
+Очистка применяется к АКТУАЛЬНОМУ `ply.organism` после native reset; при
+`false`/ошибке WB выполняется родной `hg.organism.Clear` fallback с traceback.
+Death-ragdoll разрешается через `organism.owner`; штатный `reset_org` получает
+владельца только на время callback, поэтому его `ent:Nick()` не вызывается на
+ragdoll. Это не применяется к обычному ragdoll-clear: там snapshot сохраняет
+шрапнель/infection. Откат: `zc_woundsystem_compat_preserve_reset_structure 0`.
 
 ## Камера в мини-игре
 
@@ -1429,3 +1435,28 @@ GMod не запускался — принятие по свежему live-с�
 
 Suite `82/82` до пересборки архивов, затем полный прогон. Живой GMod не
 запускался — принятие по свежему live-скрину.
+
+## №15: повторный live-fix — reset, настоящие дробовики и native WoundView
+
+* **Дробовой путь воспроизведён целиком.** Прежний focused test передавал
+  `HITGROUP_RIGHTARM` напрямую и пропускал настоящий resolver. Новые проверки
+  вызывают зарегистрированный `PostEntityTakeDamage` с `hitgroup=nil`,
+  `took=false`, свежими `org.dmgstack` / `ply.HitBones`, а также идут по пути
+  player→FakeRagdoll→обёрнутый `homigrad-damage`. Proxy без владельца больше
+  не выставляет `ShrapnelHandled` раньше времени; injection выполнен и внутри
+  native-wrapper, поэтому `return true` ZCity не отменяет осколки.
+* **Полный reset.** Добавлены source-faithful `H.ResetPlayer → Clear →
+  RestoreRagdoll` (последний подавлен), очистка текущего organism, native
+  fallback, death-ragdoll и `reset_org`. Пустая shadow-таблица допускается,
+  но число фрагментов, раны, infection, dressing/tourniquet и `HitBones`
+  после reset равны нулю/пусты. Обычный ragdoll-clear сохраняет их, как и
+  прежде. Lua 5.1/5.x wrapper использует `table.unpack or unpack`.
+* **Кукла.** `REFERENCE_BOXES` переснят с `Screenshot_1.png` независимо для
+  каждой части: native-руки/кисти не принудительно зеркалятся. Чёрный fill и
+  shaped white outline сохранены, рамок нет. По 14 частям с надёжной чёрной
+  маской IoU checked-in геометрии = **0.9683**; полупрозрачная голова сверена
+  по контуру отдельно. Итоговый scale `0.25` вместо `0.24` (+4.17%), hover
+  hitboxes используют видимые `hoverW/hoverH`.
+* Локальные source-faithful gameplay checks: **37/37**. Живой GMod не
+  запускался; это не заменяет live-проверку. Для неизвестных сторонних ошибок
+  всё ещё нужен полный клиентский/серверный console stack trace.

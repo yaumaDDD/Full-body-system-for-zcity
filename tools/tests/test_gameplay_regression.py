@@ -70,6 +70,20 @@ check("S07 stock physical SWEP really reaches this ApplyItemToBody contract",
       and 'weapon_tourniquet    = {kind = "apply", item = "TOURNIQUET"' in woundbridge_s
       and "local ok = H.ApplyItemToBody(target, spec.item, limbId, 100)" in woundbridge_s
       and "if ok then\n\t\t\tswep.modeValues[idx] = 0" in woundbridge_s)
+inject_pos = organism_s.find("function WSZC.InjectDamageShrapnel")
+mark_pos = organism_s.find("WSZC.ShrapnelHandled[dmginfo] = true", inject_pos)
+limb_pos = organism_s.find("local limbId = DamageLimb", inject_pos)
+check("S08 shotgun injects after native damage and unresolved proxies stay retryable",
+      'WrapHook("EntityTakeDamage", "homigrad-damage", CaptureRawDamage, InjectAfterZCityDamage)' in organism_s
+      and "WSZC.InjectDamageShrapnel(ent, dmginfo, nil)" in organism_s
+      and 0 <= limb_pos < mark_pos
+      and "Do NOT mark an unresolved proxy hit as handled" in organism_s)
+check("S09 explicit reset covers death ragdolls and the stock admin property",
+      "OwnerOf(ent, true)" in organism_s
+      and "OwnerOf(ent, true, true)" in organism_s
+      and "list.reset_org" in organism_s
+      and "originalClear(currentOrg)" in organism_s
+      and "local currentOrg = IsValid(ply) and ply.organism or org" in organism_s)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -115,6 +129,7 @@ bit = { band = function(a, b)
 end }
 DMG_BULLET, DMG_BUCKSHOT, DMG_BLAST, DMG_DISSOLVE = 1, 2, 4, 8
 HITGROUP_RIGHTARM = 5
+player = { GetAll = function() return {} end }
 game = { GetAmmoName = function(id) return id == 12 and "12/70gauge" or "9mm" end }
 ''')
     lua.execute(organism_s)
@@ -125,6 +140,7 @@ function MakePlayer()
     ply._limbs.hand_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
     ply.IsPlayer = function() return true end
     ply.Alive = function() return true end
+    ply.Nick = function() return "regression_player" end
     ply.SetNetVar = function() end
     ply.GetNWBool = function(self, key, fallback) local v = self._nw[key]; if v == nil then return fallback end; return v end
     ply.SetNWBool = function(self, key, value) self._nw[key] = value end
@@ -202,6 +218,33 @@ return activeWeaponWorks, pistol._limbs.hand_R.shrapnel == 0
     check("R12 PhysBullet inflictor=attacker still identifies active shotgun", physical_pellets[0])
     check("R13 active pistol with DMG_BULLET still creates no fragments", physical_pellets[1])
 
+    native_damage = lua.execute(r'''
+local post = hook._t.PostEntityTakeDamage.WSZC_AuthorityDamagePost
+local proxy = { IsPlayer = function() return false end }
+local ply = MakePlayer()
+ply.organism.dmgstack = { [HITGROUP_RIGHTARM] = { 30, CurTime() } }
+local dmg = MakeDamage("weapon_spas12", 8, -1, 0)
+-- Real ZCity order: collision proxy first, then the actual player/ragdoll,
+-- same CTakeDamageInfo, no explicit hitgroup, and took=false after return true.
+post(proxy, dmg, false)
+local proxyRetryable = WSZC.ShrapnelHandled[dmg] == nil
+    and ply._limbs.hand_R.shrapnel == 0
+post(ply, dmg, false)
+local stackResolved = ply._limbs.hand_R.shrapnel == 3
+    and ply.organism.wszc_shrapnel_sources.hand_R.shotgun == 3
+post(ply, dmg, false)
+local deduplicated = ply._limbs.hand_R.shrapnel == 3
+
+local bonesPlayer = MakePlayer()
+bonesPlayer.organism.dmgstack = {}
+bonesPlayer.HitBones = { ["ValveBiped.Bip01_R_Hand"] = CurTime() + 30 }
+post(bonesPlayer, MakeDamage("weapon_xm1014", 8, -1, 0), false)
+local bonesResolved = bonesPlayer._limbs.hand_R.shrapnel == 3
+return proxyRetryable and stackResolved and deduplicated, bonesResolved
+''')
+    check("R23 proxy + nil hitgroup + dmgstack follows the real public damage hook", native_damage[0])
+    check("R24 nil hitgroup resolves fresh ZCity HitBones without duplicate fragments", native_damage[1])
+
     effects = lua.execute(r'''
 local ply = MakePlayer()
 local normal = { 4, nil, nil, "ValveBiped.Bip01_R_Hand", 0 }
@@ -239,17 +282,42 @@ ply._limbs.hand_R.infection = 12
 ply.bandaged_limbs = { ["ValveBiped.Bip01_R_Hand"] = true }
 ply.tourniquets = { { 0, 0, "ValveBiped.Bip01_R_Hand" } }
 ply.organism.otrub = true
+ply.organism.blood, ply.organism.pain = 1200, 80
 hg.send_organism = function() end; hg.send_bareinfo = function() end
 hg.organism = { Clear = function(org)
     local owner = org.owner
     for key in pairs(org) do if key ~= "owner" then org[key] = nil end end
     org.owner = owner
+    org.alive, org.otrub, org.blood, org.pain = true, false, 5000, 0
+    org.bleed, org.internalBleed = 0, 0
     org.wounds, org.arterialwounds = {}, {}
 end }
+restoreCalls = 0
 hg.WoundBridge = {
-    GetPlayer = function(ent) return ent end,
-    RestoreRagdoll = function() end,
-    ResetOrganism = function(ent) hg.organism.Clear(ent.organism); return true end,
+    GetPlayer = function(ent)
+        if ent.IsPlayer and ent:IsPlayer() and ent:Alive() then return ent end
+        local org = ent.organism
+        local owner = type(org) == "table" and org.owner or nil
+        if owner and owner:Alive() and owner.FakeRagdoll == ent then return owner end
+        return nil
+    end,
+    Sync = function() end,
+    RestoreRagdoll = function() restoreCalls = restoreCalls + 1 end,
+    -- Source-faithful WB.ResetOrganism order from sv_woundbridge.lua.
+    ResetOrganism = function(ent)
+        local target = hg.WoundBridge.GetPlayer(ent)
+        if not target then return false end
+        if not WoundSystem.Health.ResetPlayer(target) then return false end
+        local org = target.organism
+        if org then
+            hg.organism.Clear(org)
+            hg.WoundBridge.Sync(target, org)
+            org.needotrub, org.otrub, org.needfake, org.fake = false, false, false, false
+        end
+        hg.WoundBridge.RestoreRagdoll(target, nil, false)
+        if org then hg.send_bareinfo(org); hg.send_organism(org, target) end
+        return true
+    end,
 }
 WSZC.InstallResetStructureGuard()
 hg.organism.Clear(ply.organism)
@@ -258,9 +326,11 @@ local transitionKept = ply.organism.otrub == true
     and ply.organism.wszc_shrapnel_sources.hand_R.shotgun == 3
     and ply.organism.wszc_bandaged_shrapnel.hand_R.infection == 12
     and ply.organism.wszc_infection == 12
-hg.WoundBridge.ResetOrganism(ply)
-local explicitCleared = ply.organism.otrub == true
-    and ply.organism.wszc_shrapnel == nil
+ply.organism.blood, ply.organism.pain = 1200, 80
+local resetResult = hg.WoundBridge.ResetOrganism(ply)
+local explicitCleared = resetResult == true and restoreCalls == 0 and ply.organism.otrub == true
+    and ply.organism.blood == 5000
+    and (ply.organism.wszc_shrapnel == nil or (ply.organism.wszc_shrapnel.hand_R or 0) == 0)
     and ply.organism.wszc_shrapnel_sources == nil
     and ply.organism.wszc_shrapnel_irritation == nil
     and ply.organism.wszc_bandaged_shrapnel == nil and ply.organism.wszc_infection == nil
@@ -268,10 +338,97 @@ local explicitCleared = ply.organism.otrub == true
     and ply.organism.bleed == 0 and ply._limbs.hand_R.shrapnel == 0
     and ply._limbs.hand_R.isBandaged == false and ply._limbs.hand_R.infection == 0
     and next(ply.bandaged_limbs) == nil and next(ply.tourniquets) == nil
+ResetDebug = { result = resetResult, restoreCalls = restoreCalls,
+    otrub = ply.organism.otrub, blood = ply.organism.blood, pain = ply.organism.pain,
+    shrapnel = ply.organism.wszc_shrapnel, sources = ply.organism.wszc_shrapnel_sources,
+    irritation = ply.organism.wszc_shrapnel_irritation,
+    covered = ply.organism.wszc_bandaged_shrapnel, infection = ply.organism.wszc_infection,
+    wounds = #ply.organism.wounds, bleed = ply.organism.bleed,
+    limbShrapnel = ply._limbs.hand_R.shrapnel, limbBandaged = ply._limbs.hand_R.isBandaged,
+    limbInfection = ply._limbs.hand_R.infection,
+    bandages = next(ply.bandaged_limbs), tourniquets = next(ply.tourniquets) }
 return transitionKept, explicitCleared
 ''')
     check("R06 ordinary ragdoll clear still preserves fragments", reset[0])
     check("R07 explicit reset fully clears fragments and medical residue", reset[1])
+    if not reset[1]:
+        debug = lua.globals().ResetDebug
+        print("RESET_DEBUG", {k: debug[k] for k in (
+            "result", "restoreCalls", "otrub", "blood", "pain", "shrapnel", "sources",
+            "irritation", "covered", "infection", "wounds", "bleed", "limbShrapnel",
+            "limbBandaged", "limbInfection", "bandages", "tourniquets")})
+
+    death_reset = lua.execute(r'''
+local dead = MakePlayer()
+dead.Alive = function() return false end
+dead.organism.blood = 900
+WSZC.AddShrapnel(dead, "hand_R", 1, "shotgun")
+local ragdoll = { IsPlayer = function() return false end, organism = dead.organism }
+dead.DeathRagdoll = ragdoll
+player.GetAll = function() return { dead } end
+local nativeResult = hg.WoundBridge.ResetOrganism(ragdoll)
+local deathCleared = nativeResult == false -- stock WB cannot accept a dead owner
+    and (dead.organism.wszc_shrapnel == nil or (dead.organism.wszc_shrapnel.hand_R or 0) == 0)
+    and dead.organism.wszc_shrapnel_sources == nil
+    and dead.organism.blood == 5000 and next(dead.HitBones) == nil
+    and dead._limbs.hand_R.shrapnel == 0
+
+hg.RagdollOwner = function(ent)
+    if ent.IsPlayer and ent:IsPlayer() and ent:Alive() then return ent end
+    local org = ent.organism
+    local owner = type(org) == "table" and org.owner or nil
+    if owner and owner:Alive() and owner.FakeRagdoll == ent then return owner end
+    return nil
+end
+local originalResolver = hg.RagdollOwner
+WSZC.AddShrapnel(dead, "hand_R", 1, "shotgun")
+propertyNick = nil
+local property = { Filter = function() return true end }
+property.Receive = function(self, length, admin)
+    local ent = net.ReadEntity()
+    if not self:Filter(ent, admin) then return end
+    ent = hg.RagdollOwner(ent) or ent
+    if not hg.WoundBridge.ResetOrganism(ent) then hg.organism.Clear(ent.organism) end
+    propertyNick = ent:Nick() -- stock source: errors here if ent is still a ragdoll
+    return true
+end
+local propertyList = { reset_org = property }
+properties = { GetTable = function() return propertyList end }
+net = { ReadEntity = function() return ragdoll end }
+WSZC.InstallResetStructureGuard()
+local ok, err = pcall(property.Receive, property, 0, dead)
+local propertyWorks = ok and propertyNick == "regression_player"
+    and (dead.organism.wszc_shrapnel == nil or (dead.organism.wszc_shrapnel.hand_R or 0) == 0)
+    and dead.organism.blood == 5000
+    and hg.RagdollOwner == originalResolver and WSZC._ExplicitResetDepth == 0
+if not ok then propertyError = tostring(err) end
+
+local cleanupPlayer = MakePlayer()
+local stockRestore = hg.WoundBridge.RestoreRagdoll
+local stockGetLimbs = WoundSystem.Health.GetLimbs
+WoundSystem.Health.GetLimbs = function() error("intentional cleanup regression probe") end
+local cleanupCallOK, cleanupResult = pcall(hg.WoundBridge.ResetOrganism, cleanupPlayer)
+WoundSystem.Health.GetLimbs = stockGetLimbs
+local cleanupFinally = cleanupCallOK and cleanupResult == false
+    and WSZC._ExplicitResetDepth == 0 and cleanupPlayer._WSZCExplicitReset ~= true
+    and hg.WoundBridge.RestoreRagdoll == stockRestore
+
+DeathDebug = { nativeResult = nativeResult, blood = dead.organism.blood,
+    shrapnel = dead.organism.wszc_shrapnel, sources = dead.organism.wszc_shrapnel_sources,
+    hitBones = next(dead.HitBones), limbShrapnel = dead._limbs.hand_R.shrapnel,
+    ok = ok, error = propertyError, nick = propertyNick,
+    resolverRestored = hg.RagdollOwner == originalResolver,
+    depth = WSZC._ExplicitResetDepth }
+return deathCleared, propertyWorks, cleanupFinally
+''')
+    check("R25 death-ragdoll reset uses native Clear fallback and clears residue", death_reset[0])
+    check("R26 stock reset_org resolves dead owner and never calls Nick on ragdoll", death_reset[1])
+    check("R28 reset cleanup errors still restore depth, marker and RestoreRagdoll", death_reset[2])
+    if not all(death_reset):
+        debug = lua.globals().DeathDebug
+        print("DEATH_RESET_DEBUG", {k: debug[k] for k in (
+            "nativeResult", "blood", "shrapnel", "sources", "hitBones", "limbShrapnel",
+            "ok", "error", "nick", "resolverRestored", "depth")})
 
     complications = lua.execute(r'''
 local ply = MakePlayer()
@@ -422,6 +579,35 @@ return rejectStillHeals, errorStillHeals, noFalseConsumption
         print("PHYSICAL_DEBUG", {k: debug[k] for k in (
             "ok", "used", "nativeCalls", "arterial", "artery", "wounds", "leftSeverity",
             "limbBleed", "marker", "orgBleed", "ok2", "used2", "arterial2", "wounds2", "orgBleed2")})
+
+    native_wrapper = lua.execute(r'''
+local ply = MakePlayer()
+local ragdoll = { IsPlayer = function() return false end, organism = ply.organism }
+ply.FakeRagdoll = ragdoll
+nestedDamageCalls = 0
+hook.Add("EntityTakeDamage", "homigrad-damage", function(ent, dmginfo)
+    if ent.IsPlayer and ent:IsPlayer() and IsValid(ent.FakeRagdoll) then
+        -- Real ZCity forwards the same DamageInfo to the fake ragdoll.
+        return hook._t.EntityTakeDamage["homigrad-damage"](ent.FakeRagdoll, dmginfo)
+    end
+    nestedDamageCalls = nestedDamageCalls + 1
+    local owner = ent.organism.owner
+    owner.organism.dmgstack = { [HITGROUP_RIGHTARM] = { 30, CurTime() } }
+    owner.HitBones = { ["ValveBiped.Bip01_R_Hand"] = CurTime() + 30 }
+    return true -- this can suppress the engine's public post hook
+end)
+WSZC.Ready, WSZC.H = true, WoundSystem.Health
+WSZC.WithVanillaContext = function(fn, ...) return fn(...) end
+local installed = WSZC.InstallOrganismMode()
+local dmg = MakeDamage("weapon_spas12", 8, -1, 0)
+local blocked = hook._t.EntityTakeDamage["homigrad-damage"](ply, dmg)
+local afterNative = ply._limbs.hand_R.shrapnel
+hook._t.PostEntityTakeDamage.WSZC_AuthorityDamagePost(ply, dmg, false)
+return installed and blocked == true and nestedDamageCalls == 1
+    and afterNative == 3 and ply._limbs.hand_R.shrapnel == 3
+    and ply.organism.wszc_shrapnel_sources.hand_R.shotgun == 3
+''')
+    check("R27 player->FakeRagdoll->native hook injects once even when Post is suppressed", native_wrapper)
 
     client = LuaRuntime(unpack_returned_tuples=True)
     client.execute(r'''
