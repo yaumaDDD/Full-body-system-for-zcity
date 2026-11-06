@@ -246,9 +246,8 @@ end
 
 local function UpdateHandDrawPosition()
     local scale = MiniScale()
-    -- The archive hand is horizontal: C:U's 290 degree idle rotation would
-    -- stand it on its head, and its (0.4, 0.1) pivot belongs to a tall sprite.
-    local unitmenuHand = WSZC and WSZC.UnitmenuHandActive and WSZC.UnitmenuHandActive()
+    -- The generated human hand has C:U's vertical pose, so use the native
+    -- pivot, idle/hold angles and HandPhysics instead of flattening rotation.
     local handPivotX = MG._unitmenuPivotX or MiniNumber("handPivotX", DEFAULT_MINIGAME.handPivotX)
     local handPivotY = MG._unitmenuPivotY or MiniNumber("handPivotY", DEFAULT_MINIGAME.handPivotY)
     local handOffsetX = MiniNumber("handOffsetX", DEFAULT_MINIGAME.handOffsetX) * scale
@@ -260,8 +259,8 @@ local function UpdateHandDrawPosition()
     MG.handDrawY = MG.handPivotScreenY - (MG.handDrawH * handPivotY)
     MG.handDrawPivotX = handPivotX
     MG.handDrawPivotY = handPivotY
-    local idleAngle = unitmenuHand and 0 or MiniNumber({"handIdleAngle", "handAngle"}, DEFAULT_MINIGAME.handIdleAngle)
-    local holdAngle = unitmenuHand and 0 or MiniNumber({"handHoldAngle", "handAngle"}, idleAngle)
+    local idleAngle = MiniNumber({"handIdleAngle", "handAngle"}, DEFAULT_MINIGAME.handIdleAngle)
+    local holdAngle = MiniNumber({"handHoldAngle", "handAngle"}, idleAngle)
     if HandPhysics then
         MG.handDrawAngle = HandPhysics.Rotation(MG, MG.holdingSyringe and holdAngle or idleAngle)
     else

@@ -61,8 +61,8 @@
 | Кость вправления рядом с суставом и на экране | `zc_woundsystem_compat_dislocation_start 35` (диапазон `10..100`) |
 | Рука не трясётся и уменьшена | `zc_woundsystem_compat_hand_cursor_scale 0.45` (диапазон `0.2..1`) |
 | Кукла WoundView собрана из 15 слоёв `unitmenu/limbs` архива + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, размер `zc_woundsystem_compat_unitmenu_scale 0.24` (диапазон `0.1..0.8`) |
-| Все 647 UI-материалов внутри сборки (без ERROR и ручного копирования) | `woundsystem_zcity_compat/materials/` + зеркало в `casualties_unknown_health_system_beta/materials/`, генератор `tools/pack_ui_materials.py` |
-| Рука в мини-играх — кадры `homigrad/handanim` из архива (ладонь/кулак) | `zc_woundsystem_compat_handanim 0` (см. №12), размер `zc_woundsystem_compat_handanim_scale 0.55` (диапазон `0.2..1.5`) |
+| Все 649 UI-материалов внутри сборки (без ERROR и ручного копирования) | `woundsystem_zcity_compat/materials/` + зеркало в `casualties_unknown_health_system_beta/materials/`, генератор `tools/pack_ui_materials.py` |
+| Человеческая рука C:U в мини-играх — ладонь/кулак 512×1024 | `zc_woundsystem_compat_handanim 1`, `..._hide_minigame_hand 0`, размер `..._handanim_scale 0.55`; спрайты `wszc/minigame/hand_idle.png` / `hand_click.png` |
 | Зелёные полосы/лёгкие/ЭКГ сканера слева скрыты | `zc_woundsystem_compat_hide_unit_panel 1` (глушатся `DrawTexturedRectUV`, `DrawLine`, `DrawPoly`) |
 | Экран смерти C:U не рисуется, но ЛКМ респавнит | включается вместе с `zc_woundsystem_compat_disable_cu_fx 1`; хук обёрнут, а не удалён |
 | Кукла не обрезается слева/снизу, видны `REMOVE SHRAPNEL` и `FIX DISLOCATION` | `WSZC.InstallMaterialTracker()` + `WSZC.IsDollDrawMaterial()`; размер `zc_woundsystem_compat_unitmenu_scale 0.24` |
@@ -73,10 +73,10 @@
 | После «Reset organism» снова можно быстро бегать | `RESET_KEEP` больше не несёт `canmove/stun/consciousness/brain`; `WSZC.ClearMovementPenalties()` снимает штрафы движения во всех трёх путях ресета |
 | Кукла с человеческими пропорциями, как на эталонном фото | `tools/build_unitmenu_materials.py`: явный `HUMAN_LAYOUT` (маленькая голова, узкий короткий торс, тонкие руки T-pose, длинные узкие ноги, компактные целые стопы; вертикальные швы сняты с нативной куклы `Screenshot_2-10.png`), **стандартный чёрный `(0,0,0)`** `_fill` с эрозией 1 px (`JOINT_ERODE = 3`) + тонкая белая обводка **по форме каждого лимба** (`EDGE_PAD_MIN=6`, ноль белых пикселей на границах спрайтов). Анатомия наша, не родная C:U. `zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` **только** для `*_fill.png`; `*_edge.png` остаётся под `finalOutline` C:U, поэтому реакция на наведение (белый → чёрный) штатная |
 | Лишний текст убран, затемнение фона сохранено во всех мини-играх | `zc_woundsystem_compat_hide_minigame_text 1`: `WSZC.InstallMinigameTextFilter()` обнуляет `title/value/guide/panelAlpha` в `Clip.DrawHeader` (иконка остаётся), глушит `Clip.DrawExitGuide` и **сохраняет `Clip.DrawBackdrop`** (затемнение фона), точечно фильтрует chrome-шрифты (`RetroTooltipTitle*`, `RetroTooltipDesc*`, `RetroMinigameGuide*`) **и AED `WoundSystemAEDStatus`** (только пока мини-игра активна). `minigameshrapnel.png` — передний слой раны, **не удаляется**; все игровые спрайты защищены `WSZC.IsMinigameGameplaySprite()`. Уведомления ZCity, статусные надписи C:U (кроме AED), красный death-текст, капли, `Icons.*`, осколки и рука не трогаются; `0` — вернуть как было |
-| Рука мини-игры без инерции | `zc_woundsystem_compat_hand_pin_cursor 1` → реальный `gui.MousePos()` и синхронизация `MG.handScreenX/Y`; поворот `0`, курсор скрыт |
+| Рука мини-игры с штатной физикой C:U | `zc_woundsystem_compat_hand_pin_cursor 0` (по умолчанию): HandPhysics, инерция, боль и поворот сохранены; `1` — опциональный жёсткий пин к реальному `gui.MousePos()` |
 | Светлый фон WoundView | `zc_woundsystem_compat_hide_woundview_backdrop 1` гасит полноэкранный `woundbg`/blackout только пока `WoundSystemHealthHUDOpen == true` |
-| Рука в мини-игре ровно на курсоре | `zc_woundsystem_compat_hand_pivot_x 0.16`, `zc_woundsystem_compat_hand_pivot_y 0.45`, поворот `0`, лимит `zc_woundsystem_compat_hand_max_screen 0.34` |
-| Системный курсор в мини-игре не виден | `zc_woundsystem_compat_hide_minigame_cursor 0` (см. №12) → VGUI-курсор `"blank"`, мышь работает; `0` — вернуть стрелку |
+| Захват человеческой руки совпадает с CU-точкой | `zc_woundsystem_compat_hand_pivot_x 0.32`, `..._hand_pivot_y 0.11`, штатный поворот C:U, лимит `..._hand_max_screen 0.34` и высоты 78% экрана |
+| В мини-игре видна рука, а не второй системный курсор | `zc_woundsystem_compat_hide_minigame_cursor 1`; стрелка возвращается на выходе. `..._hide_minigame_hand 1` — безопасный arrow-only режим |
 | После смерти не «залипают» мини-игры/курсор/лок движения | включается вместе с `zc_woundsystem_compat_minigames 1` |
 | Потеря сознания закрывает WSZC и нативные мини-игры, overlay, WoundView, cursor/view/input; conscious ragdoll не закрывает | серверный force-close `WSZC_MinigameForceClose`; проверяется владелец сессии, а не пациент медика. `FakeRagdoll/fake` — posture; death/otrub/NW unconscious/`consciousness < 0.4` — incapacity. FakeUp сохраняет игру, настоящий respawn закрывает её принудительно |
 | Любой неизвлечённый fragment наращивает реальную боль и кровотечение | `zc_woundsystem_compat_shrapnel_lodged_effects 1`; последний extracted fragment удаляет tagged-рану/source/irritation |
@@ -90,10 +90,10 @@
 
 Ассеты для куклы и руки берутся из архива `для переделывания интерфейса.zip`
 (`origin/main`). Нарезанные PNG лежат в `woundsystem_zcity_compat/materials/wszc/unitmenu/`,
-кадры руки — в `.../materials/homigrad/handanim/` (оба набора внутри коннектора,
+кадры руки — в `.../materials/wszc/minigame/` (исходники `homigrad/handanim` тоже внутри коннектора,
 WIP-аддон больше не обязателен), а весь `casunknown-images/*` — рядом с ними и
 дублируется в папку C:U. Скрипты пересборки —
-`tools/build_unitmenu_materials.py` и `tools/pack_ui_materials.py`, список с
+`tools/build_unitmenu_materials.py`, `tools/build_minigame_hand.py` и `tools/pack_ui_materials.py`, список с
 хэшами — `woundsystem_zcity_compat/MATERIALS.sha256`. Ни один Lua-файл внутри
 исходных ZIP-аддонов не изменён.
 
@@ -130,7 +130,7 @@ ZCity сам вызывает `resource.AddWorkshop` при `hg_loadcontent 1`:
 
 **Про C:U — важное исключение.** В исходном ZIP репозитория лежат только Lua,
 3 шрифта и 3 шейдера — `materials/` и `sound/` там нет. Сборка **уже добавила**
-все UI-материалы (647 файлов) и в `woundsystem_zcity_compat/materials/`, и в
+все UI-материалы (649 файлов) и в `woundsystem_zcity_compat/materials/`, и в
 `casualties_unknown_health_system_beta/materials/`: WoundView, лимбы, иконки,
 экраны и мини-игры больше не показывают ERROR, вручную ничего перекидывать не
 надо, `woundsys_resource_downloads 1` для них не требуется. Остаются только
@@ -309,16 +309,17 @@ GMod не запускался — принятие по свежему live-с�
    сбрасывает `WoundSystemActionButtonPos`, чтобы поправка применилась сразу,
    а не за секунду Lerp'а.
 
-3. **Рука убрана, курсор стандартный.** `hand=archive` ОТМЕНЕНО по запросу
-   «убери руку из мини игр замени на стандартный курсор». Конвары по
-   умолчанию: `zc_woundsystem_compat_hide_minigame_cursor 0` (видна обычная
-   стрелка, никакого `blank`), `zc_woundsystem_compat_hide_minigame_hand 1`,
-   `zc_woundsystem_compat_handanim 0`, `zc_woundsystem_compat_hand_pin_cursor 0`.
-   `WSZC.UnitmenuHandAlpha()` возвращает `0`, поэтому наши копии бинта/шприца
-   сохраняют ВСЕ хитбоксы и вызовы отрисовки, но руку не видно;
-   `WSZC.InstallNativeHandOverride()` теперь ставится и в этом режиме и
-   подавляет нативные `handgrasp*` спрайты через флаг `handHide`. Пин к курсору
-   и inertia-подмена отключены — стрелка всегда там, где реальная мышь.
+3. **Возвращена человеческая рука в режиме C:U.** Прежний режим «только
+   стрелка» отменён. `tools/build_minigame_hand.py` поворачивает реальные кадры
+   `homigrad/handanim/hand.png` / `3_3.png` в вертикальную CU-позу и создаёт
+   `wszc/minigame/hand_idle.png` / `hand_click.png` (512×1024). По умолчанию:
+   `zc_woundsystem_compat_handanim 1`, `..._hide_minigame_hand 0`,
+   `..._hide_minigame_cursor 1`, `..._hand_pin_cursor 0`. Ладонь/кулак,
+   HandPhysics, инерция, наклон и игровые хитбоксы остаются штатными C:U;
+   системная стрелка скрыта только во время активной мини-игры и возвращается
+   на выходе. Для прежнего arrow-only режима: `..._hide_minigame_hand 1`.
+   Одноразовая миграция `..._hand_mode_revision 2` обновляет старые сохранённые
+   no-hand значения, после чего ручные настройки больше не перезаписываются.
 
 4. **Курсор не пропадал после мини-игры.** `DisableMinigameClicker()` раньше
    делал `return` при `WoundSystemHealthHUDOpen == true`, поэтому
@@ -360,23 +361,17 @@ GMod не запускался — принятие по свежему live-с�
    `cx/cy`, длины, POT-ширины, габарит `377..988 × 217..864`, симметрия
    `cx_R+cx_L=1500`, чёрный цвет и обводка по форме не изменились.
 
-2. **Курсор в мини-играх.** Главная причина, по которой стрелку не было видно:
-   `CreateClientConVar` создан с `shouldsave = true`, и у игрока в
-   `config.vdf` осталось **`zc_woundsystem_compat_hide_minigame_cursor 1`** из
-   старой сборки. Смена дефолта на `0` НЕ перезаписывает сохранённое значение,
-   поэтому `SyncMinigameCursor()` продолжал ставить `SetCursor("blank")`.
-   Исправлено жёстко, без доверия конвару:
-   * при загрузке `cvHideCursor:SetInt(0)`;
-   * `BlankMinigameCursor()` теперь инертен (`return false`), пустой курсор
-     **никогда** не ставится;
-   * `RestoreMinigameCursor()` всегда форсит `"arrow"` (а не `savedCursor`,
-     который сам мог быть `"blank"`);
-   * `SyncMinigameCursor()` всегда восстанавливает стрелку;
-   * `WSZC_MinigameCursor` (Think) проверяет `vgui.CursorVisible()` и, если
-     C:U watchdog / радиальное меню ZCity выключили кликер посреди игры,
-     сразу делает `gui.EnableScreenClicker(true)` + `arrow`;
-   * `EnableMinigameClicker()` и wrapper `gui.EnableScreenClicker` тоже форсят
-     `arrow`.
+2. **Курсор в мини-играх.** Прежняя ошибка была не в самом `blank`, а в том,
+   что стрелку скрывали при уже отключённой руке: игрок оставался вообще без
+   указателя. Теперь `SyncMinigameCursor()` разрешает `blank` только при
+   активной мини-игре и `ShowMinigameHand() == true`; при
+   `hide_minigame_hand 1`, после закрытия и для мёртвого игрока всегда
+   восстанавливается `arrow`. `WSZC_MinigameCursor` (Think) проверяет
+   `vgui.CursorVisible()` и перезапускает clicker после C:U watchdog /
+   радиального меню ZCity, не выключая mouse input. Старые archived no-hand
+   настройки один раз мигрирует `MigrateHumanHandDefaults()` (revision 2),
+   поэтому обновление не оставляет прежнюю комбинацию «нет руки + blank».
+   Ручной выбор arrow-only сохраняется и больше не перезаписывается.
 
 3. **Морфин / фентанил / обезболивающие.** Настоящая причина найдена в
    `z_city/lua/homigrad/woundbridge/sv_woundbridge.lua` и
@@ -442,7 +437,7 @@ GMod не запускался — принятие по свежему live-с�
 **Что НЕ менялось:** 15 силуэтов архива, `SquareToe()` только для стоп,
 `JOINT_ERODE=3`, `EDGE_PAD_MIN=6`, `EDGE_WIDTH=9`, чёрный цвет, обводка по
 форме, T-pose, симметрия `cx_R+cx_L=1500`, `0.0%` белого на границах спрайтов,
-затемнение мини-игр, видимый стандартный курсор, `analgesiaAdd` для опиоидов,
+затемнение мини-игр, человеческая C:U-рука вместо системного курсора, `analgesiaAdd` для опиоидов,
 перелом/вывих на один лимб, шрапнель на 4 лимба.
 
 Проверить локально:

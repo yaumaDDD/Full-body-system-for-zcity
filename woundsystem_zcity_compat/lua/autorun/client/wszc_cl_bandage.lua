@@ -608,10 +608,9 @@ local function EnsureOverlay()
         local screenX = cx + (MG.handPos.x * baseScale)
         local screenY = cy - (MG.handPos.y * baseScale)
         
-        -- 512x1260 source images at baseScale 2.04 were taller than the
-        -- screen.  The repository handanim frames are horizontal 960x540, so
-        -- WSZC.UnitmenuHandGeometry returns their own size and fingertip pivot.
-        -- If the WIP addon is absent, fall back to the original C:U sprites.
+        -- The generated 512x1024 human palm/fist follows C:U's vertical pose.
+        -- UnitmenuHandGeometry supplies its fingertip pivot and scale; if the
+        -- materials are unavailable, fall back to the original C:U sprites.
         local handScale = CFG.HandCursorScale * ((WSZC and WSZC.HandCursorScale and WSZC.HandCursorScale()) or 1)
         local handDrawW, handDrawH, handPivotX, handPivotY
         if WSZC and WSZC.UnitmenuHandGeometry then
@@ -644,6 +643,11 @@ local function EnsureOverlay()
         local cy_hand = handY + (handDrawH * handPivotY)
         local angle = HandPhysics.Rotation(MG, (MG.handPos and MG.handPos.x) and (MG.handPos.x * 0.02) or 0)
         if WSZC and WSZC.UnitmenuHandAngle then angle = WSZC.UnitmenuHandAngle(angle) end
+        if WSZC and WSZC.UnitmenuHandActive and WSZC.UnitmenuHandActive()
+            and WSZC.UnitmenuHandRotatedCenter then
+            cx_hand, cy_hand = WSZC.UnitmenuHandRotatedCenter(
+                cx_hand, cy_hand, handDrawW, handDrawH, handPivotX, handPivotY, angle)
+        end
         surface.DrawTexturedRectRotated(cx_hand, cy_hand, handDrawW, handDrawH, angle)
         if WoundSystem and WoundSystem.MinigameClip then
             WoundSystem.MinigameClip.End(clipActive)
