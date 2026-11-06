@@ -9,7 +9,7 @@
 -- cx/cy are in the 1500x1500 canvas; hoverW/hoverH are the VISIBLE
 -- inner boxes (used for C:U sourceW/sourceH hit tests).
 WSZC_UNITMENU_LIMB_GEOMETRY = {
-    head = { cx = 763.2, cy = 79.2, w = 256, h = 256, hoverW = 162, hoverH = 200 },
+    head = { cx = 764.4, cy = 79.2, w = 256, h = 256, hoverW = 155, hoverH = 200 },
     neck = { cx = 763.2, cy = 192.4, w = 256, h = 128, hoverW = 192, hoverH = 56 },
     thorax = { cx = 762.0, cy = 360.8, w = 512, h = 512, hoverW = 287, hoverH = 299 },
     abdomen = { cx = 760.8, cy = 659.3, w = 512, h = 512, hoverW = 294, hoverH = 323 },

@@ -208,7 +208,7 @@ check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
 # Every visible black silhouette is calibrated independently, then C:U's
 # placement is inverted and each PNG cell is rounded to a power of two.
 check('S33 REFERENCE_BOXES = green reference, independent POT-calibrated limbs',
-      "'head':      (688.0, 279.5, 67.3, 83.3)" in generator_s
+      "'head':      (688.5, 279.5, 64.3, 83.3)" in generator_s
       and "'neck':      (688.0, 326.5, 79.8, 23.3)" in generator_s
       and "'thorax':    (687.5, 396.5, 119.3, 124.3)" in generator_s
       and "'abdomen':   (687.0, 520.5, 122.3, 134.3)" in generator_s
@@ -656,6 +656,23 @@ try:
           reference_fixture.is_file()
           and hashlib.sha256(reference_fixture.read_bytes()).hexdigest()
           == 'f48e70ba545853aee9e3763975bf28273e8312b35c2803670b2f0060fd1bd901')
+    # These pixels belong to the REFERENCE'S OUTER white stroke.  The previous
+    # inner-only contour failed every first anchor, although black bboxes still
+    # passed.  They pin the visible outline, not just its silhouette position.
+    outer_stroke_anchors = {
+        'head': ((657, 270), (660, 270)),
+        'abdomen': ((633, 480), (636, 480)),
+        'thigh_R': ((631, 640), (634, 640)),
+        'crus_R': ((634, 740), (638, 740)),
+        'foot_R': ((633, 815), (636, 815)),
+    }
+    outer_ok = True
+    for limb, points in outer_stroke_anchors.items():
+        for x, y in points:
+            pixel = rp[x, y]
+            if min(pixel) <= 150 or max(pixel) - min(pixel) >= 55:
+                outer_ok = False
+    check('S53f outer white stroke hits the measured 2222 head/body/leg anchors', outer_ok)
 
     hand_frames = [Image.open(CONN / 'materials/wszc/minigame' / name).convert('RGBA')
                    for name in ('hand_idle.png', 'hand_click.png')]
@@ -1056,7 +1073,7 @@ end)()
     for _ in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do n = n + 1 end
     local g = WSZC_UNITMENU_LIMB_GEOMETRY
     return n == 16 and g.head.cy < g.neck.cy and g.neck.cy < g.thorax.cy
-       and g.head.hoverW == 162 and g.head.hoverH == 200
+       and g.head.hoverW == 155 and g.head.hoverH == 200
        and g.neck.hoverW == 192 and g.neck.hoverH == 56
        and g.thorax.cy < g.thigh_R.cy
        and g.thigh_R.cy < g.crus_R.cy and g.crus_R.cy < g.foot_R.cy
@@ -1347,7 +1364,7 @@ end)()
 end)()
 ''')
 
-    rt('R28 ApplyDoll writes native geometry, 0.25 scale and visible hitboxes', '''
+    rt('R28 ApplyDoll writes compensated 2222 geometry and visible hitboxes', '''
 (function()
     local mats, limbs = {}, {}
     for id, g in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do
@@ -1368,14 +1385,15 @@ end)()
     end
     local gh = WSZC_UNITMENU_LIMB_GEOMETRY.head
     local gn = WSZC_UNITMENU_LIMB_GEOMETRY.neck
+    local expectedSize, centreOY = WSZC.UnitmenuReferenceDollTransform(k)
     return #limbs == 16 and head ~= nil and neck ~= nil
        and neck.matM == mats.neck.fill and neck.matO == mats.neck.edge
        and neck.sourceW == gn.hoverW and neck.sourceH == gn.hoverH
-       and math.abs(neck.oy - (gn.cy - 750) * k) < 0.001
+       and math.abs(neck.oy - ((gn.cy - 750) * expectedSize + centreOY)) < 0.001
        and head.matM == mats.head.fill and head.matO == mats.head.edge
-       and math.abs(head.ox - (gh.cx - 750) * k) < 0.001
-       and math.abs(head.oy - (gh.cy - 750) * k) < 0.001
-       and head.size == 0.25 and head.sourceW == gh.hoverW and head.sourceH == gh.hoverH
+       and math.abs(head.ox - (gh.cx - 750) * expectedSize) < 0.001
+       and math.abs(head.oy - ((gh.cy - 750) * expectedSize + centreOY)) < 0.001
+       and head.size == expectedSize and head.sourceW == gh.hoverW and head.sourceH == gh.hoverH
        and head.texturePadding == 0 and head.flip == false
        and head._WSZCUnitmenuOriginal.matM ~= nil
 end)()
@@ -1695,6 +1713,43 @@ end)()
         and infection == 1 and bleeding == 1 and handState.disinfectTime == 120
         and handState.infection == 4
         and filters == "mag:77,min:77,popMin,popMag"
+end)()
+''')
+
+    rt('R40 2222 screen scale/centre are invariant under native UI scale', '''
+(function()
+    local oldW, oldH, oldGetConVar = ScrW, ScrH, GetConVar
+    ScrW, ScrH = function() return 1365 end, function() return 1079 end
+    local uiValue = 1
+    GetConVar = function(name)
+        if name == "woundsys_ui_scale" then
+            return { GetFloat = function() return uiValue end }
+        end
+        return nil
+    end
+    local gh = WSZC_UNITMENU_LIMB_GEOMETRY.head
+    local ok, previousSize = true, nil
+    for _, ui in ipairs({ 0.6, 1.0, 1.25, 1.6 }) do
+        uiValue = ui
+        local size, centreOY, targetScale, targetCY = WSZC.UnitmenuReferenceDollTransform(0.25)
+        local nativeScale = (1079 / 1080) * ui
+        local nativeDollScale = 1.5 * nativeScale
+        local nativeCY = 1079 / 2 + 20 * nativeScale
+        local actualScale = nativeDollScale * size
+        local actualCX = 1365 / 2 + (gh.cx - 750) * size * nativeDollScale
+        local actualCY = nativeCY + ((gh.cy - 750) * size + centreOY) * nativeDollScale
+        local expectedCX = 1365 / 2 + (gh.cx - 750) * 0.4155
+        local expectedCY = 558.2 + (gh.cy - 750) * 0.4155
+        if math.abs(actualScale - 0.4155) > 0.00001
+            or math.abs(actualCX - expectedCX) > 0.00001
+            or math.abs(actualCY - expectedCY) > 0.00001
+            or math.abs(targetScale - 0.4155) > 0.00001
+            or math.abs(targetCY - 558.2) > 0.00001 then ok = false end
+        if previousSize and math.abs(previousSize - size) < 0.00001 then ok = false end
+        previousSize = size
+    end
+    ScrW, ScrH, GetConVar = oldW, oldH, oldGetConVar
+    return ok
 end)()
 ''')
 

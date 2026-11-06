@@ -1025,10 +1025,11 @@ end)
 
 cvUnitmenuDoll = CreateClientConVar("zc_woundsystem_compat_unitmenu_doll", "1", true, false,
     "1 = rebuild the WoundView doll from the repository unitmenu limb layers")
--- Native Screenshot_1.png geometry is authored at 0.24; 0.25 is the owner's
--- requested "slightly larger" final doll (+4.17% linear, outline included).
+-- 0.25 is the EXACT 2222.png reference at 1365x1079.  The placement helper
+-- below compensates C:U's saved woundsys_ui_scale instead of letting it enlarge
+-- the doll a second time.  Other values remain proportional user overrides.
 local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "0.25", true, false,
-    "Size of the unitmenu doll relative to C:U's dollScale (0.1 .. 0.8)", 0.1, 0.8)
+    "Doll size; 0.25 = exact 2222.png reference (native UI scale compensated)", 0.1, 0.8)
 -- Owner (2026-11-06): restore the C:U hand pointer, but use a real human hand.
 -- tools/build_minigame_hand.py rotates the bundled palm/fist into C:U's
 -- fingertips-up / sleeve-down pose.  The hand keeps C:U HandPhysics inertia,
@@ -1488,7 +1489,34 @@ local function EnsureNeckLimb(limbs)
 end
 WSZC.EnsureNeckLimb = EnsureNeckLimb
 
+-- Canonical screen geometry measured directly from the owner's 2222.png.
+-- Native C:U applies BOTH dollScale=1.5*UI and our limb.size to sprites and
+-- offsets.  Passing the convar through unchanged therefore produced S=0.469
+-- on the live 1111.png (UI=1.25) instead of the reference S=0.4155.  Solve
+-- limb.size and a shared oy correction so the final SCREEN transform is fixed:
+--   spriteScale = REF_S * resolutionScale * userMultiplier
+--   centreY     = ScrH()/2 + REF_CY_OFFSET * resolutionScale
+-- This also keeps hitboxes/action points exact because native code reads the
+-- same compensated ox/oy/size values.
+local UnitmenuUIScale
+local REF_DOLL_S, REF_DOLL_CY = 0.4155, 18.7
+local REF_DOLL_HEIGHT, REF_DOLL_CONVAR = 1079, 0.25
+function WSZC.UnitmenuReferenceDollTransform(k)
+    local userMultiplier = math.Clamp((tonumber(k) or REF_DOLL_CONVAR)
+        / REF_DOLL_CONVAR, 0.4, 3.2)
+    local nativeScale = (ScrH() / 1080) * UnitmenuUIScale()
+    local nativeDollScale = 1.5 * nativeScale
+    local resolutionScale = ScrH() / REF_DOLL_HEIGHT
+    local targetScale = REF_DOLL_S * resolutionScale * userMultiplier
+    local targetCY = ScrH() / 2 + REF_DOLL_CY * resolutionScale
+    local nativeCY = ScrH() / 2 + 20 * nativeScale
+    if nativeDollScale <= 0 then return k or REF_DOLL_CONVAR, 0, targetScale, targetCY end
+    return targetScale / nativeDollScale,
+        (targetCY - nativeCY) / nativeDollScale, targetScale, targetCY
+end
+
 local function ApplyDoll(limbs, mats, k)
+    local dollSize, centreOY = WSZC.UnitmenuReferenceDollTransform(k)
     EnsureNeckLimb(limbs)
     for _, limb in ipairs(limbs) do
         local g = mats[limb.id]
@@ -1503,9 +1531,9 @@ local function ApplyDoll(limbs, mats, k)
             end
             limb.matM = g.fill
             limb.matO = g.edge
-            limb.ox = (g.cx - 750) * k
-            limb.oy = (g.cy - 750) * k
-            limb.size = k
+            limb.ox = (g.cx - 750) * dollSize
+            limb.oy = (g.cy - 750) * dollSize + centreOY
+            limb.size = dollSize
             limb.sourceW = g.hoverW or g.w
             limb.sourceH = g.hoverH or g.h
             limb.texturePadding = 0
@@ -1551,7 +1579,7 @@ local UNITMENU_LIMB_NAMES = {
     foot_R = "Right foot", foot_L = "Left foot",
 }
 
-local function UnitmenuUIScale()
+UnitmenuUIScale = function()
     local value = 1
     local cv = GetConVar and GetConVar("woundsys_ui_scale") or nil
     if cv then value = math.Clamp(cv:GetFloat(), 0.6, 1.6) end

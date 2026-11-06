@@ -57,18 +57,18 @@ opaque silhouette is placed in a centred inner box whose size is exactly
 `target_px / S`, where S is the live px-per-canvas-unit measured from BOTH
 screenshots at the same resolution:
 
-    S          = 0.4155     (live Screenshot_1-10.png; verified by head top
-                             248, head seam 346, arm span 391..975, foot
-                             bottom 869 - all four land within 2 px)
-    centre     = (682.5, 558.2)   = (ScrW()/2, ScrH()/2 + 20*scale)
+    S          = 0.4155     (2222.png at 1365x1079)
+    centre     = (682.5, 558.2)   = Scr centre + measured 18.7 px Y offset
 
 Target boxes come from the pinned green reference
 ``tools/tests/woundview_reference_1365x1079.png`` (the owner's 2222.png):
 head top 242, head/neck seam 317, thorax 338..455, abdomen 457..584,
 legs 587..836, and asymmetric hand/forearm spans.  For every limb:
 cx = 750 + (target_cx - 682.5)/S, cy likewise, and inner = target/S.
-C:U stays strictly LINEAR - only sprite dimensions and positions change;
-no convar, runtime scaling, or non-linear placement is introduced.
+C:U placement stays strictly LINEAR.  At runtime 0.25 selects this exact
+reference transform; UnitmenuReferenceDollTransform compensates the saved
+woundsys_ui_scale and native centreY, so 1111.png's accidental S=0.469 cannot
+reappear when that C:U setting is 1.25.
 
 `hoverW`/`hoverH` in the Lua table carry the VISIBLE inner box, because
 ApplyDoll feeds `limb.sourceW/sourceH` into C:U's hover hit test; using the
@@ -147,6 +147,15 @@ EDGE_WIDTH_OVERRIDES = {'hand_R': 11, 'hand_L': 11}
                               # eats the narrow finger interiors completely.
 EDGE_AA_RADIUS = 0.45         # Sub-source-pixel alpha fringe: smooth the live
                               # contour without moving its measured silhouette.
+OUTER_EDGE_WIDTH = 9          # Radius 4 source px (~1.7 reference px).  2222's
+                              # white stroke extends OUTSIDE the fill as well as
+                              # inside it; inner-only contours looked too thin.
+# Arms/thorax already match 2222 with the inner stroke; adding a second outer
+# band where their sprites overlap makes the shoulder/underarm lines too bold.
+OUTER_EDGE_EXCLUDED = {
+    'hand_R', 'hand_L', 'neck', 'thorax',
+    'arm_R', 'arm_L', 'forearm_R', 'forearm_L',
+}
 ABDOMEN_SEAM_Y = 520.5        # Sub-pixel phase puts the dominant row at 520.
 ABDOMEN_SEAM_WIDTH = 2        # One dominant screen row; neighbours stay < 11/255.
 HEAD_SEAM_WIDTH = 3           # Native head/neck joint is one row at y=317.
@@ -168,7 +177,7 @@ LIVE_CX, LIVE_CY = 682.5, 558.2
 # The head source is cropped into two segments BEFORE these independent
 # calibrations, so neck never contains a second stretched copy of the skull.
 REFERENCE_BOXES = {
-    'head':      (688.0, 279.5, 67.3, 83.3),
+    'head':      (688.5, 279.5, 64.3, 83.3),
     'neck':      (688.0, 326.5, 79.8, 23.3),
     'thorax':    (687.5, 396.5, 119.3, 124.3),
     'abdomen':   (687.0, 520.5, 122.3, 134.3),
@@ -352,6 +361,12 @@ def main():
     for limb_id, mask in hard.items():
         edge_width = EDGE_WIDTH_OVERRIDES.get(limb_id, EDGE_WIDTH)
         contour = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(edge_width)))
+        if limb_id not in OUTER_EDGE_EXCLUDED:
+            # The reference stroke is centred on the silhouette, not clipped
+            # wholly inside it.  This outer band cannot eat the black interior.
+            outer = ImageChops.subtract(
+                mask.filter(ImageFilter.MaxFilter(OUTER_EDGE_WIDTH)), mask)
+            contour = ImageChops.lighter(contour, outer)
         # MinFilter produces a binary, stair-stepped source contour.  Keep its
         # exact measured shape/width, but add a tiny alpha fringe before GMod
         # downsamples it.  Neck is excluded because its calibrated one-row seam

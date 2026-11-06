@@ -157,6 +157,12 @@ def render(boxes, alphas, include_head=True):
         edge_width = G.EDGE_WIDTH_OVERRIDES.get(limb, G.EDGE_WIDTH)
         contour = ImageChops.subtract(
             hard, hard.filter(ImageFilter.MinFilter(edge_width)))
+        if limb not in G.OUTER_EDGE_EXCLUDED:
+            outer = ImageChops.subtract(
+                hard.filter(ImageFilter.MaxFilter(G.OUTER_EDGE_WIDTH)), hard)
+            contour = ImageChops.lighter(contour, outer)
+        if limb != 'neck':
+            contour = contour.filter(ImageFilter.GaussianBlur(G.EDGE_AA_RADIUS))
         if limb == 'abdomen':
             tx, ty, tw, th = boxes['abdomen']
             seam_y = py + round((G.ABDOMEN_SEAM_Y - (ty - th / 2)) / S)

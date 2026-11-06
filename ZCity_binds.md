@@ -73,7 +73,8 @@
 `для переделывания интерфейса.zip`: 15 исходных слоёв `zcity_delta/unitmenu/limbs`,
 разделённых генератором на 16 интерактивных частей (head + neck), иконки `status/*`
 и кадры `homigrad/handanim`. Управление:
-`zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.25),
+`zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.25 =
+точный 2222.png; сохранённый `woundsys_ui_scale` компенсируется),
 `zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_hand_cursor_scale` (0.55),
 `zc_woundsystem_compat_handanim_scale` (1, без второго уменьшения).
 Две WSZC мини-игры раскрываются на весь экран: `zc_woundsystem_compat_fullscreen_minigame` (1).
@@ -111,7 +112,8 @@ infection/bleed/fracture и настоящий `disinfectTime` не затраг
 16 независимых `REFERENCE_BOXES`, crop-first head/neck и раздельная калибровка
 каждой части. **Стандартный чёрный `(0,0,0)`** сохранён. **Обводка по форме
 каждого лимба** использует `EDGE_WIDTH=17` (3–4 px), для пальцев 11, плюс
-`EDGE_AA_RADIUS=0.45` и LINEAR filtering только на время native WoundView;
+внешний `MaxFilter(9)` на голове/животе/ногах, `EDGE_AA_RADIUS=0.45` и LINEAR
+filtering только на время native WoundView;
 ни один белый пиксель не касается границы прямоугольного спрайта. Neck без blur
 один владеет
 швом `y=317`, abdomen имеет внутренний seam `y=520`; «конструктора» и единого
