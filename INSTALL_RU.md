@@ -81,8 +81,8 @@
 | Потеря сознания закрывает WSZC и нативные мини-игры, overlay, WoundView, cursor/view/input; conscious ragdoll не закрывает | серверный force-close `WSZC_MinigameForceClose`; проверяется владелец сессии, а не пациент медика. `FakeRagdoll/fake` — posture; death/otrub/NW unconscious/`consciousness < 0.4` — incapacity. FakeUp сохраняет игру, настоящий respawn закрывает её принудительно |
 | Любой неизвлечённый fragment наращивает реальную боль и кровотечение | `zc_woundsystem_compat_shrapnel_lodged_effects 1`; последний extracted fragment удаляет tagged-рану/source/irritation |
 | Дополнительные WoundView-карточки/polish удалены | Конвара `woundview_polish` больше нет; сохранены прежние откалиброванные позиции/размеры doll и hitboxes, чёрная анатомия, shaped outlines и hover |
-| Бинт можно наложить на шрапнель, но закрытый фрагмент заражает рану | `zc_woundsystem_compat_bandaged_shrapnel_infection 1`, скорость `zc_woundsystem_compat_shrapnel_infection_rate 0.1` (%/с до масштабирования по числу фрагментов); после 20 постепенно растут internal bleed, боль и потеря крови |
-| Цикл снятия шрапнели | Первый `REMOVE SHRAPNEL` снимает повязку без session/извлечения/расхода пинцета, второй запускает нативную мини-игру; снятие останавливает рост, последнее извлечение запускает затухание инфекции |
+| Бинт можно наложить на шрапнель: внешняя кровь останавливается, но закрытый фрагмент заражает рану | Стандартная иконка infection; конечность → торс (240 с) → мозг (420 с) → смерть (600 с). `zc_woundsystem_compat_bandaged_shrapnel_infection 1`, таймер `zc_woundsystem_compat_shrapnel_infection_death_delay 600` |
+| Обязательный цикл лечения шрапнели | `REMOVE SHRAPNEL` запускает обратное разматывание на 360° (без click-unwrap и расхода предмета) → нативное извлечение → повторный полный бинт. Только финальный бинт очищает инфекцию. Любое извлечение добавляет отдельную растущую aftercare-рану и медленно растущую боль |
 | Физического бинта хватает, обычное кровотечение снижено | `zc_woundsystem_compat_bandage_strength 2`, `zc_woundsystem_compat_bleeding_multiplier 0.55`, tagged shrapnel-рана ограничена severity 8; артерия не ослаблена и требует жгута |
 | Физический жгут работает даже при отказе/ошибке C:U apply | `weapon_tourniquet → WB.SwepHeal → H.ApplyItemToBody`: сначала лечатся реальные ZCity-раны, затем native status best-effort; расход только по фактически обработанной ране, двойного mirror нет |
 | Дробовик определяется у настоящего ZCity PhysBullet | Проверяются attacker active weapon, known/family class, `Primary.Ammo`, ammo name и pellets; `inflictor=attacker`, `DMG_BULLET` и ammo `-1` больше не мешают. Пистолет и bare `DMG_BUCKSHOT` осколков не создают |
@@ -161,7 +161,7 @@ zc_woundsystem_compat_glass_shrapnel 1  стекло как источник ш�
 zc_woundsystem_compat_bandage_strength 2  усиление реального treatment budget бинта
 zc_woundsystem_compat_bleeding_multiplier 0.55  верхний cap обычного bleedingmul
 zc_woundsystem_compat_bandaged_shrapnel_infection 1  инфекция под повязкой
-zc_woundsystem_compat_shrapnel_infection_rate 0.1  базовые %/с инфекции
+zc_woundsystem_compat_shrapnel_infection_death_delay 600  секунды до fatal brain infection
 zc_woundsystem_compat_inspect_button 1  кнопка «Проверить травмы» в радиал-меню
 zc_woundsystem_compat_debug 1           диагностика коннектора
 ```

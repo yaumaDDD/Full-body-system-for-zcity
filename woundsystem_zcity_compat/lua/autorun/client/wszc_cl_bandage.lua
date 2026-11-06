@@ -103,6 +103,7 @@ local BleedIcons = {
     extreme = Material(iconPath .. "bleeding.png"),
     extremeBandaged = Material(iconPath .. "bleedingbandaged.png")
 }
+local matInfection = Material(iconPath .. "infection.png")
 
 WSZCBandageMinigame = WSZCBandageMinigame or {}
 local MG = WSZCBandageMinigame
@@ -219,9 +220,12 @@ local function LocalReset()
     MG.bandageAngle = 0
     MG.lastActionAngle = 0
     MG.totalDegreesWrapped = 0
+    MG.totalDegreesUnwrapped = 0
+    MG.lastUnwrapActionAngle = 0
     MG.completedWraps = 0
     MG.unsentDegrees = 0
     MG.didWrap = false
+    MG.didUnwrap = false
     MG.sizeMultiplier = 0.9
     MG.holdingBandage = false
     MG.condition = 1.0
@@ -354,6 +358,9 @@ local function LerpColor(t, c1, c2)
 end
 
 local function GetBleedIcon(state)
+    if MG.mode == "unwrap" then
+        return matInfection, Color(205, 55, 55, 255)
+    end
     if not state then return nil end
 
     local rate = (tonumber(state.bleed) or 0) * 0.075
@@ -455,9 +462,10 @@ local function DrawBleedProgress(cx, cy, innerSize)
     local arterial = math.max(tonumber(MG.arterialBleed) or 0, 0)
     local normalStopped = (tonumber(MG.bleedInitial) or 0) <= 0.0001
         or (tonumber(MG.bleedCurrent) or 0) <= 0.0001
-    local text = "STOP " .. tostring(percent) .. "%"
+    local text = MG.mode == "unwrap" and ("UNWRAP " .. tostring(percent) .. "%")
+        or ("STOP " .. tostring(percent) .. "%")
     local textColor = progress >= 0.999 and Color(12, 80, 34, 255) or Color(24, 24, 24, 255)
-    if arterial > 0.0001 and normalStopped then
+    if MG.mode ~= "unwrap" and arterial > 0.0001 and normalStopped then
         text = "TOURNIQUET"
         textColor = Color(155, 22, 22, 255)
     end
@@ -523,7 +531,9 @@ local function EnsureOverlay()
         end
 
         -- Display angle for pie: full circle when wrapped, otherwise current bandage angle (updates every frame smoothly)
-        local displayAngleForPie = (MG.didWrap and 360) or MG.bandageAngle
+        local displayAngleForPie = MG.mode == "unwrap"
+            and math.Clamp(MG.totalDegreesWrapped or 0, 0, 360)
+            or ((MG.didWrap and 360) or MG.bandageAngle)
         
         if displayAngleForPie > 0 then
             local radius = math.Round(outerCurrentSize)
@@ -685,6 +695,12 @@ function MG.OpenFromServer(payload)
     MG.limbId = incomingLimb
     MG.slotIdx = incomingSlotIdx
     MG.mode = incomingMode ~= "" and incomingMode or "gauze"
+    if MG.mode == "unwrap" then
+        MG.totalDegreesWrapped = 360
+        MG.totalDegreesUnwrapped = 0
+        MG.lastUnwrapActionAngle = 0
+        MG.didUnwrap = false
+    end
     
     local cx, cy = ScrW() / 2, ScrH() / 2
     local mx, my = gui.MousePos()
@@ -733,14 +749,19 @@ hook.Add("Think", "WSZC_BandageInput", function()
     end
 
     local slot = MG.slotIdx and WoundSystemInventorySlots and WoundSystemInventorySlots[MG.slotIdx]
-    if not slot or slot.type ~= "tool" or slot.durability <= 0.01 then
-        MG.RequestClose("empty")
-        return
+    if MG.mode == "unwrap" then
+        -- The server supplies a virtual roll.  Unwrapping neither requires nor
+        -- consumes a real inventory bandage.
+        MG.condition = 1 - math.Clamp((MG.totalDegreesUnwrapped or 0) / 360, 0, 1)
+    else
+        if not slot or slot.type ~= "tool" or slot.durability <= 0.01 then
+            MG.RequestClose("empty")
+            return
+        end
+        local slotTool = slot.toolName or "GAUZE"
+        local maxDur = WoundSystemMedToolConfig and WoundSystemMedToolConfig[slotTool] and WoundSystemMedToolConfig[slotTool].max or 20
+        MG.condition = math.Clamp(slot.durability / maxDur, 0, 1)
     end
-
-    local slotTool = slot.toolName or "GAUZE"
-    local maxDur = WoundSystemMedToolConfig and WoundSystemMedToolConfig[slotTool] and WoundSystemMedToolConfig[slotTool].max or 20
-    MG.condition = math.Clamp(slot.durability / maxDur, 0, 1)
 
     local now = CurTime()
     local dt = math.Clamp(now - (MG.lastSampleAt or now), 0.001, CFG.MaxFrameTime)
@@ -826,35 +847,67 @@ hook.Add("Think", "WSZC_BandageInput", function()
         MG.handScreenVelX = Lerp(dt * 34 * speedMult, MG.handScreenVelX or 0, 0)
         MG.handScreenVelY = Lerp(dt * 34 * speedMult, MG.handScreenVelY or 0, 0)
 
-        local angleFromVector = GetAngleFromVector(normX, normY)
-        local num = angleFromVector - MG.bandageAngle
-        local num2 = angleFromVector - (MG.lastActionAngle or 0)
-
-        if num < 20 then
-            -- wrap detection (C# compares >350 then <90)
-            if MG.bandageAngle > 350 and (angleFromVector < 90 or angleFromVector == 360) then
-                MG.bandageAngle = MG.bandageAngle - 360
-                MG.lastActionAngle = (MG.lastActionAngle or 0) - 360
-                MG.didWrap = true
-                surface.PlaySound("bandage.ogg")
-                if WoundSystem.BroadcastMinigameSound then
-                    WoundSystem.BroadcastMinigameSound("bandage.ogg", 0.5)
+        if MG.mode == "unwrap" then
+            -- Mirror the angular coordinate: only COUNTER-winding produces
+            -- positive server input in this mode.  Forward wrapping still
+            -- uses the untouched C:U-derived branch below.
+            local physicalAngle = GetAngleFromVector(normX, normY)
+            local reverseAngle = (360 - physicalAngle) % 360
+            local currentReverse = (360 - (MG.bandageAngle or 0)) % 360
+            local num = reverseAngle - currentReverse
+            local num2 = reverseAngle - (MG.lastUnwrapActionAngle or 0)
+            if num < 20 then
+                local step = false
+                if currentReverse > 350 and (reverseAngle < 90 or reverseAngle == 360) then
+                    MG.lastUnwrapActionAngle = (MG.lastUnwrapActionAngle or 0) - 360
+                    MG.didUnwrap = true
+                    step = true
+                    surface.PlaySound("bandage.ogg")
+                    if WoundSystem.BroadcastMinigameSound then
+                        WoundSystem.BroadcastMinigameSound("bandage.ogg", 0.5)
+                    end
+                elseif num2 > 20 then
+                    step = true
                 end
-                -- perform bandage action (20° step)
-                MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
-                MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
-                MG.unsentDegrees = MG.unsentDegrees + 20
-                if MG.didWrap then
-                    MG.sizeMultiplier = (MG.sizeMultiplier or 0.9) + 0.0015
+                if step then
+                    MG.lastUnwrapActionAngle = (MG.lastUnwrapActionAngle or 0) + 20
+                    MG.totalDegreesUnwrapped = (MG.totalDegreesUnwrapped or 0) + 20
+                    MG.totalDegreesWrapped = math.max(0, 360 - MG.totalDegreesUnwrapped)
+                    MG.unsentDegrees = MG.unsentDegrees + 20
                 end
-            elseif num2 > 20 then
-                -- normal step action every 20 degrees
-                MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
-                MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
-                MG.unsentDegrees = MG.unsentDegrees + 20
+                MG.bandageAngle = (360 - reverseAngle) % 360
             end
+        else
+            local angleFromVector = GetAngleFromVector(normX, normY)
+            local num = angleFromVector - MG.bandageAngle
+            local num2 = angleFromVector - (MG.lastActionAngle or 0)
 
-            MG.bandageAngle = angleFromVector
+            if num < 20 then
+                -- wrap detection (C# compares >350 then <90)
+                if MG.bandageAngle > 350 and (angleFromVector < 90 or angleFromVector == 360) then
+                    MG.bandageAngle = MG.bandageAngle - 360
+                    MG.lastActionAngle = (MG.lastActionAngle or 0) - 360
+                    MG.didWrap = true
+                    surface.PlaySound("bandage.ogg")
+                    if WoundSystem.BroadcastMinigameSound then
+                        WoundSystem.BroadcastMinigameSound("bandage.ogg", 0.5)
+                    end
+                    -- perform bandage action (20° step)
+                    MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
+                    MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
+                    MG.unsentDegrees = MG.unsentDegrees + 20
+                    if MG.didWrap then
+                        MG.sizeMultiplier = (MG.sizeMultiplier or 0.9) + 0.0015
+                    end
+                elseif num2 > 20 then
+                    -- normal step action every 20 degrees
+                    MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
+                    MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
+                    MG.unsentDegrees = MG.unsentDegrees + 20
+                end
+
+                MG.bandageAngle = angleFromVector
+            end
         end
     end
 
@@ -866,7 +919,7 @@ hook.Add("Think", "WSZC_BandageInput", function()
             net.WriteUInt(WoundSystem and WSZC.MinigameNextInputSeq and WSZC.MinigameNextInputSeq(MG) or 0, 24)
             net.SendToServer()
             local slot = MG.slotIdx and WoundSystemInventorySlots and WoundSystemInventorySlots[MG.slotIdx]
-            if slot and slot.type == "tool" then
+            if MG.mode ~= "unwrap" and slot and slot.type == "tool" then
                 local predictedCost = (MG.unsentDegrees / 360) * GetDurabilityPerWrap()
                 slot.durability = math.max(0, (slot.durability or 0) - predictedCost)
             end

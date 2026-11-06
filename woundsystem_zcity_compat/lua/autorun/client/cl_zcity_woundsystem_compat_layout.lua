@@ -1275,6 +1275,10 @@ local function ApplyUnitmenuIcons()
     local built = BuildUnitmenuIcons()
     if not built then return false end
     for key, mat in pairs(built) do icons[key] = mat end
+    -- Covered shrapnel is infected, not "processed/disinfected".  Use C:U's
+    -- own neutral infection material for the former processing slot; the
+    -- server also clears disinfectTime on the affected limb.
+    icons.disinfected = Material("casunknown-images/icons/infection.png", "smooth noclamp")
     icons._WSZCUnitmenuPatched = true
     return true
 end

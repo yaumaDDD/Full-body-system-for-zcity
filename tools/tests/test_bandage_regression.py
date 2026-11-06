@@ -56,6 +56,16 @@ check("S04 client buffers state and draws explicit STOP percent",
       and '"TOURNIQUET"' in bandage_s
       and "DrawProgressRing" in bandage_s
       and "bleed = MG.bleedCurrent + artery" in bandage_s)
+check("S05 reverse unwrap has independent angular progress and no item cost",
+      'net.WriteString("unwrap")' in minigames_s
+      and 'session.mode == "unwrap"' in minigames_s
+      and 'session.unwrapProgress' in minigames_s
+      and 'MG.mode == "unwrap"' in bandage_s
+      and 'MG.totalDegreesUnwrapped' in bandage_s
+      and 'MG.lastUnwrapActionAngle' in bandage_s
+      and 'MG.mode ~= "unwrap" and slot' in bandage_s
+      and '"UNWRAP " .. tostring(percent) .. "%"' in bandage_s
+      and 'matInfection' in bandage_s)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -258,6 +268,60 @@ return stateOk, session.deferredUsed == 40
     check("R07 artery-only state remains visible and requests tourniquet", arteryState[0])
     check("R08 artery-only bandage input consumes no durability", arteryState[1])
 
+    unwrap = lua.execute(r'''
+WSZC.MinigameSessions = {}
+WSZC.Ready = true
+WSZC.IsShrapnelBandaged = function(ply) return ply._covered == true end
+local removed = 0
+WSZC.RemoveBandageForShrapnel = function(ply, limbId)
+    if limbId ~= "hand_R" or not ply._covered then return false end
+    ply._covered = false
+    removed = removed + 1
+    return true
+end
+local ply = {
+    _covered = true, organism = { consciousness = 1 },
+    IsPlayer = function() return true end, Alive = function() return true end,
+}
+local started = WSZC.StartShrapnelUnwrap(ply, "hand_R")
+local session = WSZC.MinigameSessions[ply]
+local openMode = false
+for _, message in ipairs(sent) do
+    if message.name == "WSZC_BandageOpen" then
+        openMode = message.writes[3][2] == "unwrap"
+    end
+end
+local startedOK = started and session and session.mode == "unwrap"
+    and session.itemId == "WSZC_UNWRAP" and session.unwrapRequired == 360
+    and session.unwrapProgress == 0 and session.deferredUsed == 0 and openMode
+
+sent, readQueue = {}, { session.id, 180 }
+receivers["WSZC_BandageInput"](0, ply)
+local halfState
+for _, message in ipairs(sent) do
+    if message.name == "WSZC_BandageState" then halfState = message end
+end
+local halfOK = ply._covered and removed == 0
+    and WSZC.MinigameSessions[ply] == session
+    and session.unwrapProgress == 180 and session.deferredUsed == 0
+    and halfState and halfState.writes[4][2] == 0.5
+
+sent, readQueue = {}, { session.id, 180 }
+receivers["WSZC_BandageInput"](0, ply)
+local closeReason
+for _, message in ipairs(sent) do
+    if message.name == "WSZC_BandageClose" then closeReason = message.writes[2][2] end
+end
+local completeOK = not ply._covered and removed == 1
+    and WSZC.MinigameSessions[ply] == nil and session.closed == true
+    and session.unwrapProgress == 360 and session.deferredUsed == 0
+    and closeReason == "unwrapped"
+return startedOK, halfOK, completeOK
+''')
+    check("R09 covered shrapnel opens a virtual reverse-bandage session", unwrap[0])
+    check("R10 180 reverse degrees keep the dressing on and spend no item", unwrap[1])
+    check("R11 360 reverse degrees unwrap exactly once and close the session", unwrap[2])
+
     # ---------------------------------------------------------- client UI --
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(r'''
@@ -281,6 +345,7 @@ WoundSystemMedToolConfig = { GAUZE = { max = 100 } }
 WoundSystemClientState = { PlayerLimbs = {} }
 math.Clamp = function(v, lo, hi) if v < lo then return lo end; if v > hi then return hi end; return v end
 math.Round = function(v) return math.floor(v + 0.5) end
+math.atan2 = function(y, x) return math.atan(y, x) end
 Lerp = function(t, a, b) return a + (b - a) * t end
 Color = function(r, g, b, a) return { r = r, g = g, b = b, a = a or 255 } end
 istable = function(v) return type(v) == "table" end
@@ -302,10 +367,13 @@ RealTime = function() return 100 end
 IsValid = function(v) return v ~= nil and v ~= false and not v._removed end
 MOUSE_LEFT, MOUSE_RIGHT, KEY_ESCAPE = 107, 108, 70
 TEXT_ALIGN_CENTER = 1
-input = { IsMouseDown = function() return false end, IsKeyDown = function() return false end }
-gui = { MousePos = function() return 500, 500 end }
-net = { Receive = function() end, Start = function() end, SendToServer = function() end }
-hook = { Add = function() end }
+mouseDown = false
+input = { IsMouseDown = function() return mouseDown end, IsKeyDown = function() return false end }
+gui = { MousePos = function() return 500, 500 end,
+    IsGameUIVisible = function() return false end, IsConsoleVisible = function() return false end }
+net = { Receive = function() end, Start = function() end, SendToServer = function() end,
+    WriteUInt = function() end, WriteFloat = function() end }
+hook = { _t = {}, Add = function(event, name, fn) hook._t[name] = fn end }
 timer = { Simple = function() end }
 surfaceCalls, textCalls, fontCalls = {}, {}, {}
 surface = {
@@ -314,6 +382,7 @@ surface = {
     SetDrawColor = function() end,
     DrawTexturedRect = function() end, DrawTexturedRectUV = function() end,
     DrawTexturedRectRotated = function() end,
+    PlaySound = function() end,
     DrawPoly = function() surfaceCalls[#surfaceCalls + 1] = { kind = "poly" } end,
 }
 draw = {
@@ -373,6 +442,48 @@ return first, stopped and not bloodIcon, needsTourniquet and arteryIcon
     check("R09 client draws server percentage and rejects stale sessions", ui[0])
     check("R10 ordinary 100% is complete and the blood drop disappears", ui[1])
     check("R11 remaining artery keeps drop and shows TOURNIQUET", ui[2])
+
+    client_unwrap = lua.execute(r'''
+local mg = WSZCBandageMinigame
+local think = hook._t.WSZC_BandageInput
+local function place(physicalAngle)
+    local rad = math.rad(physicalAngle)
+    local scale = 1.7 -- CFG.ScaleMultiplier with the mocked 1000x1000 screen
+    mg.handScreenX = 500 + math.sin(rad) * 260 * scale
+    mg.handScreenY = 500 - math.cos(rad) * 260 * scale
+end
+local function openUnwrap()
+    mouseDown = false
+    mg.OpenFromServer({ sessionId = 77, limbId = "hand_R", mode = "unwrap", slotIdx = 6 })
+    place(0)
+    think()
+    mouseDown = true
+end
+openUnwrap()
+for angle = 5, 90, 5 do place(angle); think() end
+local forwardDegrees = mg.totalDegreesUnwrapped
+
+openUnwrap()
+for angle = -5, -360, -5 do place(angle); think() end
+local reverseDegrees = mg.totalDegreesUnwrapped
+mg.ApplyBleedState({ sessionId = 77, initialBleed = 360, currentBleed = 0, progress = 1 })
+mg.bleedDisplayProgress = 1
+textCalls, surfaceCalls = {}, {}
+mg.overlay.Paint(mg.overlay, 1000, 1000)
+local unwrapLabel, infectionIcon = false, false
+for _, call in ipairs(textCalls) do
+    if call.text == "UNWRAP 100%" then unwrapLabel = true end
+end
+for _, call in ipairs(surfaceCalls) do
+    if call.kind == "mat" and call.path == "casunknown-images/icons/infection.png" then
+        infectionIcon = true
+    end
+end
+return forwardDegrees == 0, reverseDegrees >= 360, unwrapLabel and infectionIcon
+''')
+    check("R12 forward wrapping motion does not count as reverse unwrapping", client_unwrap[0])
+    check("R13 a reverse circle accumulates 360 degrees in the real client Think", client_unwrap[1])
+    check("R14 completed unwrap shows UNWRAP percent and standard infection icon", client_unwrap[2])
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

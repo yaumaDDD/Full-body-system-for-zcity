@@ -185,6 +185,8 @@ function MakePlayer()
     local ply = { _nw = {}, _limbs = {}, _body = {} }
     ply._limbs.hand_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
     ply._limbs.forearm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+    ply._limbs.thorax = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0, infectionSpeed = 0 }
+    ply._limbs.head = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0, infectionSpeed = 0 }
     ply.IsPlayer = function() return true end
     ply.Alive = function() return true end
     ply.Nick = function() return "regression_player" end
@@ -376,14 +378,20 @@ local grows = tagged[1] > severity and org.avgpain > 0 and org.painadd > 0 and o
 ply._WSZCLimbsRef = ply._limbs
 ply._limbs.hand_R.shrapnel = 0
 WSZC.SyncShrapnel(ply, org)
-local removed = #org.wounds == 1 and org.wounds[1] == normal
+local lodgedLeft, extractionLeft = false, false
+for _, wound in pairs(org.wounds) do
+    if wound.wszcShrapnel then lodgedLeft = true end
+    if wound.wszcShrapnelExtraction and wound[1] >= 0.3 then extractionLeft = true end
+end
+local removed = not lodgedLeft and extractionLeft and normal[1] == 4
     and org.wszc_shrapnel_sources.hand_R == nil
     and org.wszc_shrapnel_irritation.hand_R == nil
+    and org.wszc_shrapnel_aftercare.hand_R.awaitingBandage == true
 return separate, grows, removed
 ''')
     check("R03 shotgun and glass counts remain separate", effects[0])
     check("R04 lodged fragments increase real wound severity and pain", effects[1])
-    check("R05 extraction removes only tagged shrapnel wounds", effects[2])
+    check("R05 extraction replaces lodged wound with a separate aftercare wound", effects[2])
 
     reset = lua.execute(r'''
 local ply = MakePlayer()
@@ -560,14 +568,21 @@ local treated = WSZC.ApplyBandageToOrganism(
 local entry = ply.organism.wszc_bandaged_shrapnel.hand_R
 local bandageAllowed = treated > 0 and WSZC.IsShrapnelBandaged(ply, "hand_R")
     and ply._limbs.hand_R.shrapnel == 3 and entry.covered == true
-for _ = 1, 330 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
-local infected = entry.infection > 20 and ply.organism.internalBleed > 0
-    and ply.organism.blood < 5000 and ply._limbs.hand_R.shrapnel == 3
-local infectionBefore = entry.infection
+    and WSZC.GetBandageBleeding(ply, "hand_R") == 0
+for _ = 1, 120 do WSZC.TickLodgedShrapnel(ply, ply.organism, 0.5) end
+local noRegrow = WSZC.GetBandageBleeding(ply, "hand_R") == 0
+for _, wound in pairs(ply.organism.wounds) do
+    if wound.wszcShrapnel and (tonumber(wound[1]) or 0) > 0 then noRegrow = false end
+end
+for _ = 1, 10 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
+local infected = entry.infectionAge == 5 and limb.infection >= 25
+    and limb.infectionSpeed == 0 and limb.disinfectTime == 0
+    and ply._limbs.thorax.infection == 0 and ply._limbs.head.infection == 0
+local infectionBefore = entry.infectionAge
 
 local refs = {}
 local sessions = { Shrapnel = { [ply] = { limbId = "hand_R", id = 41 } } }
-local closed, built, opened, consumed = 0, 0, 0, 0
+local closed, built, opened, consumed, unwrapStarted = 0, 0, 0, 0, 0
 refs.Sessions = sessions
 refs.SendShrapnelOpen = function() opened = opened + 1 end
 refs.CloseShrapnelSession = function(_, reason)
@@ -582,6 +597,10 @@ refs.ShrapnelItemHasTweezers = function() return true end
 refs.ConsumeToolDurability = function() consumed = consumed + 1; return true end
 refs.BroadcastMinigameOneShot = function() end
 WSZC.FindUpvalue = function(name) return refs[name] end
+WSZC.StartShrapnelUnwrap = function(_, limbId)
+    unwrapStarted = unwrapStarted + 1
+    return limbId == "hand_R"
+end
 net = {
     Receivers = { WoundSystem_ShrapnelStart = function() error("old receiver must be replaced") end },
     Receive = function(name, fn) net.Receivers[name] = fn end,
@@ -591,38 +610,158 @@ net = {
 }
 local installed = WSZC.InstallShrapnelBandageGuard()
 net.Receivers.WoundSystem_ShrapnelStart(0, ply)
-local unwrapOnly = installed and closed == 1 and built == 0 and consumed == 0
-    and sessions.Shrapnel[ply] == nil and ply._limbs.hand_R.shrapnel == 3
+local unwrapGate = installed and closed == 1 and unwrapStarted == 1
+    and built == 0 and consumed == 0 and sessions.Shrapnel[ply] == nil
+    and ply._limbs.hand_R.shrapnel == 3
+    and WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and entry.infectionAge == infectionBefore and limb.isBandaged ~= false
+-- This is the callback used by the server after a 360-degree reverse input.
+local completionUnwrapped = WSZC.RemoveBandageForShrapnel(ply, "hand_R")
     and not WSZC.IsShrapnelBandaged(ply, "hand_R")
-    and entry.infection == infectionBefore and limb.isBandaged == false
-local reopened = false
-for _, wound in pairs(ply.organism.wounds) do
-    if wound.wszcShrapnel and wound[1] >= 2.5 then reopened = true end
-end
+    and limb.isBandaged == false and entry.infectionAge == infectionBefore
 net.Receivers.WoundSystem_ShrapnelStart(0, ply)
-local secondClickNative = built == 1 and opened == 1 and consumed == 1
+local secondClickNative = completionUnwrapped and built == 1 and opened == 1 and consumed == 1
     and sessions.Shrapnel[ply] and sessions.Shrapnel[ply].id == 42
 
+-- Partial extraction also starts aftercare.  Re-dressing with two fragments
+-- still inside closes ALL external blood but deliberately keeps the infection.
 ply._WSZCLimbsRef = ply._limbs
+ply._limbs.hand_R.shrapnel = 2
+WSZC.SyncShrapnel(ply, ply.organism)
+limb.isBandaged = false
+WSZC.ApplyBandageToOrganism(
+    { ply = ply, limbId = "hand_R", limb = limb },
+    { effects = { bandageSlowAmount = 15 } }, 1)
+local partialCovered = WSZC.GetBandageBleeding(ply, "hand_R") == 0
+    and ply.organism.wszc_shrapnel_aftercare.hand_R == nil
+    and ply.organism.wszc_bandaged_shrapnel.hand_R == entry
+    and WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and ply._limbs.hand_R.infection >= 25
+-- A second completed reverse minigame exposes the remaining fragments.
+WSZC.RemoveBandageForShrapnel(ply, "hand_R")
 ply._limbs.hand_R.shrapnel = 0
 WSZC.SyncShrapnel(ply, ply.organism)
-WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
-local extractionDecay = (ply.organism.wszc_shrapnel.hand_R or 0) == 0
-    and entry.infection < infectionBefore and ply.organism.internalBleed > 0
+local aftercare = ply.organism.wszc_shrapnel_aftercare.hand_R
+local extractionWound
+for _, wound in pairs(ply.organism.wounds) do
+    if wound.wszcShrapnelExtraction then extractionWound = wound end
+end
+local initialExtractionBleed = extractionWound and extractionWound[1] or 0
+local initialPain = ply.organism.painadd
+for _ = 1, 100 do
+    WSZC.TickShrapnelAftercare(ply, ply.organism, 0.5)
+    WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+end
+local extractionPersists = aftercare and extractionWound
+    and extractionWound[1] > initialExtractionBleed
+    and ply.organism.painadd > initialPain
+    and entry.infectionAge > infectionBefore
+    and ply.organism.wszc_bandaged_shrapnel.hand_R == entry
+    and ply._limbs.hand_R.infection >= 25
+
+limb.isBandaged = false
+WSZC.ApplyBandageToOrganism(
+    { ply = ply, limbId = "hand_R", limb = limb },
+    { effects = { bandageSlowAmount = 15 } }, 1)
+local extractionTagLeft = false
+for _, wound in pairs(ply.organism.wounds) do
+    if wound.wszcShrapnelExtraction then extractionTagLeft = true end
+end
+local painAtCure = ply.organism.painadd
+WSZC.TickShrapnelAftercare(ply, ply.organism, 0.5)
+local rebandageCures = WSZC.GetBandageBleeding(ply, "hand_R") == 0
+    and not extractionTagLeft
+    and (ply.organism.wszc_shrapnel_aftercare == nil
+        or ply.organism.wszc_shrapnel_aftercare.hand_R == nil)
+    and ply.organism.wszc_bandaged_shrapnel.hand_R == nil
+    and ply.organism.wszc_infection == nil
+    and ply._limbs.hand_R.infection == 0
+    and ply._limbs.thorax.infection == 0 and ply._limbs.head.infection == 0
+    and ply.organism.painadd == painAtCure
+
 local preDressed = MakePlayer()
 preDressed._limbs.hand_R.isBandaged = true
 preDressed.bandaged_limbs = { ["ValveBiped.Bip01_R_Hand"] = true }
 WSZC.AddShrapnel(preDressed, "hand_R", 1, "shotgun")
 local preDressedCovered = WSZC.IsShrapnelBandaged(preDressed, "hand_R")
     and preDressed.organism.wszc_bandaged_shrapnel.hand_R.bones["ValveBiped.Bip01_R_Hand"] == true
-return bandageAllowed, infected, unwrapOnly and reopened, secondClickNative, extractionDecay, preDressedCovered
+    and WSZC.GetBandageBleeding(preDressed, "hand_R") == 0
+    and preDressed._limbs.hand_R.infection >= 25
+    and preDressed._limbs.hand_R.disinfectTime == 0
+return bandageAllowed, noRegrow, infected, unwrapGate, secondClickNative,
+    extractionPersists, rebandageCures, preDressedCovered, partialCovered
 ''')
-    check("R14 bandage covers shrapnel instead of rejecting treatment", complications[0])
-    check("R15 covered fragments cause gradual internal infection and blood loss", complications[1])
-    check("R16 first click unwraps without extraction, session or tool cost", complications[2])
-    check("R17 second click starts the native shrapnel session and spends tool", complications[3])
-    check("R18 extracting the last fragment stops growth and starts infection decay", complications[4])
-    check("R22 a pellet into an already dressed limb is covered too", complications[5])
+    check("R14 a complete bandage stops external bleeding with shrapnel still lodged", complications[0])
+    check("R53 covered shrapnel never regrows or recreates its external wound", complications[1])
+    check("R55 covered shrapnel immediately uses infection, not disinfect/processing", complications[2])
+    check("R16 covered click starts reverse minigame without click-unwrap or tool cost", complications[3])
+    check("R17 completed unwrap then permits the native shrapnel session", complications[4])
+    check("R18 extraction retains infection and adds growing bleeding and pain", complications[5])
+    check("R54 only full re-bandaging clears extraction aftercare and infection", complications[6])
+    check("R22 a pellet into an already dressed limb is covered without external bleed", complications[7])
+    check("R59 partial extraction can be re-bandaged without curing remaining infection", complications[8])
+
+    infection_timeline = lua.execute(r'''
+local ply = MakePlayer()
+ply._alive = true
+ply._kills = 0
+ply.Alive = function(self) return self._alive end
+ply.Kill = function(self) self._alive = false; self._kills = self._kills + 1 end
+WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+WSZC.ApplyBandageToOrganism(
+    { ply = ply, limbId = "hand_R", limb = ply._limbs.hand_R },
+    { effects = { bandageSlowAmount = 15 } }, 1)
+local entry = ply.organism.wszc_bandaged_shrapnel.hand_R
+local initialLimb = ply._limbs.hand_R.infection == 25
+    and ply._limbs.thorax.infection == 0 and ply._limbs.head.infection == 0
+for _ = 1, 480 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
+local torsoStage = entry.infectionAge == 240
+    and ply._limbs.hand_R.infection == 89
+    and ply._limbs.thorax.infection == 25 and ply._limbs.head.infection == 0
+    and ply.organism.alive ~= false
+for _ = 1, 360 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
+local brainStage = entry.infectionAge == 420
+    and ply._limbs.thorax.infection == 89
+    and ply._limbs.head.infection == 25 and ply.organism.alive ~= false
+for _ = 1, 359 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
+local beforeFatal = entry.infectionAge == 599.5 and ply.organism.alive ~= false
+WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+local fatal = entry.infectionAge == 600 and entry.terminal == true
+    and ply._limbs.head.infection == 99 and ply.organism.brain == 1
+    and ply.organism.alive == false and ply.organism.needfake == true
+    and ply._kills == 1 and ply:Alive() == false
+return initialLimb, torsoStage, brainStage, beforeFatal and fatal
+''')
+    check("R15 infection starts in the limb and reaches torso at 240 seconds", infection_timeline[0] and infection_timeline[1])
+    check("R56 torso infection reaches the brain at 420 seconds", infection_timeline[2])
+    check("R57 untreated covered shrapnel is fatal at 600 seconds, not before", infection_timeline[3])
+
+    zero_aftercare = lua.execute(r'''
+local ply = MakePlayer()
+WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+WSZC.ApplyBandageToOrganism(
+    { ply = ply, limbId = "hand_R", limb = ply._limbs.hand_R },
+    { effects = { bandageSlowAmount = 15 } }, 1)
+ply._WSZCLimbsRef = ply._limbs
+ply._limbs.hand_R.shrapnel = 0
+WSZC.SyncShrapnel(ply, ply.organism)
+for _, wound in pairs(ply.organism.wounds) do
+    if wound.wszcShrapnelExtraction then wound[1] = 0 end
+end
+ply._limbs.hand_R.isBandaged = false
+local treated = WSZC.ApplyBandageToOrganism(
+    { ply = ply, limbId = "hand_R", limb = ply._limbs.hand_R },
+    { effects = { bandageSlowAmount = 15 } }, 1)
+return treated == 0
+    and ply.organism.wszc_shrapnel_aftercare.hand_R == nil
+    and ply.organism.wszc_bandaged_shrapnel.hand_R == nil
+    and ply._limbs.hand_R.infection == 0
+''')
+    check("R58 final dressing completes aftercare even if extraction bleeding clotted", zero_aftercare)
+    check("S16 covered-shrapnel UI replaces processing with stock infection",
+          'icons.disinfected = Material("casunknown-images/icons/infection.png"' in layout_s
+          and "state.disinfectTime = 0" in organism_s
+          and "state.infectionSpeed = 0" in organism_s)
 
     # Load the real exported H.ApplyItemToBody implementation as well.  The
     # physical SWEP reaches this through WB.SwepHeal, not through a direct call

@@ -260,6 +260,22 @@ end
 
 local function SendBandageState(ply, session)
     if session.kind ~= "bandage" then return end
+    if session.mode == "unwrap" then
+        local required = math.max(tonumber(session.unwrapRequired) or 360, 1)
+        local unwrapped = math.Clamp(tonumber(session.unwrapProgress) or 0, 0, required)
+        local progress = unwrapped / required
+        session.lastBleed = required - unwrapped
+        session.lastArterialBleed = 0
+        session.lastBleedProgress = progress
+        Send("WSZC_BandageState", ply, function()
+            net.WriteUInt(session.id, 24)
+            net.WriteFloat(required)
+            net.WriteFloat(required - unwrapped)
+            net.WriteFloat(progress)
+            net.WriteFloat(0)
+        end)
+        return
+    end
     local initial = math.max(tonumber(session.initialBleed) or 0, 0)
     local current = CurrentBandageBleeding(session)
     local arterial = CurrentArterialBleeding(session)
@@ -575,6 +591,55 @@ local function StartMinigame(ply, data)
     return true
 end
 
+--- Covered shrapnel cannot be exposed by a click.  Start the SAME client
+--- bandage minigame in reverse mode, with a virtual roll that costs no item.
+--- ProcessBandageInput() is the only path that may remove this dressing.
+function WSZC.StartShrapnelUnwrap(ply, limbId)
+    if not (WSZC.Ready and OwnMinigamesEnabled() and HealthEnabled()) then return false end
+    if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
+    if PlayerIncapacitated(ply) or not Bridged(ply) then return false end
+    if not (WSZC.IsShrapnelBandaged and WSZC.IsShrapnelBandaged(ply, limbId)) then return false end
+
+    local existing = WSZC.MinigameSessions[ply]
+    if existing then
+        return existing.kind == "bandage" and existing.mode == "unwrap"
+            and existing.limbId == limbId
+    end
+    if HasMinigame(ply) then return false end
+
+    local id = WSZC.NextMinigameId or 1
+    WSZC.NextMinigameId = id + 1
+    if WSZC.NextMinigameId > 16000000 then WSZC.NextMinigameId = 1 end
+    local now = CurTime and CurTime() or 0
+    local frozenAngles
+    if ply.EyeAngles then
+        local okAng, ang = pcall(ply.EyeAngles, ply)
+        if okAng then frozenAngles = ang end
+    end
+    local session = {
+        id = id, kind = "bandage", mode = "unwrap",
+        itemId = "WSZC_UNWRAP", limbId = limbId, slotIdx = MINIGAME_SLOT,
+        owner = ply, target = ply,
+        maxDur = 360, amount = 360, startAmount = 360, deferredUsed = 0,
+        initialBleed = 360, lastBleed = 360, lastBleedProgress = 0,
+        unwrapRequired = 360, unwrapProgress = 0,
+        live = false, oneDose = false,
+        startedAt = now, lastInputAt = now, lastAckSeq = 0,
+        frozenAngles = frozenAngles, closed = false,
+    }
+    WSZC.MinigameSessions[ply] = session
+    SendOpenSlot(ply, session)
+    Send("WSZC_BandageOpen", ply, function()
+        net.WriteUInt(session.id, 24)
+        net.WriteString(session.limbId)
+        net.WriteString("unwrap")
+        net.WriteUInt(session.slotIdx, 3)
+    end)
+    SendBandageState(ply, session)
+    Debug("opened reverse-bandage session %s owner=%s limb=%s", tostring(id), tostring(ply), limbId)
+    return true
+end
+
 local function StopExternal(ply, reason)
     local had = StopMinigame(ply, reason)
     StopCUSessions(ply)
@@ -618,6 +683,26 @@ local function ProcessBandageInput(_, ply)
     if degrees <= 0 then return end
 
     session.lastAckSeq = inputSeq
+
+    if session.mode == "unwrap" then
+        if not (WSZC.IsShrapnelBandaged
+            and WSZC.IsShrapnelBandaged(session.target, session.limbId)) then
+            SendAck(ply, session, ACK_BANDAGE, inputSeq)
+            StopMinigame(ply, "already_unwrapped")
+            return
+        end
+        local required = math.max(tonumber(session.unwrapRequired) or 360, 1)
+        session.unwrapProgress = math.min(required,
+            (tonumber(session.unwrapProgress) or 0) + degrees)
+        SendBandageState(ply, session)
+        SendAck(ply, session, ACK_BANDAGE, inputSeq)
+        if session.unwrapProgress >= required then
+            local removed = WSZC.RemoveBandageForShrapnel
+                and WSZC.RemoveBandageForShrapnel(session.target, session.limbId)
+            StopMinigame(ply, removed and "unwrapped" or "unwrap_failed")
+        end
+        return -- no durability, bleeding treatment or foreign onProgress
+    end
 
     -- An artery is not a bandage target.  Do not spend even a partial roll
     -- when no ordinary bleeding remains; still ACK and refresh the state so

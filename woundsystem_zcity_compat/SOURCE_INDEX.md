@@ -11,13 +11,13 @@ GMod. Исходные ZIP-аддоны не изменяются: всё пат
 |---|---|---|
 | `lua/autorun/sh_zcity_woundsystem_compat.lua` | shared | `WSZC.OrganismAuthority()`, конвар `zc_woundsystem_compat_authority`, `WithVanillaContext`, `PatchIsEnabled`, `PatchIsBridged`; `InstallAmputationStatus()` регистрирует отдельный `WSZC_AMPUTATION` (`order=-10000`) для proximal stump |
 | `lua/autorun/server/sv_zcity_woundsystem_compat.lua` | server | Основной мост: weak-key `WSZC.RawDamage`, `DamageWrapper`, снимки/дельты медицины в `ApplyItemToBodyImpl`, публикация `WSZC_Ready` / `WSZC_OrganismAuthority`, `Setup()`/`Attempt()`, mode-aware `InstallOrganismMode` |
-| `lua/autorun/server/sv_zcity_woundsystem_compat_organism.lua` | server | Authority-слой `ply.organism`: shrapnel/shotgun/glass, per-limb shadow, bones и медицина. `SyncAmputationShadow()` сохраняет родную анатомию forearm+hand / crus+foot и отдельный stump-статус; `BestTourniquetLimb()` даёт реально кровоточащей ампутации приоритет над artery только для жгута. `SnapshotRagdollOrganism()` сохраняет весь organism при `Fake Up + OverrideSpawn`, а explicit reset/respawn очищает его. `InstallResetStructureGuard()`, `DisableCUBloodReplacement()`, 5-секундный reapply |
-| `lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua` | server | instant/watchdog/continuous мини-игры, слот `6`, net-протокол, movement/camera lock. Operator и patient разделены: conscious `FakeRagdoll/fake` не закрывает игру, death/otrub/низкое consciousness закрывает; `OverrideSpawn` отличает FakeUp от настоящего respawn force-close |
+| `lua/autorun/server/sv_zcity_woundsystem_compat_organism.lua` | server | Authority-слой `ply.organism`: shrapnel/shotgun/glass, per-limb shadow, bones и медицина. Полный бинт закрывает external shrapnel-рану; отдельный infection timer ведёт конечность→торс→мозг→death (240/420/600 с). `Start/Tick/CompleteShrapnelAftercare()` создают и закрывают отдельную extraction-рану только финальным бинтом. `SyncAmputationShadow()` сохраняет родную анатомию forearm+hand / crus+foot и отдельный stump-статус; `BestTourniquetLimb()` даёт реально кровоточащей ампутации приоритет над artery только для жгута. `SnapshotRagdollOrganism()` сохраняет весь organism при `Fake Up + OverrideSpawn`, а explicit reset/respawn очищает его. `InstallResetStructureGuard()`, `DisableCUBloodReplacement()`, 5-секундный reapply |
+| `lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua` | server | instant/watchdog/continuous мини-игры, слот `6`, net-протокол, movement/camera lock. `StartShrapnelUnwrap()` создаёт виртуальный reverse-bandage без расхода предмета; только 360° вызывают снятие повязки. Operator и patient разделены: conscious `FakeRagdoll/fake` не закрывает игру, death/otrub/низкое consciousness закрывает; `OverrideSpawn` отличает FakeUp от настоящего respawn force-close |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua` | client | Full-screen мини-игры: `WoundSystem.MinigameClip.GetRect()`, `WSZC.MinigameScale()`, кламп adrenaline/painkiller; регистрация amputation moodle через native `Reg()`, `MinigameContextOK()` разрешает conscious ragdoll, но запрещает death/otrub/потерю сознания |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_fx.lua` | client | Фильтр эффектов C:U: снимает `RenderScreenspaceEffects`/`CalcView`/`HUDPaint*`/`PostDrawHUD`/`CreateMove`/fog-хуки и blood-хуки, нейтрализует `TextCorruption`, выставляет визуальные конвары C:U в `0`, умеет восстанавливать оригиналы |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_inspect.lua` | client | Пункт «Проверить травмы» в круговом меню ZCity → `WoundSystem.OpenHealthHUD()`, gate `WSZC_Ready`, `OPEN_DELAY = 0.12`, `wszc_open_wounds` |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_minigames.lua` | client | Клиентская часть мини-игр, приём `WSZC_*`, cursor/view/input lock, блокировка движения `SetupMove`; `PlayerSpawn` сохраняет conscious FakeUp, а настоящий respawn дополнительно force-close сервером |
-| `lua/autorun/client/wszc_cl_bandage.lua` | client | Порт родной C:U мини-игры бинтования (ЛКМ/ПКМ/ESC), layout на весь экран |
+| `lua/autorun/client/wszc_cl_bandage.lua` | client | Порт родной C:U мини-игры бинтования (ЛКМ/ПКМ/ESC), layout на весь экран; режим `unwrap` зеркалит угловой ввод, рисует `UNWRAP N%` и стандартную infection-иконку. Exact-CU hand rect/rotation не меняются |
 | `lua/autorun/client/wszc_cl_syringe.lua` | client | Порт родной C:U мини-игры шприца (ЛКМ/ПКМ/ESC), board = весь экран, оффсеты в долях viewport |
 | `addon.json` | мета | `title`, `type: ServerContent`, ignore `*.md`/`*.txt` |
 | `README.md` | доку | Установка, подписки Мастерской, таблицы предметов/шрапнели, конвары, диагностика, ограничения |
@@ -29,8 +29,11 @@ GMod. Исходные ZIP-аддоны не изменяются: всё пат
   `woundsys_enabled` не выключается.
 * Gunshot/blast хуки C:U подавлены, их правила перенесены в единый
   `WSZC.InjectDamageShrapnel`; стекло — единственный новый источник.
-* `state.shrapnel` без поля `source`, без второй мини-игры; лимит 5 из
-  `WoundSystem.Health.Constants.ShrapnelPieceCount`.
+* `state.shrapnel` без поля `source`, без второй мини-игры извлечения; лимит 5 из
+  `WoundSystem.Health.Constants.ShrapnelPieceCount`. Reverse unwrap — отдельный
+  режим WSZC bandage, после него используется тот же native extraction.
+* Полное лечение covered shrapnel только `unwrap 360° → extract → re-bandage`;
+  внешняя кровь под бинтом нулевая, инфекция продолжается до финальной повязки.
 * Сырой урон ловится `pre`-хуком до `sv_input.lua:1085 ScaleDamage(0.15)`;
   `WoundSystem_Damage` не вызывается повторно (там `dmginfo:SetDamage(0)`).
 * `zc_woundsystem_compat_authority 0` возвращает прежний мост,
@@ -104,21 +107,18 @@ GMod. Исходные ZIP-аддоны не изменяются: всё пат
 | Стабилизировать руку/курсор | `WSZC.StabilizeHandPhysics()` обнуляет только pain-shake, сохраняя native maxLength; `WSZC.HandCursorScale()` = 1 оставляет исходный размер 512×1260 в `wszc_cl_bandage.lua` / `wszc_cl_syringe.lua`; `WSZC.MinigameActive()` теперь знает все нативные мини-игры C:U (курсор + лок камеры). |
 | Респавн после смерти | `WSZC.MinigameContextOK()` возвращает `false` для `not LocalPlayer():Alive()`; `WSZC.MinigameActive()` / `WSZCMinigameActive()` / `NativeMinigameActive()` всё проверяют. `WSZC.ClearAllMinigameState()` на `PlayerDeath`/`PlayerSpawn` сбрасывает `MinigameHUDOpen`, `MinigameFrozenAngles`, `_ViewModelHidden` и `MG.active` у всех 7 таблиц мини-игр. Серверный `WSZC_MinigameServerLock` выходит сразу для мёртвого игрока, чтобы `PlayerDeathThink` получил свободный `CUserCmd`. |
 
-Валидация: все 11 Lua-файлов проходят `luaparser`, `addon.json` — JSON-парсер,
-headless-тесты `TEST_OK 11/11` (базовые фиксы), `TEST_OK 8/8` (full-screen и
-нативный клип), `TEST_OK 20/20` (FX/кровь/курсор/камера/бинды), `TEST_OK 11/11`
-`tools/tests/test_wszc_regression.py` — **65 проверок** в репозитории:
-статические маркеры всех прошлых фиксов, `ALL_LUA_OK 11/11`,
-`CJK_CLEAN`, PIL-проверка человеческих пропорций / белой обводки /
-зазоров суставов, 649 материалов, `MATERIALS.sha256`, оба ZIP /
-зеркало / `MANIFEST.txt` и 29 рантайм-проверок на lupa (включая
-точечный фильтр текста (включая AED), сохранение уведомлений ZCity,
-сохранение `finalOutline` для hover и `FindCULimbs` fallback).
-Прежние transient-наборы из `/tmp` не
-пережили очистку песочницы; сборка тоже перенесена в
-`tools/build_packs.py`.
-Живой GMod-сервер ассистентом не запускался; правки сделаны по пользовательским
-live-скриншотам.
+Валидация: все 11 Lua-файлов проходят `luaparser`, `addon.json` — JSON-парсер.
+Актуальный полный suite: `tools/tests/test_wszc_regression.py` — **87/87**,
+`tools/tests/test_gameplay_regression.py` — **75/75**,
+`tools/tests/test_bandage_regression.py` — **22/22**; всего **184/184**.
+Runtime-проверки на lupa покрывают точную CU-геометрию руки, HUD/фильтры,
+ампутации/ragdoll/`brokenribs`, артерии/жгуты, нулевое внешнее кровотечение под
+бинтом, стадии инфекции 240/420/600 с, однократный native-style `ply:Kill()`,
+reverse unwrap (180° не снимает, 360° снимает без item cost), growing
+extraction bleed/pain и завершение после повторного бинтования. ZIP / mirror /
+`MANIFEST.txt` и 649 материалов проверяются сборочным тестом.
+Живой GMod-сервер ассистентом не запускался; автоматические проверки не заменяют
+live-проверку баланса и ввода.
 
 ## По live-скриншотам №6 (`Screenshot_2-8`, `Screenshot_3-5`)
 
