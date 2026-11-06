@@ -124,7 +124,7 @@ check('S13 generator: standard black, anatomy kept, per-limb shaped outline, NO 
       and 'LIVE_S = 0.4155' in generator_s
       and 'LIVE_CX, LIVE_CY = 682.5, 558.2' in generator_s
       and 'assert w == next_pot(w) and h == next_pot(h)' in generator_s
-      and 'ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(EDGE_WIDTH)))' in generator_s
+      and 'ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(edge_width)))' in generator_s
       and 'outer_band' not in generator_s
       and 'union = ImageChops.lighter(union, layer)' not in generator_s
       and 'MaxFilter(15)' not in generator_s
@@ -204,35 +204,31 @@ check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
       and 'WSZC.ClearCULimbsCache' in layout_s
       and 'hook.Add("PreDrawHUD", "WSZC_UnitmenuDollRetry"' in layout_s
       and 'HUDPaintBackground' in layout_s)
-# Screenshot_2-10.png native boxes are now the SOURCE of truth: the generator
-# inverts C:U's linear placement with the live calibration measured from
-# Screenshot_1-10.png and emits POT sprites (C:U sizes limbs by mat:Width(),
-# which GMod rounds to a power of two).  A uniform scale of w/h can never work.
-check('S33 REFERENCE_BOXES = independent native Screenshot_1 boxes, POT-calibrated',
-      "HEAD_SOURCE_BOX = (682.5, 268.0, 67, 102)" in generator_s
-      and "'head':      (682.5, 255.5, 67, 77)" in generator_s
-      and "'neck':      (682.5, 306.5, 67, 25)" in generator_s
-      and "'thorax':    (681.5, 385.5, 125, 129)" in generator_s
-      and "'abdomen':   (681.5, 521.5, 128, 138)" in generator_s
-      and "'arm_R':     (576.9, 361.0, 83, 57)" in generator_s
-      and "'arm_L':     (787.1, 364.0, 85, 58)" in generator_s
-      and "'forearm_R': (481.0, 356.0, 111, 38)" in generator_s
-      and "'forearm_L': (879.0, 356.0, 94, 36)" in generator_s
-      and "'hand_R':    (395.0, 356.0, 54, 43)" in generator_s
-      and "'hand_L':    (955.0, 354.0, 54, 43)" in generator_s
-      and "'thigh_R':   (652.5, 650.0, 58, 112)" in generator_s
-      and "'thigh_L':   (711.5, 650.0, 56, 114)" in generator_s
-      and "'crus_R':    (649.5, 761.0, 45, 104)" in generator_s
-      and "'crus_L':    (714.5, 761.0, 47, 104)" in generator_s
-      and "'foot_R':    (646.0, 843.0, 46, 50)" in generator_s
-      and "'foot_L':    (719.0, 843.0, 46, 47)" in generator_s
-      and 'Screenshot_1.png' in generator_s
-      and 'Screenshot_6-2.png' in generator_s
-      and 'Screenshot_8.png' in generator_s
+# The supplied green WoundView reference (2222.png) is the source of truth.
+# Every visible black silhouette is calibrated independently, then C:U's
+# placement is inverted and each PNG cell is rounded to a power of two.
+check('S33 REFERENCE_BOXES = green reference, independent POT-calibrated limbs',
+      "'head':      (688.0, 279.5, 67.3, 83.3)" in generator_s
+      and "'neck':      (688.0, 326.5, 79.8, 23.3)" in generator_s
+      and "'thorax':    (687.5, 396.5, 119.3, 124.3)" in generator_s
+      and "'abdomen':   (687.0, 520.5, 122.3, 134.3)" in generator_s
+      and "'arm_R':     (594.9, 376.0, 79.8, 62.8)" in generator_s
+      and "'arm_L':     (785.6, 378.0, 83.3, 61.3)" in generator_s
+      and "'forearm_R': (505.0, 369.0, 106.8, 41.3)" in generator_s
+      and "'forearm_L': (869.5, 369.5, 90.3, 38.3)" in generator_s
+      and "'hand_R':    (427.0, 369.0, 56.0, 47.5)" in generator_s
+      and "'hand_L':    (939.0, 367.0, 56.0, 46.5)" in generator_s
+      and "'thigh_R':   (661.0, 638.0, 59.8, 108.8)" in generator_s
+      and "'thigh_L':   (714.0, 638.5, 55.3, 108.8)" in generator_s
+      and "'crus_R':    (659.0, 739.0, 49.3, 102.3)" in generator_s
+      and "'crus_L':    (718.0, 740.0, 49.3, 104.8)" in generator_s
+      and "'foot_R':    (654.0, 814.0, 49.8, 51.8)" in generator_s
+      and "'foot_L':    (724.5, 813.0, 50.3, 51.3)" in generator_s
+      and 'woundview_reference_1365x1079.png' in generator_s
+      and '2222.png' in generator_s
       and 'independently for every limb' in generator_s
-      and '44 px arm sprites' in generator_s
       and 'tools/fit_unitmenu_geometry.py' in generator_s
-      and 'EDGE_WIDTH = 9' in generator_s
+      and 'EDGE_WIDTH = 17' in generator_s
       and 'EDGE_PAD_MIN = 6' in generator_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s
       and 'hoverW = %d, hoverH = %d' in generator_s
@@ -361,17 +357,21 @@ check('S51 human C:U hand artwork, native rotation and one-time default migratio
       and 'cvHandModeRevision, 6' in layout_s
       and (CONN / 'materials/wszc/minigame/hand_idle.png').is_file()
       and (CONN / 'materials/wszc/minigame/hand_click.png').is_file())
-check('S48 silhouettes are NOT redrawn; only native limb boxes change',
-      'Screenshot_1-11.png' in generator_s
-      and 'Screenshot_8.png' in generator_s
+check('S48 silhouettes keep native anatomy; head/neck are crop-first calibrated',
+      'woundview_reference_1365x1079.png' in generator_s
+      and '2222.png' in generator_s
       and 'SEAM_LIMBS' not in generator_s
       and 'def CloseMask(mask):' not in generator_s
       and 'def FlattenLimbBand(mask):' not in generator_s
-      and 'def SquareToe(mask):' in generator_s
-      and "limb_id.startswith('foot_')" in generator_s
+      and 'def SquareToe(mask):' not in generator_s
+      and 'JOINT_SQUARE_FRAC' not in generator_s
       and 'no shape editing' in generator_s
-      and "'forearm_R': (481.0, 356.0, 111, 38)" in generator_s
-      and "'arm_R':     (576.9, 361.0, 83, 57)" in generator_s)
+      and "'forearm_R': (505.0, 369.0, 106.8, 41.3)" in generator_s
+      and "'arm_R':     (594.9, 376.0, 79.8, 62.8)" in generator_s
+      and "head_alpha.crop((0, 0, head_alpha.width, source_split))" in generator_s
+      and "head_alpha.crop((0, source_split, head_alpha.width, head_alpha.height))" in generator_s
+      and 'HEAD_SOURCE_LAYOUT' not in generator_s
+      and 'HEAD_SOURCE_BOX' not in generator_s)
 check('S49 opioid dose reaches the ZCity organism (morphine / fentanyl)',
       'opiateAmount = tonumber(body.opiateAmount) or 0' in organism_s
       and 'add("analgesiaAdd", (after.opiateAmount - before.opiateAmount) * 0.006, 0, 4)' in organism_s
@@ -383,7 +383,8 @@ check('S50 geometry is measured against the native reference, not eyeballed',
       and 'def optimize(' in fit_s
       and 'def render(' in fit_s
       and 'G.REFERENCE_BOXES' in fit_s
-      and 'Screenshot_1.png' in fit_s
+      and 'woundview_reference_1365x1079.png' in fit_s
+      and 'ImageChops.subtract(soft_inner, contour)' in fit_s
       and "ORDER = tuple(k for k in G.LIMB_LAYERS if k not in ('head', 'neck'))" in fit_s
       and 'PAIRS =' not in fit_s
       and 'NOT ONE silhouette pixel' in fit_s
@@ -407,7 +408,8 @@ check('S57 packer regenerates the 16-part doll and keeps generated/source counts
       and "wanted in entries or wanted in generated" in packer_s
       and "len(actual_materials) == 651" in packer_s
       and "len(limb_pngs) == 32" in packer_s
-      and 'HEAD_SOURCE_LAYOUT' in generator_s
+      and 'HEAD_SPLIT_FRAC' in generator_s
+      and 'HEAD_SOURCE_LAYOUT' not in generator_s
       and len(set(re.findall(r"^    '(\w+)':", generator_s, re.M))) == 16)
 source_archive_hashes = {
     'zcity.zip': 'a122484c29e5afeed7e0eb43a6685c68654fe07ae0a288c0ccc1380a0dc401c4',
@@ -525,10 +527,12 @@ try:
           edge_boxes == 16
           and 'DOLL_RGB = (0, 0, 0)' in generator_s
           and 'EDGE_PAD_MIN = 6' in generator_s
-          and 'EDGE_WIDTH = 9' in generator_s
-          and 'ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(EDGE_WIDTH)))' in generator_s
+          and 'EDGE_WIDTH = 17' in generator_s
+          and "EDGE_WIDTH_OVERRIDES = {'hand_R': 11, 'hand_L': 11}" in generator_s
+          and 'ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(edge_width)))' in generator_s
           and 'outer_band' not in generator_s
-          and 'seam_lines' not in generator_s
+          and 'ABDOMEN_SEAM_Y = 520.5' in generator_s
+          and 'ABDOMEN_SEAM_WIDTH = 2' in generator_s
           and 'ImageDraw' not in generator_s
           and 'assert worst == 0.0' in generator_s)
     # Thin transparent joint gaps between neighbouring fills.  The white
@@ -552,12 +556,10 @@ try:
     leg_top = g['thigh_R'][1] - float(hover['thigh_R'][1]) / 2
     leg_bottom = g['foot_R'][1] + float(hover['foot_R'][1]) / 2
     torso_h, leg_h = torso_bottom - head_top, leg_bottom - leg_top
-    # Screenshot_2-10.png is the native C:U UNIT-HEALTH V2.04 doll the owner
-    # asked to reproduce: its torso (218..592) and legs (592..865) give a
-    # leg/torso ratio of ~0.73, not the ~0.95 of the rejected Screenshot_4-5
-    # iteration.  Keep the shape/width/symmetry relations, but measure the
-    # ratio against the NEW reference seams.
-    check('S20 limb sizes follow Screenshot_1 native proportions',
+    # The supplied green reference keeps a roughly 0.73 leg/torso ratio.
+    # Its arms and legs are intentionally asymmetric, so symmetry is checked
+    # against the measured geometry rather than forcing mirrored boxes.
+    check('S20 limb sizes follow the green reference proportions',
           leg_h >= 0.70 * torso_h
           and leg_h <= 0.80 * torso_h
           and g['thorax'][2] > g['head'][2]
@@ -566,9 +568,9 @@ try:
           and g['forearm_R'][2] > g['arm_R'][2]
           and g['hand_R'][2] < g['forearm_R'][2]
           and g['foot_R'][2] <= g['crus_R'][2]
-          and abs(g['arm_R'][0] + g['arm_L'][0] - 1497.5) < 0.2
-          and abs(g['thigh_R'][0] + g['thigh_L'][0] - 1497.6) < 0.2
-          and abs(g['foot_R'][1] - g['foot_L'][1]) < 1
+          and abs(g['arm_R'][0] + g['arm_L'][0] - 1537.3) < 0.2
+          and abs(g['thigh_R'][0] + g['thigh_L'][0] - 1524.1) < 0.2
+          and abs(g['foot_R'][1] - g['foot_L'][1]) < 3
           # C:U reads mat:Width()/Height(); GMod rounds PNG textures to a
           # power of two, so EVERY emitted sprite must already be POT-sized.
           and all(int(v[2]) > 0 and int(v[2]) & (int(v[2]) - 1) == 0
@@ -579,39 +581,81 @@ try:
           and all(int(hover[k][0]) <= int(g[k][2]) and int(hover[k][1]) <= int(g[k][3])
                   for k in hover))
 
-    # Pixel-proof that neck is a crop of the ORIGINAL head, not an independently
-    # stretched look-alike.  Rebuild the old full cell, then place both emitted
-    # fills back into it.  Outside the new 3-row joint seam every alpha byte must
-    # be identical to the old silhouette after the same JOINT_ERODE operation.
+    # Screen-space proof against the supplied green 1365x1079 reference.
+    # C:U draws fill first and edge second; doing only a black-source fit is
+    # insufficient because a bold contour can otherwise leave white fingers
+    # outside the intended silhouette.  Check both visible masks per limb.
     sys.path.insert(0, str(ROOT / 'tools'))
     import build_unitmenu_materials as generator
-    with zipfile.ZipFile(ROOT / 'для переделывания интерфейса.zip') as ui_zip:
-        raw = ui_zip.read(generator.PREFIX + 'zcity_delta/unitmenu/limbs/head.png')
-    source = Image.open(io.BytesIO(raw)).convert('RGBA').getchannel('A')
-    bbox = source.point(lambda p: 255 if p > generator.ALPHA_THRESHOLD else 0).getbbox()
-    old = generator.HEAD_SOURCE_LAYOUT
-    old_w, old_h, old_px, old_py, old_iw, old_ih = old[2], old[3], old[4], old[5], old[6], old[7]
-    full = Image.new('L', (old_w, old_h), 0)
-    full.paste(source.crop(bbox).resize((old_iw, old_ih), Image.Resampling.LANCZOS),
-               (old_px, old_py))
-    expected = full.filter(ImageFilter.MinFilter(generator.JOINT_ERODE))
-    split_y = old_py + generator.HUMAN_LAYOUT['head'][7]
-    reunited = Image.new('L', (old_w, old_h), 0)
-    for part, destination_y in (
-            ('head', old_py - generator.HUMAN_LAYOUT['head'][5]),
-            ('neck', split_y - generator.HUMAN_LAYOUT['neck'][5])):
-        alpha = Image.open(limb_dir / (part + '_fill.png')).convert('RGBA').getchannel('A')
-        destination_x = old_px - generator.HUMAN_LAYOUT[part][4]
-        layer = Image.new('L', (old_w, old_h), 0)
-        layer.paste(alpha, (destination_x, destination_y))
-        reunited = ImageChops.lighter(reunited, layer)
-    difference = ImageChops.difference(expected, reunited)
-    diff_px = difference.load()
-    for yy in range(max(0, split_y - 2), min(old_h, split_y + 3)):
-        for xx in range(old_w):
-            diff_px[xx, yy] = 0
-    check('S53 head + neck preserve the original silhouette outside their joint seam',
-          difference.getbbox() is None)
+    reference_black = {
+        'head': (660, 242, 717, 317), 'neck': (659, 318, 718, 335),
+        'thorax': (633, 338, 744, 455), 'abdomen': (630, 457, 744, 584),
+        'arm_R': (559, 348, 631, 398), 'arm_L': (747, 351, 824, 400),
+        'forearm_R': (455, 353, 555, 386), 'forearm_L': (827, 354, 910, 385),
+        'hand_R': (403, 349, 452, 388), 'hand_L': (913, 348, 962, 385),
+        'thigh_R': (635, 587, 687, 690), 'thigh_L': (691, 587, 738, 689),
+        'crus_R': (639, 692, 680, 787), 'crus_L': (697, 692, 738, 789),
+        'foot_R': (634, 790, 675, 836), 'foot_L': (702, 791, 744, 835),
+    }
+    reference_white_hands = {
+        'hand_R': (399, 345, 455, 393), 'hand_L': (912, 343, 967, 390),
+    }
+    rendered = Image.new('RGB', (1365, 1079), (10, 30, 20))
+    black_errors, white_errors = {}, {}
+    for limb in generator.LIMB_LAYERS:
+        cx, cy, w, h = generator.HUMAN_LAYOUT[limb][:4]
+        sw, sh = round(w * generator.LIVE_S), round(h * generator.LIVE_S)
+        left = round(generator.LIVE_CX + (round(cx - w / 2) - generator.CENTRE) * generator.LIVE_S)
+        top = round(generator.LIVE_CY + (round(cy - h / 2) - generator.CENTRE) * generator.LIVE_S)
+        fill_alpha = Image.open(limb_dir / (limb + '_fill.png')).convert('RGBA').getchannel('A').resize(
+            (sw, sh), Image.Resampling.LANCZOS)
+        edge_alpha = Image.open(limb_dir / (limb + '_edge.png')).convert('RGBA').getchannel('A').resize(
+            (sw, sh), Image.Resampling.LANCZOS)
+        rendered.paste(Image.new('RGB', (sw, sh), (0, 0, 0)), (left, top), fill_alpha)
+        rendered.paste(Image.new('RGB', (sw, sh), (255, 255, 255)), (left, top), edge_alpha)
+        threshold = generator.ALPHA_THRESHOLD
+        fill_mask = fill_alpha.point(lambda p: 255 if p > threshold else 0)
+        edge_mask = edge_alpha.point(lambda p: 255 if p > threshold else 0)
+        bbox = ImageChops.subtract(fill_mask, edge_mask).getbbox()
+        assert bbox is not None, limb
+        actual = (left + bbox[0], top + bbox[1], left + bbox[2], top + bbox[3])
+        black_errors[limb] = tuple(a - b for a, b in zip(actual, reference_black[limb]))
+        if limb in reference_white_hands:
+            bbox = edge_alpha.point(lambda p: 255 if p > 180 else 0).getbbox()
+            actual = (left + bbox[0], top + bbox[1], left + bbox[2], top + bbox[3])
+            white_errors[limb] = tuple(a - b for a, b in zip(actual, reference_white_hands[limb]))
+    worst_black = max(abs(v) for errors in black_errors.values() for v in errors)
+    check('S53 all 16 visible black boxes match the green reference (worst %d px)' % worst_black,
+          len(black_errors) == 16 and worst_black <= 2)
+    worst_white = max(abs(v) for errors in white_errors.values() for v in errors)
+    check('S53b hand WHITE exteriors also match, including fingers (worst %d px)' % worst_white,
+          len(white_errors) == 2 and worst_white <= 1)
+
+    def white_runs(y):
+        p = rendered.load()
+        xs = [x for x in range(650, 726)
+              if min(p[x, y]) > 180 and max(p[x, y]) - min(p[x, y]) < 45]
+        runs = []
+        for x in xs:
+            if not runs or x > runs[-1][1] + 1:
+                runs.append([x, x])
+            else:
+                runs[-1][1] = x
+        return runs
+
+    check('S53c head/neck have ONE native seam at y=317, x=663..713',
+          white_runs(317) == [[663, 713]]
+          and all(not any(b - a > 10 for a, b in white_runs(y)) for y in (315, 316, 318)))
+    rp = rendered.load()
+    check('S53d abdomen internal seam is one dominant row at native y=520',
+          rp[687, 520][0] >= 180
+          and max(rp[687, 519][0], rp[687, 521][0]) < 40
+          and max(rp[687, 518][0], rp[687, 522][0]) < 20)
+    reference_fixture = ROOT / 'tools/tests/woundview_reference_1365x1079.png'
+    check('S53e pinned green reference fixture is present and unchanged',
+          reference_fixture.is_file()
+          and hashlib.sha256(reference_fixture.read_bytes()).hexdigest()
+          == 'f48e70ba545853aee9e3763975bf28273e8312b35c2803670b2f0060fd1bd901')
 
     hand_frames = [Image.open(CONN / 'materials/wszc/minigame' / name).convert('RGBA')
                    for name in ('hand_idle.png', 'hand_click.png')]
@@ -1012,12 +1056,13 @@ end)()
     for _ in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do n = n + 1 end
     local g = WSZC_UNITMENU_LIMB_GEOMETRY
     return n == 16 and g.head.cy < g.neck.cy and g.neck.cy < g.thorax.cy
-       and math.abs((g.head.cy + g.head.hoverH / 2) - (g.neck.cy - g.neck.hoverH / 2)) < 0.3
+       and g.head.hoverW == 162 and g.head.hoverH == 200
+       and g.neck.hoverW == 192 and g.neck.hoverH == 56
        and g.thorax.cy < g.thigh_R.cy
        and g.thigh_R.cy < g.crus_R.cy and g.crus_R.cy < g.foot_R.cy
        and g.thorax.w > g.head.w and g.thigh_R.w < g.thorax.w
-       and math.abs(g.arm_R.cx + g.arm_L.cx - 1497.5) < 0.11
-       and g.hand_R.cx == 58.1 and g.hand_L.cx == 1405.8
+       and math.abs(g.arm_R.cx + g.arm_L.cx - 1537.3) < 0.11
+       and g.hand_R.cx == 135.1 and g.hand_L.cx == 1367.3
 end)()
 ''')
 

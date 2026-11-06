@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 """Pixel-fit the WoundView doll against the owner's native reference screenshot.
 
-The owner's standing requirement is "бля ну одинаково делай по размерам как на
-том скриншоте" while keeping OUR styling (pure black anatomy + a thin outline
-that follows each limb's own shape).  This tool makes that measurable instead
-of eyeballed:
+The supplied green WoundView screenshot is the visual authority.  This tool
+makes its placement and proportions measurable instead of eyeballed:
 
-  1. build a target mask from Screenshot_1.png.  The doll is true black
-     (RGB 0..8) while the woven room background is RGB 30..80, so
-     ``max(RGB) < 20`` isolates the doll without touching it;
+  1. build a target mask from tools/tests/woundview_reference_1365x1079.png.
+     The doll is true black (RGB 0..5), so ``max(RGB) < 20`` plus connected
+     components rejects the green room and interface text;
   2. render the VERBATIM archive silhouettes into SCREEN space using the
      exact same linear placement C:U uses (S=0.4155, centre=(682.5,558.2),
-     mat:Width()/Height() are the POT sprite sizes);
+     mat:Width()/Height() are the POT sprite sizes), then SUBTRACT the white
+     edge because C:U draws fill first and outline second;
   3. report intersection-over-union, and optionally run a bounded coordinate
      descent over the REFERENCE_BOXES numbers (tx, ty, w, h).  Every limb is
      independent (native arms are asymmetric), widths/heights stay within
      +/-35% of the checked-in values, and NOT ONE silhouette pixel is redrawn.
-     The translucent head is excluded from the black-mask metric.
+     Head and neck are checked separately because their one-row joint needs
+     explicit contour assertions rather than a connected black-component fit.
 
 Only the four numbers per limb ever change: position and proportion, never
 shape, colour, outline or T-pose.
 
 Usage:
-    python3 tools/fit_unitmenu_geometry.py --reference /path/Screenshot_1.png
+    python3 tools/fit_unitmenu_geometry.py --reference /path/woundview_reference_1365x1079.png
     python3 tools/fit_unitmenu_geometry.py --reference ... --optimize
     python3 tools/fit_unitmenu_geometry.py --reference ... --overlay /tmp/overlay.png
 
@@ -51,13 +51,13 @@ S, CX, CY = G.LIVE_S, G.LIVE_CX, G.LIVE_CY
 # threshold-fitted.  Neck is a crop of that same head source, not a new shape.
 ORDER = tuple(k for k in G.LIMB_LAYERS if k not in ('head', 'neck'))
 SEEDS = {
-    'thorax': (682, 400), 'abdomen': (682, 500),
-    'arm_R': (580, 350), 'arm_L': (780, 350),
-    'forearm_R': (480, 350), 'forearm_L': (880, 360),
-    'hand_R': (390, 350), 'hand_L': (950, 350),
-    'thigh_R': (650, 650), 'thigh_L': (710, 650),
-    'crus_R': (650, 750), 'crus_L': (715, 750),
-    'foot_R': (645, 845), 'foot_L': (720, 845),
+    'thorax': (688, 397), 'abdomen': (687, 500),
+    'arm_R': (595, 376), 'arm_L': (786, 378),
+    'forearm_R': (505, 369), 'forearm_L': (870, 370),
+    'hand_R': (419, 368), 'hand_L': (946, 367),
+    'thigh_R': (661, 638), 'thigh_L': (714, 639),
+    'crus_R': (659, 739), 'crus_L': (718, 740),
+    'foot_R': (654, 812), 'foot_L': (724, 813),
 }
 
 
@@ -106,13 +106,20 @@ def archive_alphas():
         ['git', 'show', 'origin/main:' + G.ARCHIVE_REL], cwd=ROOT, env=env)
     z = zipfile.ZipFile(io.BytesIO(raw))
     out = {}
+    head_alpha = None
     for limb, layer in G.LIMB_LAYERS.items():
         src = Image.open(io.BytesIO(
             z.read(G.PREFIX + 'zcity_delta/unitmenu/limbs/' + layer + '.png')
         )).convert('RGBA')
         a = src.getchannel('A')
         bbox = a.point(lambda p: 255 if p > G.ALPHA_THRESHOLD else 0).getbbox()
-        out[limb] = a.crop(bbox)
+        if limb == 'head':
+            head_alpha = a.crop(bbox)
+            split = round(head_alpha.height * G.HEAD_SPLIT_FRAC)
+            out[limb] = head_alpha.crop((0, 0, head_alpha.width, split))
+        elif limb != 'neck':
+            out[limb] = a.crop(bbox)
+    out['neck'] = head_alpha.crop((0, split, head_alpha.width, head_alpha.height))
     return out
 
 
@@ -139,31 +146,37 @@ def render(boxes, alphas, include_head=True):
     canvas = Image.new('L', (W, H), 0)
     white = {}
     for limb, authored in lay.items():
-        if limb == 'neck':
-            continue  # included in the unsplit head silhouette below
-        if limb == 'head':
-            if not include_head:
-                continue
-            # The metric predates the interactive joint.  Render the original
-            # 67x102 outer silhouette; head+neck have exactly the same union.
-            cx, cy, w, h, px, py, iw, ih = G.HEAD_SOURCE_LAYOUT
-        else:
-            cx, cy, w, h, px, py, iw, ih = authored
+        if limb in ('head', 'neck') and not include_head:
+            continue
+        cx, cy, w, h, px, py, iw, ih = authored
         scaled = alphas[limb].resize((iw, ih), Image.Resampling.LANCZOS)
-        if limb.startswith('foot_'):
-            scaled = G.SquareToe(scaled)   # Screenshot_8 flat sole, unchanged
         cell = Image.new('L', (w, h), 0)
         cell.paste(scaled, (px, py))
         hard = cell.point(lambda p: 255 if p > G.ALPHA_THRESHOLD else 0)
-        hard = hard.filter(ImageFilter.MinFilter(G.JOINT_ERODE))
+        soft_inner = cell.filter(ImageFilter.MinFilter(G.JOINT_ERODE))
+        edge_width = G.EDGE_WIDTH_OVERRIDES.get(limb, G.EDGE_WIDTH)
+        contour = ImageChops.subtract(
+            hard, hard.filter(ImageFilter.MinFilter(edge_width)))
+        if limb == 'abdomen':
+            tx, ty, tw, th = boxes['abdomen']
+            seam_y = py + round((G.ABDOMEN_SEAM_Y - (ty - th / 2)) / S)
+            seam = Image.new('L', (w, h), 0)
+            seam_start = seam_y - G.ABDOMEN_SEAM_WIDTH // 2
+            for yy in range(seam_start, seam_start + G.ABDOMEN_SEAM_WIDTH):
+                if 0 <= yy < h:
+                    seam.paste(hard.crop((0, yy, w, yy + 1)), (0, yy))
+            contour = ImageChops.lighter(contour, seam)
+        # C:U draws the white edge AFTER the fill.  The fitting metric must
+        # subtract that contour instead of scoring the old fill-only mask.
+        visible_black = ImageChops.subtract(soft_inner, contour)
         sw, sh = max(1, round(w * S)), max(1, round(h * S))
-        hard = hard.resize((sw, sh), Image.Resampling.LANCZOS).point(
-            lambda p: 255 if p > 128 else 0)
+        visible_black = visible_black.resize((sw, sh), Image.Resampling.LANCZOS).point(
+            lambda p: 255 if p > G.ALPHA_THRESHOLD else 0)
         left = round(CX + (round(cx - w / 2) - G.CENTRE) * S)
         top = round(CY + (round(cy - h / 2) - G.CENTRE) * S)
         if (sw, sh) not in white:
             white[(sw, sh)] = Image.new('L', (sw, sh), 255)
-        canvas.paste(white[(sw, sh)], (left, top), hard)
+        canvas.paste(white[(sw, sh)], (left, top), visible_black)
     return canvas.crop(ROI)
 
 
@@ -247,7 +260,7 @@ def overlay(img, target, path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--reference', default='/tmp/arena-coding-uploads/Screenshot_1.png')
+    ap.add_argument('--reference', default=str(ROOT / 'tools/tests/woundview_reference_1365x1079.png'))
     ap.add_argument('--optimize', action='store_true')
     ap.add_argument('--overlay')
     args = ap.parse_args()
