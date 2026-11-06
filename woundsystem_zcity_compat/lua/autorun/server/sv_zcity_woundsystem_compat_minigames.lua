@@ -137,6 +137,43 @@ local function ClosureValue(data, name)
     return Upvalue(data.onClose, name)
 end
 
+local function ClosureUpvalueIndex(fn, wanted)
+    if type(fn) ~= "function" or not debug or not debug.getupvalue then return nil end
+    local i = 1
+    while true do
+        local ok, name = pcall(debug.getupvalue, fn, i)
+        if not ok or not name then break end
+        if name == wanted then return i end
+        i = i + 1
+    end
+    return nil
+end
+
+--- Native WB.StartMinigame converts every C:U durability point back to a fixed
+--- fraction of the SWEP.  That is NOT ZCity's bandage economy: native
+--- weapon_bandage_sh spends exactly the severity it removes from org.wounds.
+--- Keep the physical SWEP/index/capacity and native appliedLive upvalue so the
+--- namespaced session can use that rule while WB's original onClose/AfterUse
+--- still runs unchanged.
+local function NativeBandageContext(data, maxDur)
+    if not (WSZC.OrganismAuthority and WSZC.OrganismAuthority()) then return nil end
+    if type(WSZC.BandageSeverityPerFullEffect) ~= "function"
+        or type(WSZC.BandageSeverityOnLimb) ~= "function" then return nil end
+    if not debug or type(debug.setupvalue) ~= "function" then return nil end
+    local swep = ClosureValue(data, "swep")
+    local idx = tonumber(ClosureValue(data, "idx")) or 1
+    local appliedLiveIdx = ClosureUpvalueIndex(data.onProgress, "appliedLive")
+    if not IsValid(swep) or type(swep.modeValues) ~= "table" or not appliedLiveIdx then return nil end
+    local def = swep.modeValuesdef and swep.modeValuesdef[idx]
+    if type(def) == "table" then def = def[1] end
+    def = tonumber(def)
+    if not def or def <= 0 then return nil end -- unsafe custom SWEP: keep native onProgress
+    return {
+        swep = swep, idx = idx, def = def, maxDur = maxDur,
+        appliedLiveIdx = appliedLiveIdx,
+    }
+end
+
 -- The project owner explicitly asked for these ZCity items to stay instant.
 local INSTANT_SWEP_CLASSES = {
     weapon_naloxone = true,
@@ -550,6 +587,7 @@ local function StartMinigame(ply, data)
         initialBleed = initialBleed,
         lastBleed = initialBleed,
         lastBleedProgress = 0,
+        nativeBandage = kind == "bandage" and live and NativeBandageContext(data, maxDur) or nil,
         onProgress = data.onProgress,
         onClose = data.onClose,
         data = data,
@@ -661,6 +699,87 @@ function WSZC.InstallMinigameAPI(H)
     return true
 end
 
+--- Apply one namespaced bandage input with ZCity's native 1 severity = 1
+--- modeValues cost.  Returns handled, physicalItemEmpty.  The generic C:U
+--- onProgress path remains the fallback for non-authority/custom sessions.
+local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCost, finalAftercare)
+    local native = session.nativeBandage
+    if type(native) ~= "table" then return false, false end
+    local swep, idx = native.swep, native.idx
+    if not IsValid(swep) then
+        StopMinigame(ply, "target_gone")
+        return true, true
+    end
+    local H = WSZC.H
+    if not (H and type(H.ApplyItemToBody) == "function") then return false, false end
+    if type(swep.modeValues) ~= "table" then return false, false end
+
+    local remaining = math.max(tonumber(swep.modeValues[idx]) or 0, 0)
+    if remaining <= 0.0005 then return true, true end
+
+    local severityPerFull = WSZC.BandageSeverityPerFullEffect
+        and WSZC.BandageSeverityPerFullEffect(profile) or 0
+    if severityPerFull <= 0.000001 then return false, false end
+    local effectDivisor = math.max(tonumber(profile.effectDivisor) or 12, 1)
+    local baseEffectFraction = (baseCost / perWrap) / effectDivisor
+    local beforeSeverity = WSZC.BandageSeverityOnLimb
+        and WSZC.BandageSeverityOnLimb(session.target, session.limbId)
+        or (CurrentBandageBleeding(session) / 2)
+
+    -- Do not heal more than either the real wound or the physical item can
+    -- pay for.  Inverting the SAME treatment formula keeps strength 3 and
+    -- one-turn lodged-shrapnel treatment, but makes its cost exactly native.
+    local desired = math.min(
+        math.max(severityPerFull * baseEffectFraction, 0),
+        beforeSeverity, remaining
+    )
+    if desired <= 0.000001 and not finalAftercare then return true, false end
+    local applyAmount = desired > 0.000001
+        and ((desired / severityPerFull) * perWrap * effectDivisor)
+        or baseCost -- zero-bleed aftercare still needs its final dressing input
+
+    local callOk, ok = pcall(H.ApplyItemToBody,
+        session.target, session.itemId, session.limbId, applyAmount)
+    if not callOk then
+        Warn("native ZCity bandage apply failed: " .. tostring(ok))
+        return true, false
+    end
+    if not ok then return true, false end
+
+    local afterSeverity = WSZC.BandageSeverityOnLimb
+        and WSZC.BandageSeverityOnLimb(session.target, session.limbId)
+        or (CurrentBandageBleeding(session) / 2)
+    local treated = math.Clamp(beforeSeverity - afterSeverity, 0, remaining)
+    if desired > 0 then treated = math.min(treated, desired + 0.000001) end
+
+    if treated > 0.000001 then
+        local left = math.max(remaining - treated, 0)
+        swep.modeValues[idx] = left > 0.0005 and left or 0
+        -- Mirror the physical remainder into the virtual slot as well.  This
+        -- conversion makes deferredUsed/startAmount the same physical fraction
+        -- for a 40-unit bandage, a 150-unit big bandage and medkit mode 1.
+        local virtualCost = treated * (native.maxDur / native.def)
+        session.deferredUsed = math.min(session.startAmount,
+            (session.deferredUsed or 0) + virtualCost)
+        if swep.SetNetVar then pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues) end
+    end
+
+    if treated > 0.000001 or finalAftercare then
+        -- WB's original onClose only needs appliedLive > 0.01 for a live
+        -- bandage before it calls native AfterUse.  Share the upvalue with
+        -- onProgress; never call that onProgress and consume a second time.
+        local i = native.appliedLiveIdx
+        if i and debug and debug.setupvalue then
+            pcall(debug.setupvalue, session.onProgress, i,
+                math.max(session.deferredUsed or 0, 0.02))
+        end
+    end
+
+    Debug("native bandage cost %s: severity %.4f, modeValues %.4f -> %.4f",
+        tostring(session.itemId), treated, remaining, tonumber(swep.modeValues[idx]) or 0)
+    return true, (tonumber(swep.modeValues[idx]) or 0) <= 0.0005
+end
+
 local function ProcessBandageInput(_, ply)
     local session = ValidSession(ply)
     if not session or session.kind ~= "bandage" then return end
@@ -723,25 +842,37 @@ local function ProcessBandageInput(_, ply)
         0.0001
     )
     local durCost = degrees / 360 * perWrap
-    durCost = math.min(durCost, math.max(session.startAmount - session.deferredUsed, 0))
     if durCost <= 0 then
         SendAck(ply, session, ACK_BANDAGE, inputSeq)
         return
     end
 
-    session.deferredUsed = math.min(session.startAmount, session.deferredUsed + durCost)
-
-    if session.live and type(session.onProgress) == "function" then
-        local ok, err = pcall(session.onProgress, ply, session, durCost)
-        if not ok then Warn("bandage onProgress failed: " .. tostring(err)) end
+    local nativeHandled, physicalEmpty = false, false
+    if session.live and session.nativeBandage then
+        nativeHandled, physicalEmpty = ProcessNativeBandageInput(
+            ply, session, profile, perWrap, durCost, finalAftercare)
         if WSZC.MinigameSessions[ply] ~= session then return end
+    end
+
+    if not nativeHandled then
+        durCost = math.min(durCost, math.max(session.startAmount - session.deferredUsed, 0))
+        if durCost <= 0 then
+            SendAck(ply, session, ACK_BANDAGE, inputSeq)
+            return
+        end
+        session.deferredUsed = math.min(session.startAmount, session.deferredUsed + durCost)
+        if session.live and type(session.onProgress) == "function" then
+            local ok, err = pcall(session.onProgress, ply, session, durCost)
+            if not ok then Warn("bandage onProgress failed: " .. tostring(err)) end
+            if WSZC.MinigameSessions[ply] ~= session then return end
+        end
     end
 
     SendBandageState(ply, session)
     SendSlot(ply, session)
     SendAck(ply, session, ACK_BANDAGE, inputSeq)
 
-    if session.startAmount - session.deferredUsed <= 0.001 then
+    if physicalEmpty or session.startAmount - session.deferredUsed <= 0.001 then
         StopMinigame(ply, "empty")
     end
 end

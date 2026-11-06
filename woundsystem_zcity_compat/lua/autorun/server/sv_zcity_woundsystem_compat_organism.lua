@@ -769,6 +769,23 @@ end
 --- them.  The returned before/after values still include an untouched artery,
 --- so the C:U shadow and the generic medical delta cannot hide or duplicate it.
 ---
+--- Severity treated by effectFraction = 1 for this bandage profile.  The
+--- external-minigame cost bridge uses the same function in reverse, so its
+--- physical ZCity consumption can never drift from the real treatment math.
+function WSZC.BandageSeverityPerFullEffect(profile)
+    local effects = type(profile) == "table" and type(profile.effects) == "table"
+        and profile.effects or {}
+    local fullBudget = math.max(tonumber(effects.bandageSlowAmount) or 0, 0)
+        + math.max(-(tonumber(effects.bleed) or 0), 0)
+    return fullBudget * math.max(ConVarFloat(cvBandageStrength, 3), 0.01)
+        / NORMAL_WOUND_BLEED
+end
+
+function WSZC.BandageSeverityOnLimb(ply, limbId)
+    return math.max(tonumber(WSZC.GetBandageBleeding(ply, limbId)) or 0, 0)
+        / NORMAL_WOUND_BLEED
+end
+
 --- Returns treatedAmount, beforeBleed, afterBleed in LimbBleedMap units.
 function WSZC.ApplyBandageToOrganism(ctx, profile, effectFraction)
     local ply = ctx and ctx.ply
@@ -781,11 +798,8 @@ function WSZC.ApplyBandageToOrganism(ctx, profile, effectFraction)
     local normalBefore = WSZC.GetBandageBleeding(ply, limbId)
     local arterial = WSZC.GetArterialBleeding(ply, limbId)
     local before = normalBefore + arterial
-    local effects = type(profile.effects) == "table" and profile.effects or {}
-    local fullBudget = math.max(tonumber(effects.bandageSlowAmount) or 0, 0)
-        + math.max(-(tonumber(effects.bleed) or 0), 0)
-    local budget = fullBudget * math.max(tonumber(effectFraction) or 0, 0)
-        * math.max(ConVarFloat(cvBandageStrength, 3), 0.01)
+    local budget = WSZC.BandageSeverityPerFullEffect(profile)
+        * math.max(tonumber(effectFraction) or 0, 0) * NORMAL_WOUND_BLEED
     if budget <= 0 then return 0, before, before end
 
     local candidates = {}

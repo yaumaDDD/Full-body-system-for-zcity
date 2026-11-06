@@ -977,27 +977,30 @@ local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cur
     "1 = hide the OS arrow only while the drawn minigame hand is active")
 local cvHideHand = CreateClientConVar("zc_woundsystem_compat_hide_minigame_hand", "0", true, false,
     "1 = hide the hand and use the standard OS arrow instead")
-local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "0", true, false,
-    "1 = bypass C:U hand inertia/pain shake and pin the grip to the real cursor")
+local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "1", true, false,
+    "1 = pin the gameplay hand and its visible grip to the real cursor; 0 = C:U inertia + developer offsets")
 -- Archived 0/1 values from the former no-hand build survive a default change.
 -- Migrate them once; afterwards every convar above remains user-configurable.
 local cvHandModeRevision = CreateClientConVar("zc_woundsystem_compat_hand_mode_revision", "0", true, false,
     "Internal one-time migration revision for hand and minigame layout defaults")
 function WSZC.MigrateHumanHandDefaults()
-    -- Revision 5 adds the moderate 0.85 zoom-out while retaining the shared
-    -- 0.55 hand scale.  Keep handanim_scale at 1: 0.45 * 0.55 must NOT return.
-    if cvHandModeRevision:GetFloat() >= 5 then return false end
+    -- Revision 6 makes the hand a real cursor replacement.  Revision 5 only
+    -- corrected the rotated sprite pivot: WSZC still added C:U's 100/400
+    -- developer offset and used spring inertia, so the palm stayed far below
+    -- the mouse in the live bandage screenshot.  Migrate archived revision 5
+    -- once; hand_pin_cursor 0 remains available for the legacy C:U behaviour.
+    if cvHandModeRevision:GetFloat() >= 6 then return false end
     local defaults = {
         { cvHandScale, 0.55 }, { cvHandanim, 1 }, { cvHandanimScale, 1 },
         { cvHandPivotX, 0.4 }, { cvHandPivotY, 0.1 },
-        { cvHideCursor, 1 }, { cvHideHand, 0 }, { cvHandPinCursor, 0 },
+        { cvHideCursor, 1 }, { cvHideHand, 0 }, { cvHandPinCursor, 1 },
         { cvZoom, 0.85 }, { cvNativeZoom, 0.85 },
     }
     for _, entry in ipairs(defaults) do
         local cv, value = entry[1], entry[2]
         if cv.SetFloat then pcall(cv.SetFloat, cv, value) end
     end
-    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 5) end
+    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 6) end
     return true
 end
 WSZC.MigrateHumanHandDefaults()
@@ -1112,6 +1115,66 @@ function WSZC.HandRectAtPivot(cx, cy, w, h, rot, px, py)
     local angle = math.rad(tonumber(rot) or 0)
     local c, s = math.cos(angle), math.sin(angle)
     return cx + lx * c - ly * s, cy + lx * s + ly * c, w, h
+end
+
+--- Shared by native C:U, WSZC bandage and WSZC syringe.  Pinning only the
+--- sprite is not enough: grab/orbit/injection hitboxes read handScreenX/Y.
+--- Update that gameplay state and clear the spring accumulator/velocity in the
+--- same call, then the visible pivot can use the very same real cursor point.
+function WSZC.MinigameHandPinned()
+    return cvHandPinCursor and cvHandPinCursor:GetBool() or false
+end
+
+function WSZC.PinMinigameHandToCursor(mg)
+    if not WSZC.MinigameHandPinned() or type(mg) ~= "table" then return nil, nil end
+    if type(gui) ~= "table" or type(gui.MousePos) ~= "function" then return nil, nil end
+    local ok, mx, my = pcall(gui.MousePos)
+    if not ok or type(mx) ~= "number" or type(my) ~= "number" then return nil, nil end
+    -- (0,0) is a valid screen corner, not a "mouse unavailable" sentinel.
+    mg.handScreenX, mg.handScreenY = mx, my
+    mg.handScreenVelX, mg.handScreenVelY = 0, 0
+    mg._hp_acc = 0
+    return mx, my
+end
+
+-- Native C:U keeps HandPhysics in a PRIVATE upvalue of each Think hook.  Wrap
+-- that exact Step function: pinning later in Paint alone would still let the
+-- spring/collision position drive extraction/dislocation gameplay for a frame.
+-- The once-a-second installer also covers C:U autorefresh replacing its hooks.
+local NATIVE_HAND_PHYSICS_HOOKS = {
+    "WoundSystem_BandageInput", "WoundSystem_SyringeInput",
+    "WoundSystem_ShrapnelInput", "WoundSystem_DislocationInput",
+    "WoundSystem_AEDInput", "WoundSystem_SelfHarmInput",
+}
+function WSZC.InstallNativeHandPhysicsPin()
+    if type(hook) ~= "table" or type(hook.GetTable) ~= "function" then return false end
+    if not debug or type(debug.getupvalue) ~= "function" then return false end
+    local ok, hooks = pcall(hook.GetTable)
+    if not ok or type(hooks) ~= "table" or type(hooks.Think) ~= "table" then return false end
+    local installed = false
+    for _, hookName in ipairs(NATIVE_HAND_PHYSICS_HOOKS) do
+        local fn = hooks.Think[hookName]
+        if type(fn) == "function" then
+            for i = 1, 80 do
+                local okUp, name, hp = pcall(debug.getupvalue, fn, i)
+                if not okUp or not name then break end
+                if name == "HandPhysics" and type(hp) == "table"
+                    and type(hp.Step) == "function" and not hp._WSZCCursorPinned then
+                    local original = hp.Step
+                    hp.Step = function(mg, dt, opts)
+                        if WSZC.MinigameHandPinned() then
+                            local mx = WSZC.PinMinigameHandToCursor(mg)
+                            if mx ~= nil then return end
+                        end
+                        return original(mg, dt, opts)
+                    end
+                    hp._WSZCCursorPinned = true
+                    installed = true
+                end
+            end
+        end
+    end
+    return installed
 end
 
 function WSZC.UnitmenuHandAlpha(fallback)
@@ -1439,18 +1502,17 @@ function WSZC.InstallNativeHandOverride()
         if type(gui) ~= "table" or type(gui.MousePos) ~= "function" then return nil, nil end
         local ok, mx, my = pcall(gui.MousePos)
         if not ok or type(mx) ~= "number" or type(my) ~= "number" then return nil, nil end
-        if mx <= 0 and my <= 0 then return nil, nil end
         return mx, my
     end
 
     function WSZC.PinNativeHandToCursor()
-        if not cvHandPinCursor:GetBool() then return nil, nil end
+        if not WSZC.MinigameHandPinned() then return nil, nil end
         local mx, my = WSZC.NativeHandCursorPos()
         if not mx then return nil, nil end
         for _, name in ipairs(NATIVE_HAND_MG) do
             local mg = _G[name]
             if type(mg) == "table" and mg.active == true then
-                mg.handScreenX, mg.handScreenY = mx, my
+                WSZC.PinMinigameHandToCursor(mg)
             end
         end
         return mx, my
@@ -1458,7 +1520,7 @@ function WSZC.InstallNativeHandOverride()
 
     --- handScreenX/Y is C:U's grip point, not its rectangle centre.  Preserve
     --- that point while applying the one shared scale and exact native rotation.
-    --- Optional pin mode only changes the target to the physical cursor.
+    --- Default pin mode changes both gameplay state and target to the cursor.
     function WSZC.HandRectForCursor(cx, cy, w, h, rot)
         local mx, my = WSZC.PinNativeHandToCursor()
         if mx then cx, cy = mx, my end
@@ -1666,6 +1728,8 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     elseif dollPatched then
         WSZC.RestoreUnitmenuDoll()
     end
+    -- Install the gameplay pin independently of the selected hand artwork.
+    WSZC.InstallNativeHandPhysicsPin()
     -- Install in both modes: substitute the human hand by default, or suppress
     -- every handgrasp* sprite when the player explicitly selects arrow-only.
     if cvHandanim:GetBool() or cvHideHand:GetBool() then

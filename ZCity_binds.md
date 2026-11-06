@@ -85,12 +85,23 @@
 Визуальный размер ×0.55; pivot и rotation нативные, центр вычисляется из повёрнутого pivot, логический hitbox сохраняется.
 Системный курсор скрывается при каждой отрисовке руки и после cursor watchdog:
 `zc_woundsystem_compat_hide_minigame_cursor` (1), откат — 0.
-Человеческая рука использует штатные HandPhysics и поворот C:U:
-`zc_woundsystem_compat_handanim` (1), `..._hand_pin_cursor` (0), точка захвата
+Человеческая рука по умолчанию реально привязана к системному курсору:
+`zc_woundsystem_compat_handanim` (1), `..._hand_pin_cursor` (1). Каждый Think
+`gui.MousePos()`, `handScreenX/Y`, orbit/grab и видимый pivot совпадают; offset
+`100/400`, spring и collision clamp отключены. Значение `0` возвращает HandPhysics
+и developer offsets C:U. Точка захвата
 `..._hand_pivot_x 0.4` / `..._hand_pivot_y 0.1`, системный курсор
 скрыт только во время игры (`..._hide_minigame_cursor 1`). Спрайты:
 `wszc/minigame/hand_idle.png` / `hand_click.png`; arrow-only откат:
-`..._hide_minigame_hand 1`. Кукла расставлена по приложенному
+`..._hide_minigame_hand 1`.
+
+Расход ZCity-бинта соответствует оригинальному `SWEP:Bandage`: физический
+`swep.modeValues[idx]` уменьшается на фактически удалённую severity. Закрытие
+severity 4 стоит 4 заряда и у малого (40), и у большого (150) бинта, а не
+фиксированные `100/12 × def/100`. Остаток предмета ограничивает лечение; пустые
+круги, artery-only и завершающий aftercare при нулевой severity бесплатны.
+
+Кукла расставлена по приложенному
 эталонному фото в **человеческие пропорции** (`HUMAN_LAYOUT`): маленькая голова,
 узкий короткий торс, тонкие руки T-pose, длинные узкие ноги и компактные целые
 стопы — вертикальные швы всех 15 лимбов сняты с нативной куклы `Screenshot_2-10.png`. **Стандартный
