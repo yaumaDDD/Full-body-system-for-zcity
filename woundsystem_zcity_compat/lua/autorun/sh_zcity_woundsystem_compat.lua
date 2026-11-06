@@ -44,6 +44,35 @@ function WSZC.OrganismAuthority()
     return GetGlobalBool("WSZC_OrganismAuthority", true) == true
 end
 
+---------------------------------------------------------------------------
+-- Amputation is NOT an arterial-bleeding alias
+---------------------------------------------------------------------------
+-- ZCity keeps org.<limb>amputated and org.arterialwounds as separate pieces
+-- of state.  C:U's WoundView hides dismembered sprites and otherwise has only
+-- the bleed icon, so the connector projects the amputation onto the remaining
+-- proximal stump as its own status.  Statuses.GetActive() is consumed by the
+-- native icon loop BEFORE its bleed icon: order -10000 therefore gives the
+-- missing limb priority without changing, hiding or deleting the real artery.
+WSZC.AMPUTATION_STATUS_ID = "WSZC_AMPUTATION"
+
+function WSZC.InstallAmputationStatus()
+    local statuses = WoundSystem and WoundSystem.Statuses
+    if not (type(statuses) == "table" and type(statuses.Register) == "function") then
+        return false
+    end
+    local id = WSZC.AMPUTATION_STATUS_ID
+    if type(statuses.Stored) == "table" and statuses.Stored[id] then return true end
+    statuses.Register(id, {
+        title = "Amputation",
+        desc = "The limb is severed. Arterial bleeding is a separate wound; apply a tourniquet to the stump.",
+        icon = "casunknown-images/moodles/amputation.png",
+        type = "bool",
+        order = -10000,
+        color = { 255, 116, 116 },
+    })
+    return true
+end
+
 -- Short-lived context flag: `Org Think "Main"`, the ZCity damage hook and the
 -- ragdoll collision hook must see WB.IsBridged() == false so vanilla ZCity
 -- runs.  Medical SWEPs and minigames run OUTSIDE those wrappers and keep

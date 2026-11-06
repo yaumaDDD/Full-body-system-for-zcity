@@ -33,11 +33,13 @@ local NET_STRINGS = {
     "WSZC_MinigameOpen",
     "WSZC_MinigameSlot",
     "WSZC_MinigameClose",
+    "WSZC_MinigameForceClose",
     "WSZC_MinigameAck",
     "WSZC_BandageStart",
     "WSZC_BandageOpen",
     "WSZC_BandageClose",
     "WSZC_BandageInput",
+    "WSZC_BandageState",
     "WSZC_SyringeStart",
     "WSZC_SyringeOpen",
     "WSZC_SyringeState",
@@ -240,6 +242,62 @@ local function SendAck(ply, session, gameId, ackSeq)
     end)
 end
 
+local function CurrentBandageBleeding(session)
+    if WSZC.GetBandageBleeding then
+        local ok, value = pcall(WSZC.GetBandageBleeding, session.target, session.limbId)
+        if ok then return math.max(tonumber(value) or 0, 0) end
+    end
+    local h = WSZC.H
+    local state = h and h.GetLimbState and h.GetLimbState(session.target, session.limbId)
+    return type(state) == "table" and math.max(tonumber(state.bleed) or 0, 0) or 0
+end
+
+local function CurrentArterialBleeding(session)
+    if not WSZC.GetArterialBleeding then return 0 end
+    local ok, value = pcall(WSZC.GetArterialBleeding, session.target, session.limbId)
+    return ok and math.max(tonumber(value) or 0, 0) or 0
+end
+
+local function SendBandageState(ply, session)
+    if session.kind ~= "bandage" then return end
+    if session.mode == "unwrap" then
+        local required = math.max(tonumber(session.unwrapRequired) or 360, 1)
+        local unwrapped = math.Clamp(tonumber(session.unwrapProgress) or 0, 0, required)
+        local progress = unwrapped / required
+        session.lastBleed = required - unwrapped
+        session.lastArterialBleed = 0
+        session.lastBleedProgress = progress
+        Send("WSZC_BandageState", ply, function()
+            net.WriteUInt(session.id, 24)
+            net.WriteFloat(required)
+            net.WriteFloat(required - unwrapped)
+            net.WriteFloat(progress)
+            net.WriteFloat(0)
+        end)
+        return
+    end
+    local initial = math.max(tonumber(session.initialBleed) or 0, 0)
+    local current = CurrentBandageBleeding(session)
+    local arterial = CurrentArterialBleeding(session)
+    local progress
+    if initial > 0.0001 then
+        progress = math.Clamp((initial - current) / initial, 0, 1)
+    else
+        progress = current <= 0.0001 and 1 or 0
+    end
+    session.lastBleed = current
+    session.lastArterialBleed = arterial
+    session.lastBleedProgress = progress
+
+    Send("WSZC_BandageState", ply, function()
+        net.WriteUInt(session.id, 24)
+        net.WriteFloat(initial)
+        net.WriteFloat(current)
+        net.WriteFloat(progress)
+        net.WriteFloat(arterial)
+    end)
+end
+
 local function SendSyringeState(ply, session, ackSeq)
     local condition = math.Clamp(
         math.max(session.startAmount - session.deferredUsed, 0) / math.max(session.maxDur, 0.0001),
@@ -273,17 +331,68 @@ local function CUSessionActive(ply)
     return false
 end
 
-local function StopCUSessions(ply)
+local function StopCUSessions(ply, reason)
     local sessions = WSZC.CUSessions
     if type(sessions) ~= "table" then return end
+    reason = reason or "disabled"
 
     if sessions.Bandage and sessions.Bandage[ply] and WSZC.CUCloseBandageSession then
-        pcall(WSZC.CUCloseBandageSession, ply, "disabled")
+        pcall(WSZC.CUCloseBandageSession, ply, reason)
     end
     if sessions.Syringe and sessions.Syringe[ply] and WSZC.CUCloseSyringeSession then
-        pcall(WSZC.CUCloseSyringeSession, ply, "disabled")
+        pcall(WSZC.CUCloseSyringeSession, ply, reason)
+    end
+    if sessions.Shrapnel and sessions.Shrapnel[ply] then
+        if WSZC.CUCloseShrapnelSession then
+            pcall(WSZC.CUCloseShrapnelSession, ply, reason)
+        else
+            sessions.Shrapnel[ply] = nil
+        end
+    end
+    if sessions.Dislocation and sessions.Dislocation[ply] then
+        if WSZC.CUCloseDislocationSession then
+            pcall(WSZC.CUCloseDislocationSession, ply, reason)
+        else
+            sessions.Dislocation[ply] = nil
+        end
+    end
+    if sessions.Aed and sessions.Aed[ply] then
+        if WSZC.CUCloseAedSession then
+            pcall(WSZC.CUCloseAedSession, ply, reason)
+        else
+            sessions.Aed[ply] = nil
+        end
     end
 end
+
+local function HasNativeSession(ply)
+    local sessions = WSZC.CUSessions
+    if type(sessions) ~= "table" then return false end
+    for _, kind in ipairs({ "Bandage", "Syringe", "Shrapnel", "Dislocation", "Aed" }) do
+        if type(sessions[kind]) == "table" and sessions[kind][ply] then return true end
+    end
+    return false
+end
+
+--- The operator, not an unconscious PATIENT being treated by somebody else,
+--- must be conscious and able to control the minigame.  Check every ZCity
+--- representation because otrub/fake/NWBool arrive in a different order on
+--- different builds.
+local function PlayerIncapacitated(ply)
+    if not IsValid(ply) or not ply:Alive() then return true end
+    if ply.GetNWBool and ply:GetNWBool("WoundSystemUnconscious", false) then return true end
+    -- A FakeRagdoll / org.fake is posture, NOT loss of operator capacity.
+    -- The patient may be ragdolled too; only the medic's own death/otrub or
+    -- genuinely low consciousness may force-close this session.
+    local org = ply.organism
+    if type(org) == "table" then
+        if org.otrub == true or org.needotrub == true then return true end
+        local consciousness = tonumber(org.consciousness)
+        if consciousness and consciousness < 0.4 then return true end
+    end
+    return false
+end
+WSZC.PlayerMinigameIncapacitated = PlayerIncapacitated
 
 local function ValidSession(ply)
     local session = WSZC.MinigameSessions[ply]
@@ -317,6 +426,28 @@ local function StopMinigame(ply, reason)
     return true
 end
 
+local function StopAllMinigames(ply, reason, forceClient)
+    if not IsValid(ply) then return false end
+    reason = tostring(reason or "disabled")
+    local had = WSZC.MinigameSessions[ply] ~= nil or HasNativeSession(ply)
+    StopMinigame(ply, reason)
+    StopCUSessions(ply, reason)
+    local health = WSZC.H or (WoundSystem and WoundSystem.Health)
+    if health and type(health.CancelActiveMedicalSessions) == "function" then
+        pcall(health.CancelActiveMedicalSessions, ply, reason)
+    elseif type(WoundSystemCloseAllMedicalSessions) == "function" then
+        pcall(WoundSystemCloseAllMedicalSessions, ply, reason)
+    end
+    -- This is also a safety net for a native session whose private close
+    -- upvalue could not be captured: the client must never keep its overlay,
+    -- cursor or movement lock after the operator falls unconscious.
+    if had or forceClient then
+        Send("WSZC_MinigameForceClose", ply, function() net.WriteString(reason) end)
+    end
+    return had
+end
+WSZC.StopAllMinigames = StopAllMinigames
+
 local function HasMinigame(ply)
     if not OwnMinigamesEnabled() then return false end
     if WSZC.MinigameSessions[ply] then return true end
@@ -326,6 +457,7 @@ end
 local function StartMinigame(ply, data)
     if not (WSZC.Ready and BridgeEnabled() and OwnMinigamesEnabled() and HealthEnabled()) then return false end
     if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
+    if PlayerIncapacitated(ply) then return false end
     if HasMinigame(ply) then return true end
     if type(data) ~= "table" then return false end
 
@@ -397,6 +529,8 @@ local function StartMinigame(ply, data)
         local okAng, ang = pcall(ply.EyeAngles, ply)
         if okAng then frozenAngles = ang end
     end
+    local initialBleed = kind == "bandage"
+        and CurrentBandageBleeding({ target = target, limbId = limbId }) or 0
     local session = {
         id = id,
         kind = kind,
@@ -413,6 +547,9 @@ local function StartMinigame(ply, data)
         amount = startAmount,
         startAmount = startAmount,
         deferredUsed = 0,
+        initialBleed = initialBleed,
+        lastBleed = initialBleed,
+        lastBleedProgress = 0,
         onProgress = data.onProgress,
         onClose = data.onClose,
         data = data,
@@ -437,6 +574,7 @@ local function StartMinigame(ply, data)
             net.WriteString(profile.mode or "gauze")
             net.WriteUInt(session.slotIdx, 3)
         end)
+        SendBandageState(ply, session)
     else
         Send("WSZC_SyringeOpen", ply, function()
             net.WriteUInt(session.id, 24)
@@ -450,6 +588,55 @@ local function StartMinigame(ply, data)
     Debug("opened %s session %s owner=%s target=%s item=%s limb=%s amount=%.2f live=%s oneDose=%s",
         kind, tostring(id), tostring(ply), tostring(target), itemId, limbId,
         startAmount, tostring(session.live), tostring(session.oneDose))
+    return true
+end
+
+--- Covered shrapnel cannot be exposed by a click.  Start the SAME client
+--- bandage minigame in reverse mode, with a virtual roll that costs no item.
+--- ProcessBandageInput() is the only path that may remove this dressing.
+function WSZC.StartShrapnelUnwrap(ply, limbId)
+    if not (WSZC.Ready and OwnMinigamesEnabled() and HealthEnabled()) then return false end
+    if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
+    if PlayerIncapacitated(ply) or not Bridged(ply) then return false end
+    if not (WSZC.IsShrapnelBandaged and WSZC.IsShrapnelBandaged(ply, limbId)) then return false end
+
+    local existing = WSZC.MinigameSessions[ply]
+    if existing then
+        return existing.kind == "bandage" and existing.mode == "unwrap"
+            and existing.limbId == limbId
+    end
+    if HasMinigame(ply) then return false end
+
+    local id = WSZC.NextMinigameId or 1
+    WSZC.NextMinigameId = id + 1
+    if WSZC.NextMinigameId > 16000000 then WSZC.NextMinigameId = 1 end
+    local now = CurTime and CurTime() or 0
+    local frozenAngles
+    if ply.EyeAngles then
+        local okAng, ang = pcall(ply.EyeAngles, ply)
+        if okAng then frozenAngles = ang end
+    end
+    local session = {
+        id = id, kind = "bandage", mode = "unwrap",
+        itemId = "WSZC_UNWRAP", limbId = limbId, slotIdx = MINIGAME_SLOT,
+        owner = ply, target = ply,
+        maxDur = 360, amount = 360, startAmount = 360, deferredUsed = 0,
+        initialBleed = 360, lastBleed = 360, lastBleedProgress = 0,
+        unwrapRequired = 360, unwrapProgress = 0,
+        live = false, oneDose = false,
+        startedAt = now, lastInputAt = now, lastAckSeq = 0,
+        frozenAngles = frozenAngles, closed = false,
+    }
+    WSZC.MinigameSessions[ply] = session
+    SendOpenSlot(ply, session)
+    Send("WSZC_BandageOpen", ply, function()
+        net.WriteUInt(session.id, 24)
+        net.WriteString(session.limbId)
+        net.WriteString("unwrap")
+        net.WriteUInt(session.slotIdx, 3)
+    end)
+    SendBandageState(ply, session)
+    Debug("opened reverse-bandage session %s owner=%s limb=%s", tostring(id), tostring(ply), limbId)
     return true
 end
 
@@ -496,6 +683,38 @@ local function ProcessBandageInput(_, ply)
     if degrees <= 0 then return end
 
     session.lastAckSeq = inputSeq
+
+    if session.mode == "unwrap" then
+        if not (WSZC.IsShrapnelBandaged
+            and WSZC.IsShrapnelBandaged(session.target, session.limbId)) then
+            SendAck(ply, session, ACK_BANDAGE, inputSeq)
+            StopMinigame(ply, "already_unwrapped")
+            return
+        end
+        local required = math.max(tonumber(session.unwrapRequired) or 360, 1)
+        session.unwrapProgress = math.min(required,
+            (tonumber(session.unwrapProgress) or 0) + degrees)
+        SendBandageState(ply, session)
+        SendAck(ply, session, ACK_BANDAGE, inputSeq)
+        if session.unwrapProgress >= required then
+            local removed = WSZC.RemoveBandageForShrapnel
+                and WSZC.RemoveBandageForShrapnel(session.target, session.limbId)
+            StopMinigame(ply, removed and "unwrapped" or "unwrap_failed")
+        end
+        return -- no durability, bleeding treatment or foreign onProgress
+    end
+
+    -- An artery is not a bandage target.  Do not spend even a partial roll
+    -- when no ordinary bleeding remains; still ACK and refresh the state so
+    -- the client can show the persistent blood drop / TOURNIQUET prompt.
+    if WSZC.GetBandageBleeding and WSZC.OrganismAuthority
+        and WSZC.OrganismAuthority() and type(session.target.organism) == "table"
+        and CurrentBandageBleeding(session) <= 0.0001 then
+        SendBandageState(ply, session)
+        SendAck(ply, session, ACK_BANDAGE, inputSeq)
+        return
+    end
+
     local profile = BandageProfile(session.itemId, session.item)
     local perWrap = math.max(
         tonumber(profile.durabilityPerWrap) or Constants().BandageDurabilityPerWrap or 2,
@@ -516,6 +735,7 @@ local function ProcessBandageInput(_, ply)
         if WSZC.MinigameSessions[ply] ~= session then return end
     end
 
+    SendBandageState(ply, session)
     SendSlot(ply, session)
     SendAck(ply, session, ACK_BANDAGE, inputSeq)
 
@@ -623,7 +843,13 @@ hook.Add("PlayerDeath", "WSZC_MinigameDeath", function(ply)
 end)
 
 hook.Add("PlayerSpawn", "WSZC_MinigameSpawn", function(ply)
-    if WSZC.MinigameSessions[ply] then StopMinigame(ply, "respawn") end
+    -- ZCity sets this GLOBAL only around FakeUp's internal ply:Spawn().  It is
+    -- the exact discriminator, unlike Alive()/consciousness after a respawn.
+    if OverrideSpawn == true then return end
+    -- A genuine spawn is always authoritative cleanup, including native C:U
+    -- sessions and a client that missed PlayerDeath.  The force-close packet
+    -- also releases WoundView, its cursor and every movement/bind lock.
+    StopAllMinigames(ply, "respawn", true)
 end)
 
 hook.Add("PlayerDisconnected", "WSZC_MinigameDisconnect", function(ply)
@@ -718,6 +944,8 @@ hook.Add("Think", "WSZC_MinigameWatch", function()
     for ply, session in pairs(WSZC.MinigameSessions) do
         if not IsValid(ply) or not ply:Alive() then
             StopMinigame(ply, "dead")
+        elseif PlayerIncapacitated(ply) then
+            StopAllMinigames(ply, "unconscious", true)
         elseif not IsValid(session.target) or not session.target:Alive() or not Bridged(session.target) then
             StopMinigame(ply, "target_gone")
         elseif session.limbId ~= "body" and WSZC.H and WSZC.H.GetLimbState
@@ -727,4 +955,32 @@ hook.Add("Think", "WSZC_MinigameWatch", function()
             StopMinigame(ply, "disabled")
         end
     end
+
+    -- Native shrapnel/dislocation sessions are not in MinigameSessions, so
+    -- sweep players too.  StopAllMinigames only networks when one exists.
+    if player and player.GetAll then
+        for _, ply in ipairs(player.GetAll()) do
+            if PlayerIncapacitated(ply) and HasNativeSession(ply) then
+                StopAllMinigames(ply, "unconscious", true)
+            end
+        end
+    end
+end)
+
+hook.Add("HG_OnOtrub", "WSZC_MinigameUnconscious", function(ply)
+    StopAllMinigames(ply, "unconscious", true)
+end)
+hook.Add("Fake", "WSZC_MinigameUnconscious", function(ply)
+    -- HG_OnOtrub is the immediate authoritative unconscious signal.  A plain
+    -- Fake transition may be conscious, so close only if the operator's own
+    -- organism proves incapacity; re-check next tick for late native flags.
+    if PlayerIncapacitated(ply) then
+        StopAllMinigames(ply, "unconscious", true)
+        return
+    end
+    timer.Simple(0, function()
+        if IsValid(ply) and PlayerIncapacitated(ply) then
+            StopAllMinigames(ply, "unconscious", true)
+        end
+    end)
 end)

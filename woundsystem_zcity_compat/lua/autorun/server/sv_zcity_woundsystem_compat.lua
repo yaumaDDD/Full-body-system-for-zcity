@@ -537,6 +537,17 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
     if not (IsValid(ply) and ply:IsPlayer() and ply:Alive() and H and Items) then return false, 0 end
 
     itemId = NormalizeItemId(itemId)
+    -- InstallMedicalBridge resolves the PhysicsBone under the owner's crosshair
+    -- before native WB.SwepHeal/BestLimb runs.  Native self-use suppresses its
+    -- own AimedLimb, so it may pass the worst-bleeding ARM here instead.  This
+    -- scoped override changes only a tourniquet call for the same patient; the
+    -- corrected limbId then drives BuildMedicalItemContext, authoritative
+    -- artery treatment, C:U status and the native visual marker together.
+    local tourniquetRoute = WSZC.TourniquetLimbOverride
+    if itemId == "TOURNIQUET" and type(tourniquetRoute) == "table"
+        and tourniquetRoute.ply == ply and type(tourniquetRoute.limbId) == "string" then
+        limbId = tourniquetRoute.limbId
+    end
     local item = Items.Get and Items.Get(itemId)
     if not item then return false, 0 end
     local maxDurability = (Items.GetMax and Items.GetMax(itemId)) or item.max or 100
@@ -569,12 +580,15 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         if snapOk then medicalBefore = snap end
     end
     local ok = false
+    local bandageEffectFraction = 0
+    local directTourniquetTreated, directTourniquetAfter = 0, nil
 
     if minigame == "bandage" then
         local profile = BandageProfile(itemId, item)
         local perWrap = math.max(tonumber(profile.durabilityPerWrap) or (maxDurability / 12), 0.0001)
         local wrapFraction = used / perWrap
         local effectFraction = wrapFraction / math.max(tonumber(profile.effectDivisor) or 1, 1)
+        bandageEffectFraction = effectFraction
         ctx.wrapFraction = wrapFraction
         ctx.degreesMoved = wrapFraction * 360
         ctx.profile = profile
@@ -601,16 +615,75 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         -- with a virtual inventory slot.
         if Items.LimbAllowed and not Items.LimbAllowed(use, limbId) then return false, 0 end
         local useItem = WoundSystem.UseMedicalItem
-        if useItem then
-            local callOk, result = pcall(useItem, ply, itemId, limbId, nil, slot)
-            ok = callOk and result ~= false
-        elseif type(use.apply) == "function" then
-            local callOk, result = pcall(use.apply, ctx)
-            ok = callOk and result ~= false
+
+        -- A PHYSICAL ZCity tourniquet must not become a no-op merely because
+        -- C:U rejects its shadow state, a status helper is missing, or its
+        -- virtual inventory apply errors.  Close the authoritative artery
+        -- first; C:U presentation is then best-effort and cannot veto it.
+        local authoritativeTourniquet = itemId == "TOURNIQUET"
+            and WSZC.ApplyTourniquetToOrganism
+            and WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+        if authoritativeTourniquet then
+            local treatOk, treated, _, afterBleed = pcall(WSZC.ApplyTourniquetToOrganism, ctx)
+            if not treatOk then
+                if WSZC.Warn then WSZC.Warn("tourniquet organism treatment failed: " .. tostring(treated)) end
+            elseif (tonumber(treated) or 0) > 0 then
+                directTourniquetTreated = tonumber(treated) or 0
+                directTourniquetAfter = afterBleed
+                ok = true
+                if useItem then pcall(useItem, ply, itemId, limbId, nil, slot)
+                elseif type(use.apply) == "function" then pcall(use.apply, ctx) end
+                if type(ctx.limb) == "table" then
+                    ctx.limb.tourniqueted, ctx.limb.blockedBleeding = true, true
+                    if ctx.setStatus then pcall(ctx.setStatus, "TOURNIQUET", 0.01) end
+                end
+            end
+            -- Native success on a shadow limb is not a reason to consume the
+            -- physical SWEP item when no real ZCity wound was treated.
+            if not ok then return false, 0 end
+        end
+
+        if not ok then
+            if useItem then
+                local callOk, result = pcall(useItem, ply, itemId, limbId, nil, slot)
+                ok = callOk and result ~= false
+            elseif type(use.apply) == "function" then
+                local callOk, result = pcall(use.apply, ctx)
+                ok = callOk and result ~= false
+            end
         end
     end
 
     if not ok then return false, 0 end
+
+    if minigame == "bandage" and WSZC.ApplyBandageToOrganism then
+        local treatOk, treated, _, afterBleed = pcall(
+            WSZC.ApplyBandageToOrganism, ctx, ctx.profile, bandageEffectFraction)
+        if not treatOk then
+            if WSZC.Warn then WSZC.Warn("bandage organism treatment failed: " .. tostring(treated)) end
+        elseif (tonumber(treated) or 0) > 0 and medicalBefore then
+            -- ApplyBandageToOrganism already changed the real wounds and the
+            -- immediate org.bleed value, and wrote the resulting value into
+            -- ctx.limb.bleed.  Zero this ONE snapshot delta so the generic
+            -- C:U -> organism mirror cannot subtract the same treatment twice.
+            medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
+        end
+    elseif itemId == "TOURNIQUET" and WSZC.ApplyTourniquetToOrganism then
+        if directTourniquetTreated > 0 then
+            if medicalBefore then
+                medicalBefore.limbBleed = tonumber(directTourniquetAfter) or medicalBefore.limbBleed
+            end
+        else
+            local treatOk, treated, _, afterBleed = pcall(WSZC.ApplyTourniquetToOrganism, ctx)
+            if not treatOk then
+                if WSZC.Warn then WSZC.Warn("tourniquet organism treatment failed: " .. tostring(treated)) end
+            elseif (tonumber(treated) or 0) > 0 and medicalBefore then
+                -- The real arterial/ordinary wounds and org.bleed were updated by
+                -- the tourniquet itself; do not mirror the same bleed delta twice.
+                medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
+            end
+        end
+    end
 
     -- When called from inside WB.SwepHeal() the outer wrapper already measured
     -- the whole body delta; applying ours too would double the medicine.
@@ -694,6 +767,9 @@ function WSZC.Setup()
     refs.CUSessions = FindUpvalue("Sessions")
     refs.CUCloseBandageSession = FindUpvalue("CloseBandageSession")
     refs.CUCloseSyringeSession = FindUpvalue("CloseSyringeSession")
+    refs.CUCloseShrapnelSession = FindUpvalue("CloseShrapnelSession")
+    refs.CUCloseDislocationSession = FindUpvalue("CloseDislocationSession")
+    refs.CUCloseAedSession = FindUpvalue("CloseAedSession")
 
     WSZC.H = H
     WSZC.OriginalFn = WSZC.OriginalFn or refs.Fn
@@ -708,6 +784,9 @@ function WSZC.Setup()
     WSZC.CUSessions = refs.CUSessions
     WSZC.CUCloseBandageSession = refs.CUCloseBandageSession
     WSZC.CUCloseSyringeSession = refs.CUCloseSyringeSession
+    WSZC.CUCloseShrapnelSession = refs.CUCloseShrapnelSession
+    WSZC.CUCloseDislocationSession = refs.CUCloseDislocationSession
+    WSZC.CUCloseAedSession = refs.CUCloseAedSession
 
     WSZC.Debug("refs: Fn=%s Const=%s Bandage=%s Syringe=%s Ctx=%s TryRagdoll=%s Sessions=%s",
         tostring(refs.Fn ~= nil), tostring(refs.Const ~= nil),

@@ -57,9 +57,9 @@ screenshots at the same resolution:
                              bottom 869 - all four land within 2 px)
     centre     = (682.5, 558.2)   = (ScrW()/2, ScrH()/2 + 20*scale)
 
-Target boxes come from the native C:U doll in Screenshot_2-10.png:
-    218 / 320 / 451 / 592 / 708 / 810 / 865   (647 px tall)
-    head 650..712, thorax 621..742, arms 303..980, legs 592..865.
+Target boxes come from the native C:U doll in Screenshot_1.png:
+    218 / 322 / 452 / 594 / 710 / 820 / 869   (652 px tall)
+    head 650..712, thorax 621..743, arms 368..983, legs 594..869.
 For every limb: cx = 750 + (target_cx - 682.5)/S, cy likewise, and
 inner = target/S.  C:U stays strictly LINEAR - only sprite dimensions and
 positions change; no convar, no runtime scaling, no non-linear "calibration".
@@ -73,24 +73,20 @@ padded POT sprite there would make every hover rect far too big.
 `finalMiddle`); `*_edge.png` is deliberately NOT overridden so C:U keeps
 control of the outline colour and its hover animation.
 
-PIXEL FIT (Screenshot_1-11.png rejection: "интерфейс не точный в плане
-расставления и размеров сделай также но с нашей стилистикой")
+PIXEL FIT (native Screenshot_1.png: identical placement/proportions, our style)
 ------------------------------------------------------------------
-tools/fit_unitmenu_geometry.py renders the 15 VERBATIM archive silhouettes
-into screen space with exactly the same linear placement C:U uses, and
-compares that black mask with the native doll in Screenshot_2-10.png
-(max(RGB) < 20 removes the woven background; the doll is 0..8).  A bounded
-coordinate descent over (tx, ty, w, h) - mirror-symmetric pairs, no shape
-editing - raised the intersection-over-union from 0.8497 to 0.9090.  The
-fitted numbers are what REFERENCE_BOXES below now holds.  Earlier live
-fixes are kept as history: Screenshot_6-2.png / Screenshot_7.png showed the
-six arm sprites were 44 px thick (y 333..377) where the native doll is
-33..36 px, and Screenshot_1-11.png rejected the seam-closing masks.  This
-fit supersedes those hand-tuned heights with measured numbers.  The remaining red
-pixels are the authored underarm notches, which "не меняй то как оно
-выглядит" forbids filling, plus the 5 px native ankle gap.  The styling is
-UNCHANGED: pure black fill + a thin outline along each limb's own contour,
-no rectangular frames, no seam-closing masks for arms.
+tools/fit_unitmenu_geometry.py renders the VERBATIM archive silhouettes into
+screen space with exactly the same linear placement C:U uses, and compares
+that black mask with native Screenshot_1.png (max(RGB) < 20 plus connected
+components rejects the shelf/background).  A bounded coordinate descent over
+(tx, ty, w, h), independently for every limb and with no shape editing,
+raises the 14 measurable body-part fits to 0.82..0.99 IoU (most >0.94).
+The semi-transparent head is checked from its visible contour separately.
+Earlier live fixes remain history: Screenshot_6-2.png / Screenshot_7.png
+showed 44 px arm sprites, and Screenshot_1-11.png rejected seam-closing masks.
+The authored underarm notches and native ankle gap are NOT filled.  Styling is
+UNCHANGED: pure black fill + a thin outline along each limb's own contour, no
+rectangular frames and no seam-closing masks for arms.
 
 Usage: python3 tools/build_unitmenu_materials.py [path/to/ui.zip]
 Requires Pillow.
@@ -152,31 +148,32 @@ JOINT_SQUARE_FRAC = 0.12      # Screenshot_8.png red circles: the archive arms
 LIVE_S = 0.4155
 LIVE_CX, LIVE_CY = 682.5, 558.2
 
-# Native Screenshot_2-10.png boxes: (target_cx, target_cy, width, height).
-# Symmetric pairs are pre-mirrored about 682.5 so cx_R + cx_L == 1500 exactly.
+# Native Screenshot_1.png boxes: (target_cx, target_cy, width, height).
+# Each side is fitted independently; native arms/hands are not exactly symmetric.
 # Widths include a small compensation: MinFilter(JOINT_ERODE) and LANCZOS
 # shave ~2 px off each side of an inner box before it reaches the screen.
 # Without it the head/legs simulate 6-10 px narrower than the native doll.
 REFERENCE_BOXES = {
     'head':      (682.5, 268.0, 67, 102),
-    'thorax':    (681.5, 385.5, 124, 129),
-    'abdomen':   (681.5, 521.5, 129, 140),
-    # Pixel fit against the native doll (see tools/fit_unitmenu_geometry.py):
-    # IoU 0.8497 -> 0.9090.  ONLY these numbers change; all 15 archive
-    # silhouettes stay VERBATIM, DOLL_RGB stays pure black and every outline
-    # still follows its limb's own contour.
-    'arm_R':     (576.9, 361.0, 86, 54),
-    'arm_L':     (788.1, 361.0, 86, 54),
-    'forearm_R': (479.0, 356.0, 110, 38),
-    'forearm_L': (886.0, 356.0, 110, 38),
-    'hand_R':    (399.0, 355.0, 47, 42),
-    'hand_L':    (966.0, 355.0, 47, 42),
-    'thigh_R':   (652.5, 650.0, 58, 114),
-    'thigh_L':   (712.5, 650.0, 58, 114),
-    'crus_R':    (650.5, 760.0, 48, 101),
-    'crus_L':    (714.5, 760.0, 48, 101),
-    'foot_R':    (648.0, 842.0, 38, 50),
-    'foot_L':    (717.0, 842.0, 38, 50),
+    'thorax':    (681.5, 385.5, 125, 129),
+    'abdomen':   (681.5, 521.5, 128, 138),
+    # Independent pixel fit against native Screenshot_1.png.  The native arms
+    # are NOT exactly symmetric about the thorax, so every limb owns its box;
+    # no coordinates are mirrored or forced to add up to a canvas constant.
+    # All 15 archive silhouettes stay VERBATIM, DOLL_RGB stays pure black and
+    # every outline still follows its limb's own contour.
+    'arm_R':     (576.9, 361.0, 83, 57),
+    'arm_L':     (787.1, 364.0, 85, 58),
+    'forearm_R': (481.0, 356.0, 111, 38),
+    'forearm_L': (879.0, 356.0, 94, 36),
+    'hand_R':    (395.0, 356.0, 54, 43),
+    'hand_L':    (955.0, 354.0, 54, 43),
+    'thigh_R':   (652.5, 650.0, 58, 112),
+    'thigh_L':   (711.5, 650.0, 56, 114),
+    'crus_R':    (649.5, 761.0, 45, 104),
+    'crus_L':    (714.5, 761.0, 47, 104),
+    'foot_R':    (646.0, 843.0, 46, 50),
+    'foot_L':    (719.0, 843.0, 46, 47),
 }
 
 
@@ -200,14 +197,10 @@ def build_layout():
         px = (w - inner_w) // 2
         py = (h - inner_h) // 2
         assert px >= EDGE_PAD_MIN and py >= EDGE_PAD_MIN, limb_id
-        # Round to 0.1 exactly like the emitted Lua, then RE-ASSERT symmetry
-        # in the same representation that C:U will read.
+        # Round to 0.1 exactly like the emitted Lua.  Do NOT mirror the other
+        # side: Screenshot_1.png has measurably asymmetric arm/hand placement.
         layout[limb_id] = (round(cx, 1), round(cy, 1), w, h, px, py,
                            inner_w, inner_h)
-    for a, b in (('arm_R', 'arm_L'), ('forearm_R', 'forearm_L'),
-                 ('hand_R', 'hand_L'), ('thigh_R', 'thigh_L'),
-                 ('crus_R', 'crus_L'), ('foot_R', 'foot_L')):
-        assert layout[a][0] + layout[b][0] == 1500.0, (a, b)
     return layout
 
 
@@ -340,8 +333,8 @@ def main():
              '-- Standard black fill + per-limb shaped outline (no rectangular frames).',
              '-- POT sprite sizes: C:U sizes limbs by mat:Width()/Height(), which GMod',
              '-- rounds to a power of two.  Inner silhouette boxes are calibrated',
-             '-- pixel-for-pixel against native Screenshot_2-10.png using the live',
-             '-- S=0.4155 / centre=(682.5,558.2) from Screenshot_1-10.png.',
+             '-- pixel-for-pixel against native Screenshot_1.png using the live',
+             '-- S=0.4155 / centre=(682.5,558.2); each limb is fitted independently.',
              '-- cx/cy are in the 1500x1500 canvas; hoverW/hoverH are the VISIBLE',
              '-- inner boxes (used for C:U sourceW/sourceH hit tests).',
              'WSZC_UNITMENU_LIMB_GEOMETRY = {']

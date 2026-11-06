@@ -15,6 +15,7 @@ WSZC.MinigameClientReady = false
 WSZC.MinigameClientAttempts = 0
 WSZC.MinigameSlotIdx = 6
 WSZC.PendingBandageOpen = nil
+WSZC.PendingBandageState = nil
 WSZC.PendingSyringeOpen = nil
 WSZC.MinigameOpenAt = 0
 
@@ -203,9 +204,10 @@ end)
 -- CloseWoundMinigames() from WoundSystem.HealthGUI.ResetLocalRespawnInput(),
 -- which is tied to its own PlayerSpawn hook; if that hook is missing or a
 -- session object was replaced by a hot reload, MG.active stays true forever.
-local function ClearAllMinigameState()
+local function ClearAllMinigameState(notifyServer)
     WSZC.MinigameHUDOpen = false
     WSZC.PendingBandageOpen = nil
+    WSZC.PendingBandageState = nil
     WSZC.PendingSyringeOpen = nil
     WSZC.MinigameFrozenAngles = nil
     WSZC._ViewModelHidden = nil
@@ -213,22 +215,44 @@ local function ClearAllMinigameState()
         "WSZCBandageMinigame", "WSZCSyringeMinigame",
         "WoundSystemDislocationMinigame", "WoundSystemShrapnelMinigame",
         "WoundSystemAEDMinigame", "WoundSystemBandageMinigame",
-        "WoundSystemSyringeMinigame",
+        "WoundSystemSyringeMinigame", "WoundSystemSelfHarmMinigame",
     }
     for _, name in ipairs(names) do
         local mg = _G[name]
-        if type(mg) == "table" then mg.active = false end
+        if type(mg) == "table" then
+            if notifyServer and mg.active and type(mg.RequestClose) == "function" then
+                pcall(mg.RequestClose, "unconscious")
+            end
+            mg.active = false
+            -- RequestClose normally removes this already.  The direct removal
+            -- covers a lost native close upvalue and server-forced cleanup.
+            if IsValid(mg.overlay) and mg.overlay.Remove then pcall(mg.overlay.Remove, mg.overlay) end
+            mg.overlay = nil
+        end
+    end
+    ReleaseMinigameView()
+    DisableMinigameClicker()
+    if WSZC.ForceReleaseMinigameCursor then WSZC.ForceReleaseMinigameCursor() end
+    if not WSZC.MinigameContextOK() and WoundSystem
+        and type(WoundSystem.CloseHealthHUD) == "function" then
+        pcall(WoundSystem.CloseHealthHUD)
     end
 end
 WSZC.ClearAllMinigameState = ClearAllMinigameState
 
 hook.Add("PlayerDeath", "WSZC_MinigameDeathCleanup", function(ply)
     if LocalPlayer and ply ~= LocalPlayer() then return end
-    ClearAllMinigameState()
+    ClearAllMinigameState(true)
 end)
 hook.Add("PlayerSpawn", "WSZC_MinigameSpawnCleanup", function(ply)
     if LocalPlayer and ply ~= LocalPlayer() then return end
-    ClearAllMinigameState()
+    -- hg.FakeUp() also runs PlayerSpawn internally.  A conscious operator in
+    -- that transition keeps the active board/cursor; death and real otrub are
+    -- still cleaned here and by the every-frame context watchdog below.
+    if WSZC.MinigameContextOK then
+        if WSZC.MinigameContextOK() then return end
+    end
+    ClearAllMinigameState(true)
 end)
 
 -- PlayerDeath is not guaranteed to fire in every client realm/build; the
@@ -240,7 +264,18 @@ hook.Add("Think", "WSZC_MinigameDeadCleanup", function()
     end
     if WSZC._MinigameDeadCleaned then return end
     WSZC._MinigameDeadCleaned = true
-    ClearAllMinigameState()
+    ClearAllMinigameState(true)
+end)
+
+net.Receive("WSZC_MinigameForceClose", function()
+    net.ReadString() -- reason is diagnostic; cleanup is identical for all causes
+    ClearAllMinigameState(false)
+    -- The organism flag can arrive one network tick later.  A server-forced
+    -- close is already authoritative, so do not leave WoundView / its cursor
+    -- open while waiting for that flag to replicate.
+    if WoundSystem and type(WoundSystem.CloseHealthHUD) == "function" then
+        pcall(WoundSystem.CloseHealthHUD)
+    end
 end)
 
 -- Native C:U games (dislocation / shrapnel / AED) do not send our WSZC open
@@ -380,6 +415,16 @@ local function ReadBandageOpen()
     }
 end
 
+local function ReadBandageState()
+    return {
+        sessionId = net.ReadUInt(24),
+        initialBleed = math.max(net.ReadFloat() or 0, 0),
+        currentBleed = math.max(net.ReadFloat() or 0, 0),
+        progress = math.Clamp(net.ReadFloat() or 0, 0, 1),
+        arterialBleed = math.max(net.ReadFloat() or 0, 0),
+    }
+end
+
 local function ReadSyringeOpen()
     return {
         sessionId = net.ReadUInt(24),
@@ -396,6 +441,12 @@ local function DeliverPending()
         local payload = WSZC.PendingBandageOpen
         WSZC.PendingBandageOpen = nil
         WSZCBandageMinigame.OpenFromServer(payload)
+        local state = WSZC.PendingBandageState
+        WSZC.PendingBandageState = nil
+        if state and state.sessionId == payload.sessionId
+            and type(WSZCBandageMinigame.ApplyBleedState) == "function" then
+            WSZCBandageMinigame.ApplyBleedState(state)
+        end
     end
 
     if WSZC.PendingSyringeOpen and WSZCSyringeMinigame
@@ -459,6 +510,7 @@ net.Receive("WSZC_MinigameClose", function()
     WSZC.MinigameHUDOpen = false
     WSZC.MinigameOpenAt = 0
     WSZC.PendingBandageOpen = nil
+    WSZC.PendingBandageState = nil
     WSZC.PendingSyringeOpen = nil
     ReleaseMinigameView()
     DisableMinigameClicker()
@@ -488,6 +540,18 @@ end)
 -- have finished loading, the payload is buffered and delivered by Activate().
 net.Receive("WSZC_BandageOpen", BufferBandageOpen)
 net.Receive("WSZC_SyringeOpen", BufferSyringeOpen)
+net.Receive("WSZC_BandageState", function()
+    local payload = ReadBandageState()
+    local mg = WSZCBandageMinigame
+    if mg and mg.active and mg.sessionId == payload.sessionId
+        and type(mg.ApplyBleedState) == "function" then
+        mg.ApplyBleedState(payload)
+    else
+        -- Open/state are separate reliable messages, but the client copy may
+        -- still be loading.  Keep one latest packet until DeliverPending().
+        WSZC.PendingBandageState = payload
+    end
+end)
 
 local function ClientReady()
     return WoundSystem

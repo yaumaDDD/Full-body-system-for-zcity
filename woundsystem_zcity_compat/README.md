@@ -69,6 +69,18 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
    `ApplyItemToBody` и перенос полученной дельты обратно в `ply.organism`
    (`blood`, `pain`, `pulse`, `shock`, `brain`, `bleed`, `painkiller`,
    `adrenaline`, повреждение лимба). One-dose предметы остаются мгновенными.
+   Для бинта отключённый `WoundSystem_LimbTick` больше не является потерянным
+   звеном: его `bandageSlowAmount` преобразуется в уменьшение severity реальных
+   обычных `org.wounds` на выбранной конечности. Артериальные раны бинт не
+   изменяет; их останавливает **только жгут**, который очищает запись
+   `org.arterialwounds`, соответствующий artery-флаг и синхронизирует нативные
+   `wounds` / `arterialwounds` / `Tourniquets`. Net-пакет `WSZC_BandageState`
+   сообщает начальное/текущее обычное кровотечение, фактический процент его
+   остановки и отдельный остаток артериального. Мини-игра рисует `STOP N%` и
+   кольцо; при открытой артерии капля не скрывается, а после остановки обычных
+   ран появляется подсказка `TOURNIQUET`. При artery-only ране прочность бинта
+   не расходуется. `isBandaged` не блокирует повторный бинт, пока выбранная
+   конечность кровоточит.
 8. Не даёт C:U создать второй ragdoll: перехватывает её внутренний
    `ents.Create("prop_ragdoll")`, создаёт ZCity `hg.Fake`, зеркалит
    `body.unconsciousRagdoll` и защищает ZCity-ragdoll от удаления при wake.
@@ -79,18 +91,34 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
     и сбрасывает шрапнель при респавне (в том числе после `LoadPlayerPersistData`
     при переходе между картами).
 
-## Шрапнель: одно состояние, три источника
+## Шрапнель: общий протокол, раздельные источники
 
-Поле `state.shrapnel` в `PlayerLimbs` — **единственный** источник истины.
-Поля `source` нет, второй мини-игры нет: gunshot, blast и glass пишут один и тот
-же счётчик, и родная кнопка `REMOVE SHRAPNEL` в панели C:U всегда открывает
-один и тот же `BuildShrapnelSession()`.
+Поле `state.shrapnel` в `PlayerLimbs` остаётся общим счётчиком для родной
+мини-игры. Количество по источникам отдельно хранится в
+`org.wszc_shrapnel_sources[limbId]`: `shotgun`, `blast`, `glass` (и `legacy`
+для старых сохранений). Второй мини-игры нет: после снятия блокирующей повязки
+`REMOVE SHRAPNEL` открывает один и тот же `BuildShrapnelSession()`. Если осколок
+закрыт повязкой, guarded native receiver не снимает её кликом: он закрывает
+старую native-сессию и запускает WSZC reverse-bandage. Только 360° движения в
+обратную сторону вызывают `RemoveBandageForShrapnel()`; виртуальный рулон не
+расходует инвентарь и пинцет. После закрытия unwrap следующий клик идёт по
+обычному нативному пути извлечения.
 
 | Источник | Правило | Откуда перенесено |
 | --- | --- | --- |
-| Пуля / дробь | +1 за попадание, блокируется HEV-шансом, лимит `ShrapnelPieceCount` (5) | `Fn.AddGunshotShrapnel` из обработчика урона C:U (в authority-режиме он больше не вызывается) |
-| Взрыв | на некритичных лимбах: `raw≥20` 60 %, `raw≥40` 50 %, `raw≥70` 40 %, до 3 осколков | ветка `DMG_BLAST` в `WoundSystem_Damage` |
-| Стекло | +1 за удар рукой/ногой по стеклу (стоячий игрок, brush `func_breakable_surf`, ragdoll-коллизии) | отсутствовало: в ZCity хук `sv_input.lua:441-446` закомментирован, `WB.SurfaceCut` пишет только skin/bleed |
+| Подтверждённый дробовик | 3–5 фрагментов на фактически поражённом limb (с учётом лимита `ShrapnelPieceCount = 5`), блокируется HEV-шансом | `Fn.AddGunshotShrapnel` из обработчика урона C:U (в authority-режиме он больше не вызывается) |
+| Взрыв | на фактически поражённом допустимом лимбе: `raw≥20` 60 %, `raw≥40` 50 %, `raw≥70` 40 %, до 3 осколков | ветка `DMG_BLAST` в `WoundSystem_Damage` |
+| Стекло | +1 за удар рукой/ногой по стеклу; только этот источник remap-ится на `hand_L/R` или `foot_L/R` (стоячий игрок, brush `func_breakable_surf`, ragdoll-коллизии) | отсутствовало: в ZCity хук `sv_input.lua:441-446` закомментирован, `WB.SurfaceCut` пишет только skin/bleed |
+
+Обычная пуля не создаёт осколков. `DMG_BUCKSHOT` сам по себе тоже не является
+доказательством дробовика: нужен дробовый ammo/класс оружия/многопеллетный
+выстрел. Настоящий ZCity PhysBullet обычно приходит с `DMG_BULLET`, ammo `-1` и
+`inflictor = attacker`, поэтому проверяются также attacker active weapon,
+known/family class (`spas12`, `xm1014`, `saiga12`, `remington870`, KS-23, M590,
+TOZ/doublebarrel), `Primary.Ammo`, `game.GetAmmoName` и pellet count. Стекло
+остаётся независимым источником; пистолет по-прежнему не проходит проверку.
+`ShrapnelSpawnLimb` вызывается только для `glass`: shotgun/blast не сводятся к
+кистям/стопам и остаются на фактическом `head/thorax/abdomen/arm/.../foot`.
 
 Сырой урон снимается **до** `dmginfo:ScaleDamage(0.15)` внутри обёртки
 `homigrad-damage`, иначе пороги взрыва никогда не сработали бы. Поверхности
@@ -102,6 +130,80 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 `org.wszc_shrapnel_floor` удерживает повреждение лимба от регенерации; после
 извлечения C:U пишет `state.shrapnel = remaining`, тень подтягивает новое
 значение и блок снимается.
+
+Каждые 0.5 с любой оставшийся фрагмент усиливает настоящую tagged ZCity-рану
+(`wound.wszcShrapnel`) и добавляет боль в `avgpain/painadd/pain`. Кровотечение
+поэтому переживает родной recalculate `org.bleed`. Severity такой раны
+ограничено `8`, чтобы одного физического бинта хватало на её обработку. При
+извлечении последнего осколка конечности удаляются только tagged-рана, source
+map и irritation; обычные раны остаются. Откат роста:
+`zc_woundsystem_compat_shrapnel_lodged_effects 0`.
+
+Бинтировать конечность с фрагментом **разрешено**. Только после фактической
+остановки обычного кровотечения `org.wszc_bandaged_shrapnel[limbId]` запоминает
+закрытый фрагмент и кости с повязкой. Tagged external wound получает severity 0;
+`EnsureLodgedWound()`, `TickLodgedShrapnel()` и `SyncShrapnel()` не создают её
+заново под действующей повязкой. Попадание в заранее перевязанную конечность
+помечается так же. Артериальная рана остаётся отдельной и требует жгута.
+
+На конечности сразу появляется штатная C:U `infection.png`; слот ложного
+`disinfected/processing` использует ту же иконку, а `disinfectTime` обнуляется.
+Серверный таймер идёт по анатомическим стадиям: **конечность 0–240 с → торс с
+240 с → мозг с 420 с → смерть с 600 с**. Значения `state.infection` показывают
+стадии штатным HUD, а `infectionSpeed=0` не даёт физиологии C:U добавить второй
+таймер. На терминальной стадии вызывается тот же `ply:Kill()`, что использует
+родная ZCity death logic, поэтому death/ragdoll hooks не обходятся.
+
+Единственное лечение: **reverse unwrap 360° → извлечение → повторный полный
+бинт**. Разматывание не приостанавливает таймер, извлечение само по себе не
+убывает и не очищает инфекцию. Любое уменьшение `state.shrapnel` (даже одного
+из нескольких фрагментов) создаёт отдельную `wszcShrapnelExtraction`-рану:
+severity от `0.3`, затем `+0.015/с` (cap 6), плюс медленный рост
+`painadd/avgpain/pain`. Она не удаляется вместе с lodged-раной. Только финальный
+бинт после извлечения закрывает aftercare и очищает связанный инфекционный
+источник на конечности/торсе/голове; даже уже свернувшаяся до нуля рана не
+мешает этому завершению. Если повязки до извлечения не было, aftercare-рана и
+боль всё равно создаются, но новой инфекции не возникает.
+
+Повязка после **частичного** извлечения тоже закрывает текущую aftercare-рану и
+останавливает внешнее кровотечение, но оставшиеся фрагменты сохраняют covered
+infection timer. После следующего unwrap/extraction послеуход начинается снова;
+очищение инфекции происходит только при повязке после ПОСЛЕДНЕГО фрагмента.
+
+Обычный treatment budget бинта умножается на `2`, а `org.bleedingmul`
+ограничен `0.55`. Конвары: `zc_woundsystem_compat_bandaged_shrapnel_infection`,
+`zc_woundsystem_compat_shrapnel_infection_death_delay`,
+`zc_woundsystem_compat_bandage_strength`,
+`zc_woundsystem_compat_bleeding_multiplier`.
+
+Ампутация не является синонимом arterial bleeding. Native
+`hg.organism.AmputateLimb()` создаёт arterial wound и ОТДЕЛЬНО ставит
+`org.<limb>amputated`; обе структуры сохраняются. По `WB.ZLimbToWS` ZCity
+ампутирует от предплечья/голени, поэтому C:U `dismembered` ставится только на
+`forearm + hand` / `crus + foot`. Верхние `arm/thigh` — оставшийся stump. На нём
+регистрируется `WSZC_AMPUTATION` (`order = -10000`, штатная
+`casunknown-images/moodles/amputation.png`), который native
+`Statuses.GetActive()` отдаёт перед bleed-статусами. Кровотечение удалённой
+distal-зоны лишь для UI/выбора сайта проецируется на stump; severity, кость и
+artery key в organism не меняются. `BestTourniquetLimb()` выбирает сначала
+реально кровоточащий stump, затем обычную артерию, без подмены bleed значений.
+
+Явный `hg_organism_clear` / `WB.ResetOrganism` полностью удаляет все фрагменты,
+источники, tagged-раны, накопленную инфекцию, ZCity `bandaged_limbs` /
+`tourniquets`, ампутации/раны и C:U residue. Дополнительно очищается
+`org.brokenribs`: native `Org Clear` сбрасывает `org.chest`, но оставляет это
+поле, иначе следующий `PushShadow()` снова включает иконку перелома рёбер.
+Этот explicit-reset context отделён от внутреннего `ragdoll → standing`, где
+сохраняется весь organism, включая текущий перелом.
+
+Потеря сознания владельца сессии (`otrub/needotrub`, NW unconscious,
+`consciousness < 0.4`) либо его смерть закрывает WSZC и нативные C:U мини-игры,
+освобождает cursor/view/input и скрывает WoundView. `FakeRagdoll` и
+`fake/needfake` — признаки posture, а не incapacity, поэтому в conscious
+ragdoll интерфейс/мини-игры не закрываются. Если медик в сознании,
+бессознательное состояние пациента его мини-игру не закрывает. На внутреннем
+FakeUp `PlayerSpawn` сервер видит `OverrideSpawn == true` и сохраняет сессию;
+на настоящем respawn принудительно закрывает все сессии и клиентские lock'и.
 
 Вход в мини-игру — кнопка «Проверить травмы» → родная панель C:U → точка
 `REMOVE SHRAPNEL`. Инструмент не требуется: `slotIdx = 0`, `hasTweezers = false`,
@@ -149,7 +251,7 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 `3389728250` (Glide), `3389795738` (GTAV helicopters). На выделенном сервере эти
 ID должны быть в `workshop.vdf` / `+host_workshop_collection`, иначе клиенты
 увидят ERROR-модели и `missing material` в консоли. В исходном ZIP C:U лежат только Lua, 3 шрифта и 3 скомпилированных шейдера —
-звуков и материалов там нет. **В этой сборке это исправлено**: 647 UI-материалов
+звуков и материалов там нет. **В этой сборке это исправлено**: 649 UI-материалов
 (`casunknown-images/*`, `woundsystem/*`, родные лимбы `middle/`+`outlines/`,
 кадры руки, .vtf/.vmt) упакованы в `woundsystem_zcity_compat/materials/` и
 зеркально в `casualties_unknown_health_system_beta/materials/` full pack.
@@ -201,7 +303,8 @@ ZCity вызывает `WoundSystem.Health.StartExternalMinigame()` только
 | `weapon_medkit_sh` режим `2` | **мгновенно** (MORPHINE oneshot) |
 | `weapon_medkit_sh` режим `3` | **мгновенно** (BLOODCOAGULANT / SALINE vehicle) |
 | `weapon_adrenaline`, `weapon_betablock`, `weapon_mannitol`, `weapon_thiamine` | **мгновенно** (body-эффект / SALINE vehicle) |
-| `weapon_tourniquet`, `weapon_painkillers`, `weapon_medkit_sh` режим `4`, blood bag и прочие спецы без `mg` | **мгновенно** (старая ветка `WB.SwepHeal`) |
+| `weapon_tourniquet` | **мгновенно через физический `WB.SwepHeal`**: прицельная PhysicsBone конечность (включая self-use ragdoll) scoped-маршрутизируется до `H.ApplyItemToBody`; затем реально закрывается ZCity arterial/ordinary wound именно на выбранной ноге/руке, а C:U apply/status выполняется best-effort. Native `false`/Lua-ошибка не отменяет лечение; при отсутствии обработанной раны предмет не расходуется. Визуал ставится на выбранную конечность; synthetic wounds имеют валидные `Vector`/`Angle` для native renderer. Бинт артерии не помогает |
+| `weapon_painkillers`, `weapon_medkit_sh` режим `4`, blood bag и прочие спецы без `mg` | **мгновенно** (старая ветка `WB.SwepHeal`) |
 
 Для «живых» предметов (`live`) `onProgress` вызывается на каждом wrap / толчке
 поршня: C:U применяет часть эффекта к **цели**, а ZCity списывает часть своего
@@ -219,7 +322,8 @@ SWEP. В authority-режиме каждая такая доза дополни�
 - Сервер создаёт виртуальный инструмент в слоте `6` (родной инвентарь C:U — слоты `1..5`)
   через `WSZC_MinigameOpen` / `WSZC_MinigameSlot`, открывает сессию через
   `WSZC_BandageOpen` / `WSZC_SyringeOpen`, принимает ввод через
-  `WSZC_BandageInput` / `WSZC_SyringeInput`, шлёт `WSZC_MinigameAck` и
+  `WSZC_BandageInput` / `WSZC_SyringeInput`, шлёт `WSZC_MinigameAck`,
+  `WSZC_BandageState` (обычный прогресс + остаток артерии) и
   `WSZC_SyringeState`, закрывает через `WSZC_BandageClose` / `WSZC_SyringeClose`
   и `WSZC_MinigameClose`.
 - `session.startAmount`, `session.deferredUsed`, `onProgress`, `onClose` и
@@ -263,6 +367,10 @@ SWEP. В authority-режиме каждая такая доза дополни�
   `Examine Body`.
 - При закрытии мини-игры курсор не снимается, если панель C:U ещё открыта
   (`WoundSystemHealthHUDOpen`).
+- Дополнительные `MEDICAL ASSESSMENT`, vital signs и selected-limb cards
+  удалены по запросу владельца. Остаются прежние откалиброванные позиции и
+  размеры doll/hitboxes, shaped outlines и нативный hover; отдельного
+  `woundview_polish` конвара больше нет.
 
 ## Конвары
 
@@ -279,19 +387,29 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_disable_cu_fx` | этот аддон (client) | `1` — снять ВСЕ экранные/камерные/UI-эффекты C:U, оставить только эффекты ZCity; `0` — вернуть хуки C:U. |
 | `zc_woundsystem_compat_disable_cu_blood` | этот аддон (client + server) | `1` — убрать декоративную кровь C:U и вернуть ванильную кровь ZCity/Hemogen; `0` — вернуть как было. |
 | `zc_woundsystem_compat_shrapnel_only_shotgun_blast` | этот аддон (server) | `1` — осколки только от дробовика и взрыва, не от пистолетов/винтовок; `0` — старое поведение (любой `DMG_BULLET`). |
-| `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа и сохраняет структуру ZCity (`otrub`/`fake`/`canmove`); `0` — исходный ZCity reset. |
+| `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа и сохраняет структуру ZCity (`otrub`/`fake`/`canmove`), но полностью очищает раны/шрапнель/C:U residue; `0` — исходный ZCity reset. |
+| `zc_woundsystem_compat_shrapnel_lodged_effects` | этот аддон (server) | `1` — любой неизвлечённый fragment наращивает tagged ZCity-рану, боль и кровотечение; `0` — отключить только этот рост. |
 | `zc_woundsystem_compat_fullscreen_minigame` | этот аддон (client) | `1` — мини-игры бинта/шприца на весь экран; `0` — исходный квадрат ~760 px C:U. |
 | `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `1.0` — базовый размер мини-игры; диапазон `0.7..1.8`. |
 | `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | **`1`** — авторский размер НАТИВНЫХ мини-игр C:U (вправление, осколки, AED), квадрат 760 px без shrink; диапазон `0.4..1.2`. |
 | `zc_woundsystem_compat_fullscreen_native` | этот аддон (client) | **`0`** — нативные C:U мини-игры в авторском размере. `1` — прежнее растяжение на весь экран; live-откат показал огромный обрезанный осколок и потерю нижней части раны. |
 | `zc_woundsystem_compat_close_on_empty_click` | этот аддон (client) | **`1`** — клик по пустой области WoundView закрывает окно через `WoundSystem.CloseHealthHUD()`; кукла, 5 слотов, кнопки инструментов, action point, UNI-HEALTH и drag исключены. |
-| `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | `0.45` — множитель спрайта руки 512×1260 в мини-играх бинта/шприца; диапазон `0.2..1`. |
+| `zc_woundsystem_compat_bandage_strength` | этот аддон (server) | **`2`** — множитель реального treatment budget бинта для ZCity ordinary wounds; не лечит артерии и не дублирует mirror. |
+| `zc_woundsystem_compat_bleeding_multiplier` | этот аддон (server) | **`0.55`** — верхний cap `org.bleedingmul` для обычных ран; меньшее серверное значение не повышается, arterial formula не использует этот множитель. |
+| `zc_woundsystem_compat_bandaged_shrapnel_infection` | этот аддон (server) | **`1`** — медленная внутренняя инфекция закрытых повязкой фрагментов; `0` отключает только рост инфекции, не цикл unwrap→extract. |
+| `zc_woundsystem_compat_shrapnel_infection_death_delay` | этот аддон (server) | **`600`** — секунды от полного покрытия шрапнели на конечности до смертельной инфекции мозга без полного aftercare; торс = 40%, мозг = 70% таймера; диапазон `60..3600`. |
+| `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | `1` — исходный CU-размер спрайта 512×1260 в бинте/шприце; прежний дополнительный `0.45` удалён миграцией revision 3. Диапазон `0.2..1`. |
 | `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 слоёв `unitmenu/limbs` архива; `0` — родные спрайты C:U. |
-| `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.24` — размер куклы относительно `dollScale` C:U; диапазон `0.1..0.8`. |
+| `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.25` — native-калибровка `0.24` + 4.17% линейного размера; диапазон `0.1..0.8`. |
 | `zc_woundsystem_compat_unitmenu_tint` | этот аддон (client) | `1` — белый `SetDrawColor` для `*_fill.png` (стандартный чёрный иначе умножается на чёрный `finalMiddle`). `*_edge.png` не трогается: обводка по форме лимба и её затемнение при наведении остаются за C:U. |
 | `zc_woundsystem_compat_hide_minigame_text` | этот аддон (client) | `1` — убрать заголовок / счётчик / три строки инструкций / `Press RMB/ESC to exit` и верхнюю панель во **всех** 5 C:U + 2 WSZC мини-играх. **Тёмное затемнение заднего фона (`Clip.DrawBackdrop`) сохранено** — по запросу владельца «во всех мини играх было затемнение заднего фона как раньше». AED-статус `WoundSystemAEDStatus` убран только внутри активной мини-игры. **`minigameshrapnel.png` — передний слой раны, НЕ удаляется.** Иконки, осколок, рука, пинцет, `bandageOuter`, уведомления ZCity, красный death-текст, капли и `Icons.*` остаются. `0` — вернуть как было. |
-| `zc_woundsystem_compat_handanim` | этот аддон (client) | `1` — кадры `homigrad/handanim/hand.png` и `3_3.png` вместо руки 512×1260; `0` — родная рука C:U. |
-| `zc_woundsystem_compat_handanim_scale` | этот аддон (client) | `0.55` — размер реалистичной руки; диапазон `0.2..1.5`. |
+| `zc_woundsystem_compat_handanim` | этот аддон (client) | `1` — человеческие `wszc/minigame/hand_idle.png` / `hand_click.png` 512×1260 в вертикальной CU-позе; `0` — родная рука C:U. |
+| `zc_woundsystem_compat_handanim_scale` | этот аддон (client) | `1` — исходный CU-размер реалистичной руки; диапазон `0.2..1.5`. |
+| `zc_woundsystem_compat_hide_minigame_hand` | этот аддон (client) | `0` — показывать руку; `1` — прежний режим без руки, со стандартной стрелкой. |
+| `zc_woundsystem_compat_hide_minigame_cursor` | этот аддон (client) | `1` — скрывать OS-стрелку только во время активной мини-игры с рукой; на выходе и при `hide_minigame_hand 1` стрелка восстанавливается. |
+| `zc_woundsystem_compat_hand_pivot_x` / `..._hand_pivot_y` | этот аддон (client) | `0.4` / `0.1` — точка захвата на коже между пальцами; native `MG.handDrawW/H` и хитбоксы не меняются. |
+| `zc_woundsystem_compat_hand_pin_cursor` | этот аддон (client) | `0` — штатные C:U HandPhysics, инерция и поворот; `1` — опциональный жёсткий пин к `gui.MousePos()` с синхронизацией MG. |
+| `zc_woundsystem_compat_hand_mode_revision` | этот аддон (client) | Служебная миграция `3`: восстанавливает исходные CU scale/pivot и скрытие стрелки, затем не перезаписывает пользовательские настройки. |
 | `zc_woundsystem_compat_dislocation_start` | этот аддон (server) | `35` — стартовое смещение кости в мини-игре вправления (было 100); диапазон `10..100`. Меньше = кость на экране и меньше ударов. |
 | `zc_woundsystem_compat_hide_cu_inventory` | этот аддон (client) | `1` — скрыть 5 слотов C:U, их рамки, drag&drop и подбор мировых предметов; виртуальный слот `6` остаётся. |
 | `zc_woundsystem_compat_hide_unit_panel` | этот аддон (client) | `1` — скрыть левый сканер `UNI-HEALTH v2.03` внутри WoundView. |
@@ -417,11 +535,12 @@ C:U пересоздаёт `EYEVIEW_CalcView` из своего `Think`.
 
 **Источники.** Раньше `IsBallisticHit()` возвращал `true` для любого
 `DMG_BULLET` и даже для любого калибра вида «NxM mm», поэтому пистолеты и
-винтовки сажали осколки. Новый `IsShotgunHit()` принимает только:
-`DMG_BUCKSHOT`; ammo `12/70*`, `20/70*`, `23x75*` (все shotgun-SWEP ZCity —
-xm1014, spas12, saiga12, remington870, roullet, doublebarrel_short); инфликтор
-или активное оружие с `NumBullet > 1`. Отдельная ветка `DMG_BLAST` даёт
-фрагменты от взрывчатки. Патроны `9x19 mm`, `7.62x39 mm` и т.п. больше **не
+винтовки сажали осколки. Теперь `IsShotgunHit()` требует положительного
+подтверждения: ammo `12/70*`, `20/70*`, `23x75*` (все shotgun-SWEP ZCity —
+xm1014, spas12, saiga12, remington870, roullet, doublebarrel_short), shotgun
+класс или инфликтор/активное оружие с `NumBullet > 1`. Одиночный `DMG_BUCKSHOT`
+без этих признаков недостаточен. Отдельная ветка `DMG_BLAST` даёт фрагменты от
+взрывчатки отдельным вызовом. Патроны `9x19 mm`, `7.62x39 mm` и т.п. больше **не
 дают** шрапнель. Откат: `zc_woundsystem_compat_shrapnel_only_shotgun_blast 0`.
 
 **Конечность.** Прежде limb угадывался по ближайшей кости к
@@ -431,9 +550,12 @@ xm1014, spas12, saiga12, remington870, roullet, doublebarrel_short); инфли�
 пишет туда урон и `CurTime()`), затем `ply:LastHitGroup()`, `ply.HitBones`,
 и только потом позиция с жёстким порогом 55 юнитов. Если ни один источник не
 дал конечность — осколок **не создаётся**, а не падает в случайный `thorax`.
-Инъекция перенесена из pre-хука в `PostEntityTakeDamage`: `org.dmgstack`
-заполняется внутри ZCity-хука, и только после него limb известен.
-`took == false` по-прежнему обрабатывается (это норма для ZCity).
+Инъекция выполняется сразу после родного `homigrad-damage` внутри его wrapper:
+`org.dmgstack` / `ply.HitBones` уже заполнены, а `return true` больше не может
+подавить обработку. `PostEntityTakeDamage` остаётся fallback для сторонних
+путей и обрабатывает `took == false`. Один DamageInfo, прошедший
+player→FakeRagdoll или collision-proxy→player, дедуплицируется; proxy без
+владельца/конечности НЕ помечается обработанным и не блокирует настоящий hit.
 
 ## `reset organism` не встаёт сам
 
@@ -444,13 +566,24 @@ xm1014, spas12, saiga12, remington870, roullet, doublebarrel_short); инфли�
 
 `WSZC.InstallResetStructureGuard()` оборачивает `hg.organism.Clear` и
 `WB.ResetOrganism`: на время `ResetOrganism` `WB.RestoreRagdoll` подменяется на
-no-op (иначе отложенный таймер поднял бы игрока уже после обёртки), а состояние
-`otrub / needotrub / fake / needfake / canmove / alive / stun / consciousness` / ...
-сохраняется и возвращается после очистки. Травмы и `health` при этом очищаются как обычно —
-сохраняется именно **структура ZCity**, а не C:U body/limbs. После восстановления
-повторно шлются `hg.send_organism` / `hg.send_bareinfo` и обновляется shadow C:U.
-Обычный `Player Spawn` (нет `FakeRagdoll`, нет `otrub`) не затрагивается.
-Откат: `zc_woundsystem_compat_preserve_reset_structure 0`.
+no-op (иначе отложенный таймер поднял бы игрока уже после обёртки), а только
+`otrub / needotrub / fake / needfake / alive / otrub_start / unconscious`
+сохраняются и возвращаются после очистки. Травмы, blood/pain и `health`
+очищаются как обычно. После восстановления повторно шлются
+`hg.send_organism` / `hg.send_bareinfo` и обновляется shadow C:U.
+При явном reset `SnapshotZCityStructure(..., false)` и `ClearAllShrapnel()` не
+оставляют ни фрагментов, ни tagged-ран, ни source/irritation/C:U residue.
+Очистка применяется к АКТУАЛЬНОМУ `ply.organism` после native reset; при
+`false`/ошибке WB выполняется родной `hg.organism.Clear` fallback с traceback.
+Death-ragdoll разрешается через `organism.owner`; штатный `reset_org` получает
+владельца только на время callback, поэтому его `ent:Nick()` не вызывается на
+ragdoll. Отдельный путь — родной `hg.FakeUp`: он вызывает `ply:Spawn()` с
+`OverrideSpawn == true`, и обычный `Player Spawn → Org Clear` не должен стереть
+медицину. Для этого `SnapshotRagdollOrganism()` cycle-safe копирует ВЕСЬ
+organism (кроме entity `owner`) до native Clear, а `RestoreRagdollOrganism()`
+возвращает native/third-party поля, wounds/arterialwounds, amputations,
+шрапнель и infection после него. Настоящий respawn и explicit reset в этот
+путь не входят. Откат: `zc_woundsystem_compat_preserve_reset_structure 0`.
 
 ## Камера в мини-игре
 
@@ -471,8 +604,9 @@ no-op (иначе отложенный таймер поднял бы игрок
 сравнивает ссылку на таблицу: если она новая, `WSZC.RestoreShrapnel()`
 восстанавливает осколки ИЗ `ply.organism` (создавая недостающий limb через
 `H.GetLimbState`), если та же — честно принимает результат извлечения из
-shrapnel-мини-игры. Хуки `Fake` / `FakeUp` / `HG_OnWakeOtrub` дополнительно переутверждают
-состояние на следующем кадре (дополнительно).
+shrapnel-мини-игры. Хуки `Fake` / серверный `Fake Up` / клиентский `FakeUp` /
+`HG_OnWakeOtrub` дополнительно переутверждают состояние на следующем кадре;
+`RestoreBones()` одновременно восстанавливает и amputation shadow.
 
 **Стекло в ragdoll.** Раньше glass-обработчик висел `pre`-функцией на ZCity
 хуке `Ragdoll Collide / organism` и дублировал его фильтры урона
@@ -659,7 +793,7 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  (проверки теперь лежат в репозитории: `tools/tests/test_wszc_regression.py`
  — статические маркеры всех прошлых фиксов, `ALL_LUA_OK 11/11`,
  `CJK_CLEAN`, PIL-проверка человеческих пропорций и белой обводки,
- 647 материалов и `MATERIALS.sha256`, оба ZIP / зеркало /
+ 649 материалов и `MATERIALS.sha256`, оба ZIP / зеркало /
  `MANIFEST.txt`, а также 29 рантайм-проверок на lupa: фильтр HUD,
  full-screen клип, рука ровно на курсоре, скрытый курсор,
  точечный фильтр текста мини-игр (включая AED), сохранение уведомлений ZCity,
@@ -683,15 +817,15 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
 |---|---|
 | `для переделывания интерфейса.zip` | 216 PNG: `zcity_delta/unitmenu/*`, `homigrad/handanim/*` (9 кадров руки), `bleedanim`, `limbs`, 159 moodles, traits, smiley |
 | `для того чтобы все работало вместе материалы для UI.zip` | 362 файла: весь `casunknown-images/*` (18 старых лимбов `middle/`+`outlines/` с `_padded`, 43 иконки, 66 экранов, 43 предмета, мини-игры), `woundsystem/*`, 7 `.vtf`, 6 `.vmt` |
-| генератор `tools/build_unitmenu_materials.py` | 33 PNG нарезанной куклы (`wszc/unitmenu/`) |
+| генераторы `tools/build_unitmenu_materials.py` + `tools/build_minigame_hand.py` | 33 PNG куклы + 2 человеческие руки (`wszc/unitmenu/`, `wszc/minigame/`) |
 
-Итого **647 файлов**. Плюс 36 алиасов, которые создаёт упаковщик: 25 точных
+Итого **649 файлов**. Плюс 36 алиасов, которые создаёт упаковщик: 25 точных
 camelCase-копий (архив в lowercase, Linux-клиент регистрозависим) и 11
 переносов — C:U ищет `handgraspidle1.png` / `minigameshrapnel.png` в папках
 `dislocationminigame`, `shrapnelminigame`, `syringeminigame`, а архив держит их
 только в `bandageminigame`; отдельно `screen/hemothoraxfill_red.png`.
 14 PNG-дублей `(1)`, `(2)`, `(3)` из корня второго архива побайтово проверены и
-пропущены. Скрипт сборки `zcity_full_pack.zip` зеркалирует те же 647 файлов в
+пропущены. Скрипт сборки `zcity_full_pack.zip` зеркалирует те же 649 файлов в
 `garrysmod/addons/casualties_unknown_health_system_beta/materials/`, поэтому
 аддон C:U тоже полный. Lua исходных аддонов не меняется.
 
@@ -834,16 +968,17 @@ chrome-шрифтов **и AED-статуса** и только пока мин�
 красный death-текст, капли, белые иконки переломов, осколки и рука не
 подавляются. `0` — вернуть как было.
 
-**Рука без инерции.** Рука из архива (`homigrad/handanim`) остаётся, но теперь
-берётся реальная позиция `gui.MousePos()`, а не `MG.handScreenX/Y`, которую
-C:U `HandPhysics` догоняет с задержкой и тряской от боли.
-`WSZC.PinNativeHandToCursor()` дополнительно пишет курсор в состояние активной
-мини-игры, чтобы хитбоксы захвата совпадали с картинкой; поворот `0`, точка
-захвата `zc_woundsystem_compat_hand_pivot_x 0.16` /
-`..._hand_pivot_y 0.45` ровно на курсоре, ширина ≤
-`..._hand_max_screen 0.34 * ScrW`. Системный курсор по-прежнему скрыт
-(`zc_woundsystem_compat_hide_minigame_cursor 0` (см. №12)). Вернуть инерцию C:U —
-`zc_woundsystem_compat_hand_pin_cursor 0`.
+**Человеческая рука с поведением C:U.** Генератор использует реальные кадры
+`homigrad/handanim`, поворачивает их пальцами вверх и сохраняет открытую ладонь
+и кулак в `materials/wszc/minigame/`. По умолчанию рука следует штатной
+`MG.handScreenX/Y` и `HandPhysics`: инерция, боль, idle/click и поворот не
+подавляются. Pivot `zc_woundsystem_compat_hand_pivot_x 0.4` /
+`..._hand_pivot_y 0.1` — исходные CU-значения. Размеры `512×1260`, координаты
+`x/y/w/h` и `rot` не пересчитываются, дополнительные коэффициенты равны `1`,
+экранного cap больше нет: заменяется ТОЛЬКО материал. Системный курсор скрыт
+в активной мини-игре (`..._hide_minigame_cursor 1`), повторно скрывается при
+каждой отрисовке руки и восстанавливается на выходе. Для жёсткого пина к реальному `gui.MousePos()` можно включить
+`..._hand_pin_cursor 1`; для обычной стрелки без руки — `..._hide_minigame_hand 1`.
 
 **Фон WoundView.** `WoundDollAndPanel` рисует полноэкранный `woundbg` с альфой
 150, а `DrawConsciousnessBlackout` — чёрный квад поверх всего: отсюда
@@ -1049,7 +1184,7 @@ runtime-код **не изменялись**. Живой GMod агентом н�
 Все пять правок проверены headless (71+ проверок, `ALL_LUA_OK`, пересборка материалов и обоих ZIP), но **живой GMod агентом не запускался** — принятие только по свежим live-скриншотам.
 
 
-### По live-скриншотам №9: геометрия как в нативной кукле + шрапнель только в 4 точках
+### По live-скриншотам №9: геометрия куклы + прежнее ТЗ четырёх точек (уточнено)
 
 `Screenshot_2-10.png` — родная кукла C:U `EXPERIMENT UNIT-HEALTH V2.04`, её и
 нужно было повторить («вот так сделай»). `Screenshot_1-9.png` — наша кукла в
@@ -1090,15 +1225,16 @@ runtime-код **не изменялись**. Живой GMod агентом н�
    ноль белых пикселей на границах спрайтов сохранены. Конвары, мини-игры,
    рука, шрапнель, цвет и контур не правились. Равномерное ×1.15, «~2%» и
    линейная нормализация `101..1401` удалены как ошибочные.
-2. **Шрапнель появляется только в 4 отмеченных лимбах.** `hand_R`, `hand_L`,
-   `foot_R`, `foot_L` — единственные разрешённые получатели. Все три источника
-   (дробовик/взрыв, стекло, попадание в ragdoll) проходят через один
-   `WSZC.AddShrapnel`, где `WSZC.ShrapnelSpawnLimb` переводит любое другое
-   попадание (голова, грудь, живот, плечо, предплечье, бедро, голень) на
-   ближайшую отмеченную конечность той же стороны. Fallback на `thorax` убран.
-   За одно попадание на отмеченный лимб ложится **3, 4 или 5 осколков**
-   («4 - 5 - 3»): стекло/дробовик = 3, взрыв добавляет по одному за каждый
-   дополнительный pellet. Верх ограничен `ShrapnelPieceCount`.
+2. **Прежнее правило четырёх точек теперь относится ТОЛЬКО к стеклу.** Старое
+   глобальное remapping-правило для дробовика отменено после live-репорта.
+   `WSZC.AddShrapnel` вызывает `WSZC.ShrapnelSpawnLimb` только для
+   `reason == "glass"`; дробовик/взрыв сохраняют фактический normalized limb
+   (`head`, `thorax`, `abdomen`, все arm/forearm/hand и thigh/crus/foot).
+   Для стекла получатели по-прежнему только `hand_R`, `hand_L`, `foot_R`,
+   `foot_L`. Неразрешённый damage limb не перенаправляется в кисть/стопу.
+   За одно попадание ложится **3, 4 или 5 осколков**: стекло/дробовик = 3,
+   взрыв добавляет по одному за дополнительный pellet. Верх ограничен
+   `ShrapnelPieceCount`.
 
 Чёрный `(0,0,0)`, `EDGE_WIDTH=9`, `EDGE_PAD_MIN=6`, обводка по альфа-форме без
 рамок, hover `finalOutline`/`HoverAnims`, мини-игры и `text=all`, рука,
@@ -1216,16 +1352,19 @@ GMod не запускался — принятие по свежему live-с�
    сбрасывает `WoundSystemActionButtonPos`, чтобы поправка применилась сразу,
    а не за секунду Lerp'а.
 
-3. **Рука убрана, курсор стандартный.** `hand=archive` ОТМЕНЕНО по запросу
-   «убери руку из мини игр замени на стандартный курсор». Конвары по
-   умолчанию: `zc_woundsystem_compat_hide_minigame_cursor 0` (видна обычная
-   стрелка, никакого `blank`), `zc_woundsystem_compat_hide_minigame_hand 1`,
-   `zc_woundsystem_compat_handanim 0`, `zc_woundsystem_compat_hand_pin_cursor 0`.
-   `WSZC.UnitmenuHandAlpha()` возвращает `0`, поэтому наши копии бинта/шприца
-   сохраняют ВСЕ хитбоксы и вызовы отрисовки, но руку не видно;
-   `WSZC.InstallNativeHandOverride()` теперь ставится и в этом режиме и
-   подавляет нативные `handgrasp*` спрайты через флаг `handHide`. Пин к курсору
-   и inertia-подмена отключены — стрелка всегда там, где реальная мышь.
+3. **Возвращена человеческая рука в режиме C:U.** Прежний режим «только
+   стрелка» отменён. `tools/build_minigame_hand.py` поворачивает реальные кадры
+   `homigrad/handanim/hand.png` / `3_3.png` в вертикальную CU-позу и создаёт
+   `wszc/minigame/hand_idle.png` / `hand_click.png` (512×1260). По умолчанию:
+   `zc_woundsystem_compat_handanim 1`, `..._hide_minigame_hand 0`,
+   `..._hide_minigame_cursor 1`, `..._hand_pin_cursor 0`. Ладонь/кулак,
+   HandPhysics, инерция, наклон и игровые хитбоксы остаются штатными C:U;
+   системная стрелка скрыта только во время активной мини-игры и возвращается
+   на выходе. Для прежнего arrow-only режима: `..._hide_minigame_hand 1`.
+   Миграция `..._hand_mode_revision 3` дополнительно убирает сохранённые
+   коэффициенты `0.45`/`0.55` и старый pivot: размер и положение снова точно
+   совпадают с C:U. Обычная стрелка подавляется при каждой отрисовке руки.
+   После миграции ручные настройки больше не перезаписываются.
 
 4. **Курсор не пропадал после мини-игры.** `DisableMinigameClicker()` раньше
    делал `return` при `WoundSystemHealthHUDOpen == true`, поэтому
@@ -1267,23 +1406,19 @@ GMod не запускался — принятие по свежему live-с�
    `cx/cy`, длины, POT-ширины, габарит `377..988 × 217..864`, симметрия
    `cx_R+cx_L=1500`, чёрный цвет и обводка по форме не изменились.
 
-2. **Курсор в мини-играх.** Главная причина, по которой стрелку не было видно:
-   `CreateClientConVar` создан с `shouldsave = true`, и у игрока в
-   `config.vdf` осталось **`zc_woundsystem_compat_hide_minigame_cursor 1`** из
-   старой сборки. Смена дефолта на `0` НЕ перезаписывает сохранённое значение,
-   поэтому `SyncMinigameCursor()` продолжал ставить `SetCursor("blank")`.
-   Исправлено жёстко, без доверия конвару:
-   * при загрузке `cvHideCursor:SetInt(0)`;
-   * `BlankMinigameCursor()` теперь инертен (`return false`), пустой курсор
-     **никогда** не ставится;
-   * `RestoreMinigameCursor()` всегда форсит `"arrow"` (а не `savedCursor`,
-     который сам мог быть `"blank"`);
-   * `SyncMinigameCursor()` всегда восстанавливает стрелку;
-   * `WSZC_MinigameCursor` (Think) проверяет `vgui.CursorVisible()` и, если
-     C:U watchdog / радиальное меню ZCity выключили кликер посреди игры,
-     сразу делает `gui.EnableScreenClicker(true)` + `arrow`;
-   * `EnableMinigameClicker()` и wrapper `gui.EnableScreenClicker` тоже форсят
-     `arrow`.
+2. **Курсор в мини-играх.** Прежняя ошибка была не в самом `blank`, а в том,
+   что стрелку скрывали при уже отключённой руке: игрок оставался вообще без
+   указателя. Теперь `SyncMinigameCursor()` разрешает `blank` только при
+   активной мини-игре и `ShowMinigameHand() == true`; при
+   `hide_minigame_hand 1`, после закрытия и для мёртвого игрока всегда
+   восстанавливается `arrow`. `WSZC_MinigameCursor` (Think) проверяет
+   `vgui.CursorVisible()` и перезапускает clicker после C:U watchdog /
+   радиального меню ZCity, не выключая mouse input. `UnitmenuHandMat()`
+   дополнительно вызывает `SyncMinigameCursor()` на КАЖДОЙ отрисовке руки,
+   поэтому стрелка не возвращается между периодическими Think-проверками.
+   Старые archived no-hand настройки мигрирует `MigrateHumanHandDefaults()` (revision 3),
+   поэтому обновление не оставляет прежнюю комбинацию «нет руки + blank».
+   Ручной выбор arrow-only сохраняется и больше не перезаписывается.
 
 3. **Морфин / фентанил / обезболивающие.** Настоящая причина найдена в
    `z_city/lua/homigrad/woundbridge/sv_woundbridge.lua` и
@@ -1349,8 +1484,8 @@ GMod не запускался — принятие по свежему live-с�
 **Что НЕ менялось:** 15 силуэтов архива, `SquareToe()` только для стоп,
 `JOINT_ERODE=3`, `EDGE_PAD_MIN=6`, `EDGE_WIDTH=9`, чёрный цвет, обводка по
 форме, T-pose, симметрия `cx_R+cx_L=1500`, `0.0%` белого на границах спрайтов,
-затемнение мини-игр, видимый стандартный курсор, `analgesiaAdd` для опиоидов,
-перелом/вывих на один лимб, шрапнель на 4 лимба.
+затемнение мини-игр, человеческая C:U-рука вместо системного курсора, `analgesiaAdd` для опиоидов,
+перелом/вывих на один лимб, дробовик — на фактический лимб, стекло — на 4 лимба.
 
 Проверить локально:
 `PYTHONPATH=/tmp/pil_pkg python3 tools/fit_unitmenu_geometry.py --reference /path/Screenshot_2-10.png --overlay /tmp/overlay.png`
@@ -1358,3 +1493,28 @@ GMod не запускался — принятие по свежему live-с�
 
 Suite `82/82` до пересборки архивов, затем полный прогон. Живой GMod не
 запускался — принятие по свежему live-скрину.
+
+## №15: повторный live-fix — reset, настоящие дробовики и native WoundView
+
+* **Дробовой путь воспроизведён целиком.** Прежний focused test передавал
+  `HITGROUP_RIGHTARM` напрямую и пропускал настоящий resolver. Новые проверки
+  вызывают зарегистрированный `PostEntityTakeDamage` с `hitgroup=nil`,
+  `took=false`, свежими `org.dmgstack` / `ply.HitBones`, а также идут по пути
+  player→FakeRagdoll→обёрнутый `homigrad-damage`. Proxy без владельца больше
+  не выставляет `ShrapnelHandled` раньше времени; injection выполнен и внутри
+  native-wrapper, поэтому `return true` ZCity не отменяет осколки.
+* **Полный reset.** Добавлены source-faithful `H.ResetPlayer → Clear →
+  RestoreRagdoll` (последний подавлен), очистка текущего organism, native
+  fallback, death-ragdoll и `reset_org`. Пустая shadow-таблица допускается,
+  но число фрагментов, раны, infection, dressing/tourniquet и `HitBones`
+  после reset равны нулю/пусты. Обычный ragdoll-clear сохраняет их, как и
+  прежде. Lua 5.1/5.x wrapper использует `table.unpack or unpack`.
+* **Кукла.** `REFERENCE_BOXES` переснят с `Screenshot_1.png` независимо для
+  каждой части: native-руки/кисти не принудительно зеркалятся. Чёрный fill и
+  shaped white outline сохранены, рамок нет. По 14 частям с надёжной чёрной
+  маской IoU checked-in геометрии = **0.9683**; полупрозрачная голова сверена
+  по контуру отдельно. Итоговый scale `0.25` вместо `0.24` (+4.17%), hover
+  hitboxes используют видимые `hoverW/hoverH`.
+* Локальные source-faithful gameplay checks: **37/37**. Живой GMod не
+  запускался; это не заменяет live-проверку. Для неизвестных сторонних ошибок
+  всё ещё нужен полный клиентский/серверный console stack trace.

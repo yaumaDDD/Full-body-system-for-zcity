@@ -2,24 +2,24 @@
 -- Standard black fill + per-limb shaped outline (no rectangular frames).
 -- POT sprite sizes: C:U sizes limbs by mat:Width()/Height(), which GMod
 -- rounds to a power of two.  Inner silhouette boxes are calibrated
--- pixel-for-pixel against native Screenshot_2-10.png using the live
--- S=0.4155 / centre=(682.5,558.2) from Screenshot_1-10.png.
+-- pixel-for-pixel against native Screenshot_1.png using the live
+-- S=0.4155 / centre=(682.5,558.2); each limb is fitted independently.
 -- cx/cy are in the 1500x1500 canvas; hoverW/hoverH are the VISIBLE
 -- inner boxes (used for C:U sourceW/sourceH hit tests).
 WSZC_UNITMENU_LIMB_GEOMETRY = {
     head = { cx = 750.0, cy = 51.6, w = 256, h = 512, hoverW = 161, hoverH = 245 },
-    thorax = { cx = 747.6, cy = 334.4, w = 512, h = 512, hoverW = 298, hoverH = 310 },
-    abdomen = { cx = 747.6, cy = 661.7, w = 512, h = 512, hoverW = 310, hoverH = 337 },
-    arm_R = { cx = 495.8, cy = 275.4, w = 256, h = 256, hoverW = 207, hoverH = 130 },
-    arm_L = { cx = 1004.2, cy = 275.4, w = 256, h = 256, hoverW = 207, hoverH = 130 },
-    forearm_R = { cx = 260.2, cy = 263.4, w = 512, h = 128, hoverW = 265, hoverH = 91 },
-    forearm_L = { cx = 1239.8, cy = 263.4, w = 512, h = 128, hoverW = 265, hoverH = 91 },
-    hand_R = { cx = 67.7, cy = 261.0, w = 256, h = 128, hoverW = 113, hoverH = 101 },
-    hand_L = { cx = 1432.3, cy = 261.0, w = 256, h = 128, hoverW = 113, hoverH = 101 },
-    thigh_R = { cx = 677.8, cy = 970.9, w = 256, h = 512, hoverW = 140, hoverH = 274 },
-    thigh_L = { cx = 822.2, cy = 970.9, w = 256, h = 512, hoverW = 140, hoverH = 274 },
-    crus_R = { cx = 673.0, cy = 1235.7, w = 256, h = 512, hoverW = 116, hoverH = 243 },
-    crus_L = { cx = 827.0, cy = 1235.7, w = 256, h = 512, hoverW = 116, hoverH = 243 },
-    foot_R = { cx = 667.0, cy = 1433.0, w = 128, h = 256, hoverW = 91, hoverH = 120 },
-    foot_L = { cx = 833.0, cy = 1433.0, w = 128, h = 256, hoverW = 91, hoverH = 120 },
+    thorax = { cx = 747.6, cy = 334.4, w = 512, h = 512, hoverW = 301, hoverH = 310 },
+    abdomen = { cx = 747.6, cy = 661.7, w = 512, h = 512, hoverW = 308, hoverH = 332 },
+    arm_R = { cx = 495.8, cy = 275.4, w = 256, h = 256, hoverW = 200, hoverH = 137 },
+    arm_L = { cx = 1001.7, cy = 282.6, w = 256, h = 256, hoverW = 205, hoverH = 140 },
+    forearm_R = { cx = 265.0, cy = 263.4, w = 512, h = 128, hoverW = 267, hoverH = 91 },
+    forearm_L = { cx = 1222.9, cy = 263.4, w = 256, h = 128, hoverW = 226, hoverH = 87 },
+    hand_R = { cx = 58.1, cy = 263.4, w = 256, h = 128, hoverW = 130, hoverH = 103 },
+    hand_L = { cx = 1405.8, cy = 258.5, w = 256, h = 128, hoverW = 130, hoverH = 103 },
+    thigh_R = { cx = 677.8, cy = 970.9, w = 256, h = 512, hoverW = 140, hoverH = 270 },
+    thigh_L = { cx = 819.8, cy = 970.9, w = 256, h = 512, hoverW = 135, hoverH = 274 },
+    crus_R = { cx = 670.6, cy = 1238.1, w = 128, h = 512, hoverW = 108, hoverH = 250 },
+    crus_L = { cx = 827.0, cy = 1238.1, w = 256, h = 512, hoverW = 113, hoverH = 250 },
+    foot_R = { cx = 662.2, cy = 1435.4, w = 128, h = 256, hoverW = 111, hoverH = 120 },
+    foot_L = { cx = 837.8, cy = 1435.4, w = 128, h = 256, hoverW = 111, hoverH = 113 },
 }
