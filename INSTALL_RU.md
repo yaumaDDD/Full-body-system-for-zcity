@@ -60,12 +60,13 @@
 | Нативная мини-игра вправления меньше исходного квадрата C:U | `zc_woundsystem_compat_native_minigame_zoom 0.85` (диапазон `0.4..1.2`) |
 | Кость вправления рядом с суставом и на экране | `zc_woundsystem_compat_dislocation_start 35` (диапазон `10..100`) |
 | Компактная рука одного размера во всех мини-играх | `zc_woundsystem_compat_hand_cursor_scale 0.55`, `..._handanim_scale 1`; единый множитель в C:U/WSZC, миграция revision 6, hitbox/центр/rotation не меняются |
-| Кукла WoundView собрана из 15 слоёв `unitmenu/limbs` архива + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, размер `zc_woundsystem_compat_unitmenu_scale 0.24` (диапазон `0.1..0.8`) |
-| Все 649 UI-материалов внутри сборки (без ERROR и ручного копирования) | `woundsystem_zcity_compat/materials/` + зеркало в `casualties_unknown_health_system_beta/materials/`, генератор `tools/pack_ui_materials.py` |
+| Кукла WoundView собрана из 15 исходных слоёв `unitmenu/limbs` в 16 интерактивных частей + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, размер `zc_woundsystem_compat_unitmenu_scale 0.25` (диапазон `0.1..0.8`) |
+| Отдельная шея: hitbox/hover, `Broken neck`, подсказка Skin/Muscle и синхронизация на первой жизни | `org.skull`, `Bip01_Neck1` и `neckartery` относятся к `PlayerLimbs.neck`; head не дублирует перелом. Подсказка: `Neck / Skin: N% / Muscle: N%`; ZCity HUD, таймер и нижние слоты сохранены |
+| Все 651 UI-материалов внутри сборки (без ERROR и ручного копирования) | `woundsystem_zcity_compat/materials/` + зеркало в `casualties_unknown_health_system_beta/materials/`, генератор `tools/pack_ui_materials.py` |
 | Человеческая рука C:U в мини-играх — ладонь/кулак 512×1260 | `zc_woundsystem_compat_handanim 1`, `..._hide_minigame_hand 0`, общий размер `..._hand_cursor_scale 0.55`; спрайты `wszc/minigame/hand_idle.png` / `hand_click.png` |
 | Зелёные полосы/лёгкие/ЭКГ сканера слева скрыты | `zc_woundsystem_compat_hide_unit_panel 1` (глушатся `DrawTexturedRectUV`, `DrawLine`, `DrawPoly`) |
 | Экран смерти C:U не рисуется, но ЛКМ респавнит | включается вместе с `zc_woundsystem_compat_disable_cu_fx 1`; хук обёрнут, а не удалён |
-| Кукла не обрезается слева/снизу, видны `REMOVE SHRAPNEL` и `FIX DISLOCATION` | `WSZC.InstallMaterialTracker()` + `WSZC.IsDollDrawMaterial()`; размер `zc_woundsystem_compat_unitmenu_scale 0.24` |
+| Кукла не обрезается слева/снизу, видны `REMOVE SHRAPNEL` и `FIX DISLOCATION` | `WSZC.InstallMaterialTracker()` + `WSZC.IsDollDrawMaterial()`; размер `zc_woundsystem_compat_unitmenu_scale 0.25` |
 | Осколки от ударов кулаками по стеклу | `zc_woundsystem_compat_shrapnel 1`, `zc_woundsystem_compat_glass_shrapnel 1`, резервный хук `WSZC_GlassStrikePre` на `EntityTakeDamage`; диагностика `zc_woundsystem_compat_organism_debug 1` |
 | Кровь `project hemogen blood` не изменена | compat не обращается к `advancedblood/*`; ERROR-квадраты — отсутствующие материалы самого аддона |
 | WSZC мини-игры на весь экран; нативные C:U — умеренно отдалены | `zc_woundsystem_compat_fullscreen_minigame 1`, `zc_woundsystem_compat_fullscreen_native 0`, `zc_woundsystem_compat_native_minigame_zoom 0.85`. Растяжение нативных игр давало огромный обрезанный осколок и уводило нижнюю часть раны за экран |
@@ -131,7 +132,7 @@ ZCity сам вызывает `resource.AddWorkshop` при `hg_loadcontent 1`:
 
 **Про C:U — важное исключение.** В исходном ZIP репозитория лежат только Lua,
 3 шрифта и 3 шейдера — `materials/` и `sound/` там нет. Сборка **уже добавила**
-все UI-материалы (649 файлов) и в `woundsystem_zcity_compat/materials/`, и в
+все UI-материалы (651 файл) и в `woundsystem_zcity_compat/materials/`, и в
 `casualties_unknown_health_system_beta/materials/`: WoundView, лимбы, иконки,
 экраны и мини-игры больше не показывают ERROR, вручную ничего перекидывать не
 надо, `woundsys_resource_downloads 1` для них не требуется. Остаются только
@@ -201,7 +202,7 @@ ragdoll→standing, `RestoreBones`, `ReconcileSpawnShrapnel`, мини-игры 
 попиксельно: спрайты степеней двойки (C:U мерит `mat:Width()`, а GMod
 округляет PNG до POT), калибровка `S=0.4155`, центр `(682.5,558.2)` по
 `Screenshot_1-10.png`. Равномерное ×1.15 и «~2%» отменены live.
-Изменены только размеры/положение 15 лимбов и hitbox'ы.
+Изменены размеры/положение 16 лимбов и hitbox'ы; шея добавлена в native C:U состояние.
 
 ## №10 (по `Screenshot_3-7.png` / `Screenshot_4-6.png`): доводка куклы, курсор и затемнение
 

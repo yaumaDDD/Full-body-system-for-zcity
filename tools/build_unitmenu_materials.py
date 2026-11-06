@@ -7,8 +7,11 @@ Source:  origin/main:для переделывания интерфейса.zip
 The archive contains 15 already-positioned 1500x1500 RGBA limb layers.  Their
 baked positions produce a wide "coat" with stubby legs, so we resample each
 layer's alpha into an explicit HUMAN-PROPORTION blueprint (the reference
-silhouette the owner supplied).  C:U's WoundView draws one small sprite per
-limb (middle + outline) at its own ox/oy, so every layer is emitted as:
+silhouette the owner supplied).  The source head also contains the neck: the
+generator splits that ONE scaled silhouette at the authored horizontal joint,
+producing independent head and neck sprites without changing the outer contour.
+C:U's WoundView therefore draws 16 small sprites (middle + outline), each at its
+own ox/oy:
 
     woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/<id>_fill.png
     woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/<id>_edge.png
@@ -116,6 +119,7 @@ CENTRE = 750.0
 # maps to the archive's l_* half; *_L maps to r_*.
 LIMB_LAYERS = {
     'head': 'head',
+    'neck': 'head',  # lower joint of the SAME scaled source silhouette
     'thorax': 'chest',
     'abdomen': 'pelvis',
     'arm_R': 'l_upperarm', 'arm_L': 'r_upperarm',
@@ -153,8 +157,14 @@ LIVE_CX, LIVE_CY = 682.5, 558.2
 # Widths include a small compensation: MinFilter(JOINT_ERODE) and LANCZOS
 # shave ~2 px off each side of an inner box before it reaches the screen.
 # Without it the head/legs simulate 6-10 px narrower than the native doll.
+# The old 102 px head sprite contained both skull and neck.  Keep its outer
+# box verbatim, but split it into a 77 px skull and a 25 px neck.  The two
+# inner canvas heights are 185 + 60 = 245, EXACTLY the old unsplit inner height,
+# so resizing the source once and cropping it introduces no anatomy distortion.
+HEAD_SOURCE_BOX = (682.5, 268.0, 67, 102)
 REFERENCE_BOXES = {
-    'head':      (682.5, 268.0, 67, 102),
+    'head':      (682.5, 255.5, 67, 77),
+    'neck':      (682.5, 306.5, 67, 25),
     'thorax':    (681.5, 385.5, 125, 129),
     'abdomen':   (681.5, 521.5, 128, 138),
     # Independent pixel fit against native Screenshot_1.png.  The native arms
@@ -184,27 +194,32 @@ def next_pot(v):
     return p
 
 
+def layout_entry(box):
+    """Exact inverse of C:U's linear placement for one reference box."""
+    tx, ty, tw, th = box
+    cx = CENTRE + (tx - LIVE_CX) / LIVE_S
+    cy = CENTRE + (ty - LIVE_CY) / LIVE_S
+    inner_w = int(round(tw / LIVE_S))
+    inner_h = int(round(th / LIVE_S))
+    w = next_pot(inner_w + 2 * EDGE_PAD_MIN + ERODE_MARGIN)
+    h = next_pot(inner_h + 2 * EDGE_PAD_MIN + ERODE_MARGIN)
+    px = (w - inner_w) // 2
+    py = (h - inner_h) // 2
+    assert px >= EDGE_PAD_MIN and py >= EDGE_PAD_MIN, box
+    # Round to 0.1 exactly like the emitted Lua.  Do NOT mirror the other
+    # side: Screenshot_1.png has measurably asymmetric arm/hand placement.
+    return (round(cx, 1), round(cy, 1), w, h, px, py, inner_w, inner_h)
+
+
 def build_layout():
-    """Exact inverse of C:U's linear placement for the reference screenshot."""
-    layout = {}
-    for limb_id, (tx, ty, tw, th) in REFERENCE_BOXES.items():
-        cx = CENTRE + (tx - LIVE_CX) / LIVE_S
-        cy = CENTRE + (ty - LIVE_CY) / LIVE_S
-        inner_w = int(round(tw / LIVE_S))
-        inner_h = int(round(th / LIVE_S))
-        w = next_pot(inner_w + 2 * EDGE_PAD_MIN + ERODE_MARGIN)
-        h = next_pot(inner_h + 2 * EDGE_PAD_MIN + ERODE_MARGIN)
-        px = (w - inner_w) // 2
-        py = (h - inner_h) // 2
-        assert px >= EDGE_PAD_MIN and py >= EDGE_PAD_MIN, limb_id
-        # Round to 0.1 exactly like the emitted Lua.  Do NOT mirror the other
-        # side: Screenshot_1.png has measurably asymmetric arm/hand placement.
-        layout[limb_id] = (round(cx, 1), round(cy, 1), w, h, px, py,
-                           inner_w, inner_h)
-    return layout
+    return {limb_id: layout_entry(box)
+            for limb_id, box in REFERENCE_BOXES.items()}
 
 
 HUMAN_LAYOUT = build_layout()
+HEAD_SOURCE_LAYOUT = layout_entry(HEAD_SOURCE_BOX)
+assert HUMAN_LAYOUT['head'][6] == HUMAN_LAYOUT['neck'][6] == HEAD_SOURCE_LAYOUT[6]
+assert HUMAN_LAYOUT['head'][7] + HUMAN_LAYOUT['neck'][7] == HEAD_SOURCE_LAYOUT[7]
 
 
 def load_archive(arg=None):
@@ -260,9 +275,9 @@ def main():
     #    reports mat:Width() == w the limb lands on the native pixel box.
     #    A per-limb inset keeps the contour off the rectangular sprite edge.
     # ------------------------------------------------------------------
-    soft, hard = {}, {}
-    for limb_id, layer in LIMB_LAYERS.items():
-        cx, cy, w, h, px, py, inner_w, inner_h = HUMAN_LAYOUT[limb_id]
+    def archive_cell(limb_id, layer, layout):
+        """Resize one archive alpha into a POT cell without changing its shape."""
+        cx, cy, w, h, px, py, inner_w, inner_h = layout
         assert w == next_pot(w) and h == next_pot(h), limb_id
         src = Image.open(
             io.BytesIO(z.read(PREFIX + 'zcity_delta/unitmenu/limbs/' + layer + '.png'))
@@ -276,14 +291,37 @@ def main():
         assert inner_w > 8 and inner_h > 8, limb_id
         scaled = alpha.crop(bbox).resize((inner_w, inner_h), Image.Resampling.LANCZOS)
         # Owner (Screenshot_1-11.png): "а не меняй то как оно выглядит".
-        # The 15 archive silhouettes are emitted VERBATIM for every arm/hand:
+        # The archive silhouettes are emitted VERBATIM for every arm/hand:
         # no closing, no band straightening.  Only the feet keep the flat sole
         # requested in Screenshot_8.png; proportions are fixed in
         # REFERENCE_BOXES below, not by redrawing the anatomy.
         if limb_id.startswith('foot_'):
             scaled = SquareToe(scaled)
-        cell_soft = Image.new('L', (w, h), 0)
-        cell_soft.paste(scaled, (px, py))
+        result = Image.new('L', (w, h), 0)
+        result.paste(scaled, (px, py))
+        return result
+
+    # Resize the source head ONCE into its old 67x102 screen box.  Cropping the
+    # resulting pixels into the new 77/25 boxes preserves every contour point;
+    # resizing the source independently into head/neck would distort the neck.
+    full_head = archive_cell('head', LIMB_LAYERS['head'], HEAD_SOURCE_LAYOUT)
+    old_px, old_py = HEAD_SOURCE_LAYOUT[4], HEAD_SOURCE_LAYOUT[5]
+    split_y = old_py + HUMAN_LAYOUT['head'][7]
+
+    soft, hard = {}, {}
+    for limb_id, layer in LIMB_LAYERS.items():
+        layout = HUMAN_LAYOUT[limb_id]
+        if limb_id not in ('head', 'neck'):
+            cell_soft = archive_cell(limb_id, layer, layout)
+        else:
+            cx, cy, w, h, px, py, inner_w, inner_h = layout
+            cell_soft = Image.new('L', (w, h), 0)
+            if limb_id == 'head':
+                segment = full_head.crop((0, 0, full_head.width, split_y))
+                cell_soft.paste(segment, (px - old_px, py - old_py))
+            else:
+                segment = full_head.crop((0, split_y, full_head.width, full_head.height))
+                cell_soft.paste(segment, (px - old_px, py))
         soft[limb_id] = cell_soft
         hard[limb_id] = cell_soft.point(lambda p: 255 if p > ALPHA_THRESHOLD else 0)
 
@@ -331,6 +369,8 @@ def main():
 
     lines = ['-- Generated by tools/build_unitmenu_materials.py. Do not edit by hand.',
              '-- Standard black fill + per-limb shaped outline (no rectangular frames).',
+             '-- Head/neck are two crops of ONE resized source silhouette; their union',
+             '-- preserves the original 67x102 px outer box and adds only the joint seam.',
              '-- POT sprite sizes: C:U sizes limbs by mat:Width()/Height(), which GMod',
              '-- rounds to a power of two.  Inner silhouette boxes are calibrated',
              '-- pixel-for-pixel against native Screenshot_1.png using the live',
@@ -379,7 +419,7 @@ def main():
     print('max white border coverage: %.1f%% (must be 0%%)' % (worst * 100))
     assert worst == 0.0, 'a limb outline touches its rectangular sprite border'
     assert not empty_edges, 'empty outline sprites: ' + ', '.join(empty_edges)
-    for limb_id in ('head', 'thorax', 'hand_R', 'foot_L'):
+    for limb_id in ('head', 'neck', 'thorax', 'hand_R', 'foot_L'):
         print('  ', limb_id, HUMAN_LAYOUT[limb_id][:4])
 
 

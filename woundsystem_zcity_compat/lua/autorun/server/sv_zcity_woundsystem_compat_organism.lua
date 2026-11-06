@@ -71,7 +71,7 @@ local cvShadow = CreateConVar("zc_woundsystem_compat_shadow", "1",
     "Mirror ZCity injuries into the C:U injury HUD (BodyState / PlayerLimbs)", 0, 1)
 local cvLimbBleed = CreateConVar("zc_woundsystem_compat_limb_bleed", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
-    "Use ZCity's per-bone wounds for limb bleeding instead of painting all 15 C:U limbs", 0, 1)
+    "Use ZCity's per-bone wounds for limb bleeding instead of painting all 16 C:U limbs", 0, 1)
 local cvOnBlocked = CreateConVar("zc_woundsystem_compat_shrapnel_on_blocked", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Count a hit whose EntityTakeDamage hook returned true (ZCity redirects it to the fake ragdoll)", 0, 1)
@@ -143,7 +143,11 @@ end
 -- `org.larm` etc. are damage fractions (0 = healthy, 1 = destroyed), which is
 -- exactly the inverse of the strength value WB.Sync() used to write.
 local LIMB_ORG = {
-    head      = { dmg = "skull",  amp = "headamputated", dis = nil },
+    -- C:U calls head.broken "Broken neck".  Give that fracture its own limb;
+    -- head keeps head-bone wounds/eyes, while neck owns org.skull treatment,
+    -- muscle shadow and boneHealTimer.  The two are not aliases.
+    head      = { dmg = nil,      amp = "headamputated", dis = nil },
+    neck      = { dmg = "skull",  amp = "headamputated", dis = nil },
     thorax    = { dmg = "chest",  amp = nil,              dis = nil },
     abdomen   = { dmg = "pelvis", amp = nil,              dis = nil },
     -- Native AmputateLimb() starts at the FOREARM / CALF, exactly like
@@ -163,6 +167,145 @@ local LIMB_ORG = {
     crus_R    = { dmg = "rleg", amp = "rlegamputated", dis = "rlegdislocation" },
     foot_R    = { dmg = "rleg", amp = "rlegamputated", dis = "rlegdislocation" },
 }
+
+local NECK_DEFAULT_STATE = {
+    skin = 100, muscle = 100, muscleStrength = 1,
+    pain = 0, bleed = 0, infection = 0, infectionSpeed = 0,
+    shrapnel = 0, disinfectTime = 0,
+    broken = false, dislocated = false, dislocationTimer = 0, boneHealTimer = 0,
+    isBandaged = false, blockedBleeding = false,
+    bandageSlowAmount = 0, skinHealAmount = 0, furBloodAmount = 0,
+    eyes = 2, dismembered = false, bandageMinigameSpeedMult = 1,
+    customStatuses = {},
+}
+
+--- Add a REAL sixteenth entry to C:U's server PlayerLimbs table.  SendLimbUpdate
+--- already accepts any key present here, so skin/muscle/broken and every native
+--- status use the stock net protocol without a parallel client-only shadow.
+function WSZC.EnsureNeckState(ply)
+    if not IsValid(ply) then return false end
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    if type(limbs) ~= "table" then return false end
+    if type(limbs.neck) == "table" then return false end
+
+    local state = table.Copy(WSZC.NeckDefaultState or NECK_DEFAULT_STATE)
+    state.customStatuses = {}
+    if WoundSystem and WoundSystem.Statuses
+        and type(WoundSystem.Statuses.ApplyDefaultState) == "function" then
+        pcall(WoundSystem.Statuses.ApplyDefaultState, state)
+    end
+    limbs.neck = state
+    if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, "neck", true) end
+    return true
+end
+
+function WSZC.InstallNeckState(h)
+    h = h or H()
+    if type(h) ~= "table" then return false end
+
+    if not WSZC.NeckDefaultState and type(h.InitPlayer) == "function"
+        and type(WSZC.Upvalue) == "function" then
+        local template = WSZC.Upvalue(h.InitPlayer, "defaultLimbState")
+        if type(template) == "table" then WSZC.NeckDefaultState = table.Copy(template) end
+    end
+
+    -- Exported InitPlayer is used by the bridge and by several C:U systems.
+    -- Its PlayerSpawn hook calls the LOCAL original directly, hence the spawn
+    -- hook below is deliberately a second, authoritative first-life path.
+    if type(h.InitPlayer) == "function" and h.InitPlayer ~= WSZC._NeckInitWrapper then
+        local original = h.InitPlayer
+        WSZC._NeckOriginalInitPlayer = original
+        WSZC._NeckInitWrapper = function(ply)
+            local a, b, c = original(ply)
+            WSZC.EnsureNeckState(ply)
+            return a, b, c
+        end
+        h.InitPlayer = WSZC._NeckInitWrapper
+    end
+
+    local const = h.Const
+    if type(const) == "table" then
+        const.ParentLimb = const.ParentLimb or {}
+        const.ParentLimb.neck = "head"
+        const.LimbToBones = const.LimbToBones or {}
+        const.LimbToBones.neck = { "ValveBiped.Bip01_Neck1", "Bip01 Neck" }
+        if type(const.LimbToBones.head) == "table"
+            and WSZC._NeckLimbBonesTable ~= const.LimbToBones then
+            local headBones = const.LimbToBones.head
+            for i = #headBones, 1, -1 do
+                if string.find(string.lower(tostring(headBones[i])), "neck", 1, true) then
+                    table.remove(headBones, i)
+                end
+            end
+            WSZC._NeckLimbBonesTable = const.LimbToBones
+        end
+
+        local ragdollBones = const.RagdollDamageBones
+        if type(ragdollBones) == "table" and WSZC._NeckRagdollBonesTable ~= ragdollBones then
+            for _, candidate in ipairs(ragdollBones) do
+                if candidate.limb == "head" and type(candidate.patterns) == "table" then
+                    for i = #candidate.patterns, 1, -1 do
+                        if string.find(string.lower(tostring(candidate.patterns[i])), "neck", 1, true) then
+                            table.remove(candidate.patterns, i)
+                        end
+                    end
+                end
+            end
+            table.insert(ragdollBones, 1, { limb = "neck", patterns = { "neck" } })
+            WSZC._NeckRagdollBonesTable = ragdollBones
+        end
+    end
+
+    if not WSZC._NeckSpawnHook then
+        WSZC._NeckSpawnHook = true
+        hook.Add("PlayerSpawn", "WSZC_NeckFirstLifeSync", function(ply)
+            timer.Simple(0, function()
+                if not IsValid(ply) then return end
+                WSZC.EnsureNeckState(ply)
+                local restored = false
+                if WSZC.RestoreBones then
+                    local ok, result = pcall(WSZC.RestoreBones, ply)
+                    restored = ok and result == true
+                end
+                if not restored then
+                    local health = H()
+                    local limbs = health and health.GetLimbs and health.GetLimbs(ply) or nil
+                    if type(limbs) == "table" and health.SendLimbUpdate then
+                        for limbId in pairs(limbs) do
+                            pcall(health.SendLimbUpdate, ply, limbId, true)
+                        end
+                    end
+                end
+            end)
+            -- A first-life client can finish its own entity initialization
+            -- after the spawn packet.  Re-send neck once it is definitely up.
+            timer.Simple(1, function()
+                if not IsValid(ply) then return end
+                WSZC.EnsureNeckState(ply)
+                local health = H()
+                if health and health.SendLimbUpdate then
+                    pcall(health.SendLimbUpdate, ply, "neck", true)
+                end
+            end)
+        end)
+    end
+
+    if player and player.GetAll then
+        WSZC._NeckInitialNetSent = WSZC._NeckInitialNetSent or {}
+        for _, ply in ipairs(player.GetAll()) do
+            local created = WSZC.EnsureNeckState(ply)
+            if h.SendLimbUpdate and not created and not WSZC._NeckInitialNetSent[ply] then
+                -- Existing players do not necessarily respawn after addon setup.
+                -- EnsureNeckState sends newly-created states itself; this covers
+                -- a state created during the earlier pre-export install pass.
+                pcall(h.SendLimbUpdate, ply, "neck", true)
+            end
+            if h.SendLimbUpdate then WSZC._NeckInitialNetSent[ply] = true end
+        end
+    end
+    return true
+end
 
 -- The only treatment site for a ZCity amputation is the remaining proximal
 -- stump.  Distal trace hits can still arrive from an old ragdoll for one tick;
@@ -229,7 +372,7 @@ WSZC.SyncAmputationShadow = SyncAmputationShadow
 -- dislocation icons down the whole leg (Screenshot_7.png).  Now:
 --   fracture    -> ONLY the MIDDLE limb:  forearm_L/R, crus_L/R
 --   dislocation -> ONLY ONE limb ABOVE:   arm_L/R, thigh_L/R
--- head (skull) and thorax (brokenribs) already are single points and stay so.
+-- neck (C:U's head/skull fracture) and thorax (brokenribs) are single points.
 local BONE_ANCHOR = {
     fracture    = { forearm_L = true, forearm_R = true,
                     crus_L = true,    crus_R = true },
@@ -238,10 +381,10 @@ local BONE_ANCHOR = {
 }
 
 --- True when this C:U limb is the ONE point that owns a bone state.
---- Head/thorax are their own single points (ribs, skull); every other limb
---- must be in the anchor set or it is deliberately left healthy-looking.
+--- Neck/thorax are their own single points (skull fracture, ribs); every other
+--- limb must be in the anchor set or it is deliberately left healthy-looking.
 local function BoneAnchor(limbId, kind)
-    if limbId == "head" or limbId == "thorax" then return true end
+    if limbId == "neck" or limbId == "thorax" then return true end
     local set = BONE_ANCHOR[kind]
     return set ~= nil and set[limbId] == true
 end
@@ -297,7 +440,7 @@ end
 -- in the leg made the whole body drip blood in the C:U HUD.
 
 local LIMB_ALIAS = {
-    head = "head", skull = "head", neck = "head",
+    head = "head", skull = "head", neck = "neck",
     chest = "thorax", thorax = "thorax", spine2 = "thorax", spine3 = "thorax",
     spine4 = "thorax", rib = "thorax", sternum = "thorax",
     stomach = "abdomen", abdomen = "abdomen", pelvis = "abdomen",
@@ -309,7 +452,7 @@ local LIMB_ALIAS = {
 local ARTERY_LIMB = {
     larmartery = "forearm_L", rarmartery = "forearm_R",
     llegartery = "thigh_L", rlegartery = "thigh_R",
-    spineartery = "abdomen", neckartery = "head", headartery = "head",
+    spineartery = "abdomen", neckartery = "neck", headartery = "head",
 }
 
 local function NormalizeLimb(limbId)
@@ -335,6 +478,10 @@ end
 local function LimbFromBoneName(name)
     if type(name) ~= "string" or name == "" then return nil end
     local lower = string.lower(name)
+
+    -- C:U's legacy head patterns also contain "neck".  Resolve the anatomical
+    -- bone FIRST so Bip01_Neck1 can never be folded back into head by that table.
+    if string.find(lower, "neck", 1, true) then return "neck" end
 
     -- 1) C:U's own ragdoll table, when that build exports it.
     local c = Constants()
@@ -532,7 +679,8 @@ end
 --- C:U's isBandaged flag alone is insufficient because partial WSZC wraps do
 --- not set it and native shrapnel extraction clears it on a failed grasp.
 local COMPLICATION_BONES = {
-    head = "ValveBiped.Bip01_Head1", thorax = "ValveBiped.Bip01_Spine2",
+    head = "ValveBiped.Bip01_Head1", neck = "ValveBiped.Bip01_Neck1",
+    thorax = "ValveBiped.Bip01_Spine2",
     abdomen = "ValveBiped.Bip01_Spine1",
     arm_L = "ValveBiped.Bip01_L_UpperArm", forearm_L = "ValveBiped.Bip01_L_Forearm",
     hand_L = "ValveBiped.Bip01_L_Hand",
@@ -1971,6 +2119,7 @@ function WSZC.RestoreBones(ply)
     local org = ply.organism
     if type(org) ~= "table" then return false end
     local h = H()
+    if WSZC.EnsureNeckState then pcall(WSZC.EnsureNeckState, ply) end
     local limbs = h and h.GetLimbs and h.GetLimbs(ply)
     if type(limbs) ~= "table" then return false end
 
@@ -1980,25 +2129,23 @@ function WSZC.RestoreBones(ply)
     SyncAmputationShadow(org, limbs)
     ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
     for limbId, map in pairs(LIMB_ORG) do
-        if map.dmg then
-            local state = limbs[limbId]
-            if type(state) ~= "table" and h.GetLimbState then
-                local ok, created = pcall(h.GetLimbState, ply, limbId)
-                if ok then state = created end
-            end
-            if type(state) == "table" then
-                -- Dislocation lives on the limb ABOVE the fracture's middle
-                -- limb, and nowhere else.  A non-anchor limb is always healthy.
-                local out = map.dis and BoneAnchor(limbId, "dislocation")
-                    and org[map.dis] == true or false
-                state.dislocated = out
-                state.dislocationTimer = out and DislocationStartTimer() or 0
-                state.broken = Fractured(org, limbId, map)
-                state.boneHealTimer = math.Clamp((1 -
-                    (tonumber(org[map.dmg]) or 0)) * 100, 0, 100)
-                ply._WSZCExpectedDislocation[limbId] = out
-                if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
-            end
+        local state = limbs[limbId]
+        if type(state) ~= "table" and h.GetLimbState then
+            local ok, created = pcall(h.GetLimbState, ply, limbId)
+            if ok then state = created end
+        end
+        if type(state) == "table" then
+            -- Dislocation lives on the limb ABOVE the fracture's middle
+            -- limb, and nowhere else.  A non-anchor limb is always healthy.
+            local out = map.dis and BoneAnchor(limbId, "dislocation")
+                and org[map.dis] == true or false
+            state.dislocated = out
+            state.dislocationTimer = out and DislocationStartTimer() or 0
+            state.broken = map.dmg ~= nil and Fractured(org, limbId, map) or false
+            state.boneHealTimer = map.dmg ~= nil and math.Clamp((1 -
+                (tonumber(org[map.dmg]) or 0)) * 100, 0, 100) or 0
+            ply._WSZCExpectedDislocation[limbId] = out
+            if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
         end
     end
     return true
@@ -2700,7 +2847,7 @@ local function PushShadow(ply, org)
                 elseif dmg > 0.001 then
                     -- Only limbs the organism actually damaged bleed.  Internal
                     -- bleeding stays in body.internalBleeding and never paints
-                    -- all 15 limbs red.
+                    -- all 16 limbs red.
                     limbBleed = math.Clamp(math.min(bleed * 0.2, dmg * 20), 0, 100)
                 else
                     limbBleed = 0
@@ -2742,6 +2889,13 @@ local function PushShadow(ply, org)
                     end
                     ply._WSZCExpectedDislocation[limbId] = out
                 end
+            elseif map then
+                -- Head is now wound/eye presentation only.  In particular a
+                -- legacy head.broken must not duplicate the neck fracture.
+                limbSet("broken", false)
+                limbSet("boneHealTimer", 0)
+                limbSet("dislocated", false)
+                limbSet("dislocationTimer", 0)
             end
             if limbChanged then dirtyLimbs[limbId] = true end
         end

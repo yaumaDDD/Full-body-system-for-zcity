@@ -102,6 +102,16 @@ def main():
     data1 = Path(args[0]).read_bytes() if len(args) > 0 else git_show(ARCHIVE_1)
     data2 = Path(args[1]).read_bytes() if len(args) > 1 else git_show(ARCHIVE_2)
 
+    # Build the CURRENT 16-part doll before the copy/coverage pass.  Otherwise
+    # this script restored the old 15-part head whenever it was rerun after a
+    # standalone neck build, making the result depend on command order.
+    doll_cmd = [sys.executable, str(ROOT / 'tools/build_unitmenu_materials.py')]
+    if args:
+        doll_cmd.append(str(Path(args[0]).resolve()))
+    subprocess.run(doll_cmd, cwd=ROOT, check=True)
+    subprocess.run([sys.executable, str(ROOT / 'tools/build_minigame_hand.py')],
+                   cwd=ROOT, check=True)
+
     entries = {}
     sources = Counter()
 
@@ -139,6 +149,15 @@ def main():
     print('archives:', len(entries), 'files', dict(sources),
           '| skipped duplicate loose PNGs:', len(loose))
 
+    # Generated WSZC art already exists on disk but is deliberately NOT part of
+    # the two source archives (or their 614-entry checksum manifest).
+    generated = {
+        p.relative_to(OUT).as_posix(): p.read_bytes()
+        for folder in ('wszc/unitmenu', 'wszc/minigame')
+        for p in (OUT / folder).rglob('*') if p.is_file()
+    }
+    assert len(generated) == 37, ('32 limb + 3 status + 2 hand PNGs', len(generated))
+
     # ------------------------------------------------------------------ aliases
     refs = referenced_paths(collect_lua_sources())
     by_lower = {r.lower(): r for r in entries}
@@ -149,7 +168,7 @@ def main():
     aliases = {}
     unresolved = []
     for wanted in sorted(refs):
-        if wanted in entries:
+        if wanted in entries or wanted in generated:
             continue
         cand = by_lower.get(wanted.lower())
         if cand is None:
@@ -195,6 +214,10 @@ def main():
 
     exts = Counter(os.path.splitext(r)[1].lower() for r in entries)
     print('packed', len(entries), 'materials', dict(exts))
+    actual_materials = [p for p in OUT.rglob('*') if p.is_file()]
+    limb_pngs = [p for p in (OUT / 'wszc/unitmenu/limbs').glob('*.png')]
+    assert len(actual_materials) == 651, ('complete material count', len(actual_materials))
+    assert len(limb_pngs) == 32, ('16 fill + 16 edge sprites', len(limb_pngs))
     print('ALL_LUA_UI_MATERIALS_RESOLVED', len(refs), 'referenced paths')
 
     lines = ['# UI materials bundled into woundsystem_zcity_compat/materials/',

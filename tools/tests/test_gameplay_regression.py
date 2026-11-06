@@ -141,6 +141,11 @@ WSZC = { OrganismAuthority = function() return true end }
 WoundSystem = { Health = { Constants = { ShrapnelPieceCount = 5 } } }
 hg = {}
 math.Clamp = function(v, lo, hi) if v < lo then return lo end; if v > hi then return hi end; return v end
+table.Copy = function(t)
+    local out = {}
+    for k, v in pairs(t or {}) do if type(v) == "table" then out[k] = table.Copy(v) else out[k] = v end end
+    return out
+end
 CreateConVar = function(name, def)
     return { GetBool = function() return def ~= "0" end,
              GetFloat = function() return tonumber(def) or 0 end }
@@ -189,6 +194,7 @@ function MakePlayer()
     ply._limbs.forearm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
     ply._limbs.thorax = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0, infectionSpeed = 0 }
     ply._limbs.head = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0, infectionSpeed = 0 }
+    ply._limbs.neck = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0, infectionSpeed = 0 }
     ply.IsPlayer = function() return true end
     ply.Alive = function() return true end
     ply.Nick = function() return "regression_player" end
@@ -272,7 +278,7 @@ return activeWeaponWorks, pistol._limbs.hand_R.shrapnel == 0 and pistol._limbs.f
 
     placement = lua.execute(r'''
 local ALL = {
-    "head", "thorax", "abdomen",
+    "head", "neck", "thorax", "abdomen",
     "arm_L", "forearm_L", "hand_L", "arm_R", "forearm_R", "hand_R",
     "thigh_L", "crus_L", "foot_L", "thigh_R", "crus_R", "foot_R",
 }
@@ -319,7 +325,7 @@ for _, id in ipairs(ALL) do
 end
 return shotgunActual, glassOnly, nativeWoundSchema
 ''')
-    check("R29 shotgun stays on each actually hit limb across all 15 C:U limbs", placement[0])
+    check("R29 shotgun stays on each actually hit limb across all 16 C:U limbs", placement[0])
     check("R30 glass alone keeps its hands/feet-only spawn mapping", placement[1])
     check("R31 synthetic shrapnel wounds satisfy native localPos/localAng schema", placement[2])
 
@@ -1466,6 +1472,67 @@ return #active == 2 and active[1].id == "WSZC_AMPUTATION" and active[2].id == "T
     and active[1].data.icon == "casunknown-images/moodles/amputation.png"
 ''')
     check("R50 native Statuses.GetActive draws amputation before tourniquet/bleed statuses", native_status_order)
+
+    neck_state = lua.execute(r'''
+local ply = MakePlayer()
+local h = WoundSystem.Health
+h.Const = {
+    ParentLimb = {},
+    LimbToBones = { head = { "ValveBiped.Bip01_Head1", "ValveBiped.Bip01_Neck1" } },
+    RagdollDamageBones = {
+        { limb = "head", patterns = { "head", "neck", "jaw" } },
+        { limb = "thorax", patterns = { "spine2" } },
+    },
+}
+h.InitPlayer = function(target)
+    target._limbs = {
+        head = { skin = 100, muscle = 100, broken = true, boneHealTimer = 15,
+            dislocated = false, dislocationTimer = 0, shrapnel = 0, bleed = 0, pain = 0 },
+    }
+end
+assert(WSZC.InstallNeckState(h))
+h.InitPlayer(ply) -- real exported wrapper: native reset, then sixteenth state
+local firstLife = ply._limbs.neck ~= nil
+    and hook._t.PlayerSpawn.WSZC_NeckFirstLifeSync ~= nil
+    and h.Const.ParentLimb.neck == "head"
+    and h.Const.RagdollDamageBones[1].limb == "neck"
+    and #h.Const.LimbToBones.head == 1
+
+ply.organism.skull = 1
+ply.organism.wounds = {
+    { 2, Vector(), Angle(), "ValveBiped.Bip01_Neck1", 0 },
+    { 3, Vector(), Angle(), "ValveBiped.Bip01_Head1", 0 },
+}
+ply.organism.arterialwounds = {
+    { 4, Vector(), Angle(), "ValveBiped.Bip01_Neck1", 0, Vector(), "neckartery" },
+}
+assert(WSZC.RestoreBones(ply))
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local separated = ply._limbs.neck.broken == true and ply._limbs.head.broken == false
+    and ply._limbs.neck.muscle == 0 and ply._limbs.head.muscle == 100
+    and ply._limbs.neck.boneHealTimer == 0 and ply._limbs.head.boneHealTimer == 0
+local bleed = WSZC.LimbBleedMap(ply, ply.organism)
+local routed = bleed.neck == 16 and bleed.head == 6
+
+-- A head-only muscle heal must NOT heal the neck's native fracture field.
+ply._limbs.head.muscle = 0
+local beforeHead = WSZC.SnapshotMedical(ply, "head")
+ply.organism.skull = 1
+ply._limbs.head.muscle = 100
+WSZC.ApplyMedicalDelta(ply, "head", beforeHead)
+local headTreatmentIndependent = ply.organism.skull == 1
+
+ply._limbs.neck.muscle = 0
+local beforeNeck = WSZC.SnapshotMedical(ply, "neck")
+ply._limbs.neck.muscle = 100
+WSZC.ApplyMedicalDelta(ply, "neck", beforeNeck)
+local neckTreatmentWorks = math.abs(ply.organism.skull) < 0.0001
+return firstLife, separated, routed, headTreatmentIndependent and neckTreatmentWorks
+''')
+    check("R65 first-life InitPlayer creates and synchronizes one real neck state", neck_state[0])
+    check("R66 skull fracture/muscle render on neck only, never duplicated on head", neck_state[1])
+    check("R67 Neck1 and neckartery route separately from Head1 wounds", neck_state[2])
+    check("R68 neck treatment heals skull; head treatment cannot heal the neck", neck_state[3])
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

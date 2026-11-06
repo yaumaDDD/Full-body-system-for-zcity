@@ -13,7 +13,7 @@ build directory:
     notifications / AED status labels / death text / icons all survive,
   * runtime behaviour of the HUD filter, full-screen minigames, hand pivot and
     cursor hiding (lupa / LuaRuntime; skipped if lupa is unavailable),
-  * both ZIPs, the 649-material mirror and MANIFEST sha256.
+  * both ZIPs, the 651-material mirror and MANIFEST sha256.
 
 Usage: python3 tools/tests/test_wszc_regression.py
 """
@@ -209,7 +209,9 @@ check('S32 FindCULimbs has fallbacks + a PreDrawHUD retry',
 # Screenshot_1-10.png and emits POT sprites (C:U sizes limbs by mat:Width(),
 # which GMod rounds to a power of two).  A uniform scale of w/h can never work.
 check('S33 REFERENCE_BOXES = independent native Screenshot_1 boxes, POT-calibrated',
-      "'head':      (682.5, 268.0, 67, 102)" in generator_s
+      "HEAD_SOURCE_BOX = (682.5, 268.0, 67, 102)" in generator_s
+      and "'head':      (682.5, 255.5, 67, 77)" in generator_s
+      and "'neck':      (682.5, 306.5, 67, 25)" in generator_s
       and "'thorax':    (681.5, 385.5, 125, 129)" in generator_s
       and "'abdomen':   (681.5, 521.5, 128, 138)" in generator_s
       and "'arm_R':     (576.9, 361.0, 83, 57)" in generator_s
@@ -382,12 +384,39 @@ check('S50 geometry is measured against the native reference, not eyeballed',
       and 'def render(' in fit_s
       and 'G.REFERENCE_BOXES' in fit_s
       and 'Screenshot_1.png' in fit_s
-      and "ORDER = tuple(k for k in G.LIMB_LAYERS if k != 'head')" in fit_s
+      and "ORDER = tuple(k for k in G.LIMB_LAYERS if k not in ('head', 'neck'))" in fit_s
       and 'PAIRS =' not in fit_s
       and 'NOT ONE silhouette pixel' in fit_s
       and 'SEEDS = {' in fit_s
       and 'include_head=False' in fit_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s)
+check('S56 neck is a real client/server limb with tooltip and first-life sync',
+      'local function EnsureNeckLimb(limbs)' in layout_s
+      and 'function WSZC.UnitmenuTooltipLines(id, state)' in layout_s
+      and 'hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip"' in layout_s
+      and 'function WSZC.EnsureNeckState(ply)' in organism_s
+      and 'hook.Add("PlayerSpawn", "WSZC_NeckFirstLifeSync"' in organism_s
+      and 'neck      = { dmg = "skull"' in organism_s
+      and 'head      = { dmg = nil,      amp = "headamputated", dis = nil },' in organism_s
+      and 'neckartery = "neck"' in organism_s
+      and 'if string.find(lower, "neck", 1, true) then return "neck" end' in organism_s)
+packer_s = (ROOT / 'tools/pack_ui_materials.py').read_text(encoding='utf-8')
+check('S57 packer regenerates the 16-part doll and keeps generated/source counts separate',
+      "subprocess.run(doll_cmd, cwd=ROOT, check=True)" in packer_s
+      and "len(generated) == 37" in packer_s
+      and "wanted in entries or wanted in generated" in packer_s
+      and "len(actual_materials) == 651" in packer_s
+      and "len(limb_pngs) == 32" in packer_s
+      and 'HEAD_SOURCE_LAYOUT' in generator_s
+      and len(set(re.findall(r"^    '(\w+)':", generator_s, re.M))) == 16)
+source_archive_hashes = {
+    'zcity.zip': 'a122484c29e5afeed7e0eb43a6685c68654fe07ae0a288c0ccc1380a0dc401c4',
+    'casualites unknown.zip': '3c77c030cc44a634a0fa588cefaa3204e6b80abcfef215166cfc83dc09a9a786',
+    'zcity organs +.zip': '8c38888907d85901d9cbfb68690b94894d84eb93fd76ec11b61bd93b0ef3f01f',
+}
+check('S58 the three user source ZIPs remain byte-for-byte untouched',
+      all((ROOT / name).is_file() and hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == digest
+          for name, digest in source_archive_hashes.items()))
 check('S39 shrapnel survives ragdoll -> standing (authoritative organism)',
       '"wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation"' in organism_s
       and '_WSZCRagdollTransitionUntil' in organism_s
@@ -443,7 +472,7 @@ try:
     geom = {m[0]: tuple(m[1:]) for m in re.findall(
         r'(\w+)\s*=\s*\{\s*cx\s*=\s*([\d.]+),\s*cy\s*=\s*([\d.]+),\s*w\s*=\s*(\d+),\s*h\s*=\s*(\d+)',
         geom_text)}
-    assert len(geom) == 15, len(geom)
+    assert len(geom) == 16, len(geom)
     limb_dir = CONN / 'materials/wszc/unitmenu/limbs'
     body = Image.new('L', (1500, 1500), 0)
     edges = Image.new('L', (1500, 1500), 0)
@@ -468,8 +497,8 @@ try:
         elayer.paste(ea, box)
         body = ImageChops.lighter(body, flayer)
         edges = ImageChops.lighter(edges, elayer)
-    check('S17 white outline restored: 15 opaque white _edge.png',
-          edge_boxes == 15 and edge_white > 100 and edges.getbbox() is not None)
+    check('S17 white outline restored: 16 opaque white _edge.png',
+          edge_boxes == 16 and edge_white > 100 and edges.getbbox() is not None)
     # Regression for the live "Lego robot" screenshot: a per-sprite white
     # frame means white pixels touch the rectangular sprite border.  The
     # owner chose an outline that follows EACH limb's shape instead, so the
@@ -493,7 +522,7 @@ try:
     # and must follow its limb's shape rather than a box: white pixels sit in
     # the interior of the sprite, not on its border.
     check('S37 generator emits standard black + shape-following per-limb contours',
-          edge_boxes == 15
+          edge_boxes == 16
           and 'DOLL_RGB = (0, 0, 0)' in generator_s
           and 'EDGE_PAD_MIN = 6' in generator_s
           and 'EDGE_WIDTH = 9' in generator_s
@@ -512,12 +541,16 @@ try:
             if px[x, y] == 0 and y > 8 and y < 1492 and px[x, y - 8] > 127 and px[x, y + 8] > 127:
                 seam_pixels += 1
     check('S19 thin joint gaps are present (%d px)' % seam_pixels, seam_pixels > 20)
-    # Human proportions in the generated Lua geometry.
+    # Human proportions in the generated Lua geometry.  Use the VISIBLE head
+    # hitbox, not its new/smaller POT cell: head and neck now own separate cells.
+    hover = {m[0]: (m[1], m[2]) for m in re.findall(
+        r'(\w+)\s*=\s*\{[^\n]*?hoverW\s*=\s*(\d+),\s*hoverH\s*=\s*(\d+)',
+        geom_text)}
     g = {k: tuple(float(v) for v in vals) for k, vals in geom.items()}
-    head_top = g['head'][1] - g['head'][3] / 2
-    torso_bottom = g['abdomen'][1] + g['abdomen'][3] / 2
-    leg_top = g['thigh_R'][1] - g['thigh_R'][3] / 2
-    leg_bottom = g['foot_R'][1] + g['foot_R'][3] / 2
+    head_top = g['head'][1] - float(hover['head'][1]) / 2
+    torso_bottom = g['abdomen'][1] + float(hover['abdomen'][1]) / 2
+    leg_top = g['thigh_R'][1] - float(hover['thigh_R'][1]) / 2
+    leg_bottom = g['foot_R'][1] + float(hover['foot_R'][1]) / 2
     torso_h, leg_h = torso_bottom - head_top, leg_bottom - leg_top
     # Screenshot_2-10.png is the native C:U UNIT-HEALTH V2.04 doll the owner
     # asked to reproduce: its torso (218..592) and legs (592..865) give a
@@ -541,13 +574,45 @@ try:
           and all(int(v[2]) > 0 and int(v[2]) & (int(v[2]) - 1) == 0
                   and int(v[3]) > 0 and int(v[3]) & (int(v[3]) - 1) == 0
                   for v in g.values()))
-    hover = {m[0]: (m[1], m[2]) for m in re.findall(
-        r'(\w+)\s*=\s*\{[^\n]*?hoverW\s*=\s*(\d+),\s*hoverH\s*=\s*(\d+)',
-        geom_text)}
     check('S44 hover boxes are the visible silhouettes, not the padded POT sprites',
-          len(hover) == 15
+          len(hover) == 16
           and all(int(hover[k][0]) <= int(g[k][2]) and int(hover[k][1]) <= int(g[k][3])
                   for k in hover))
+
+    # Pixel-proof that neck is a crop of the ORIGINAL head, not an independently
+    # stretched look-alike.  Rebuild the old full cell, then place both emitted
+    # fills back into it.  Outside the new 3-row joint seam every alpha byte must
+    # be identical to the old silhouette after the same JOINT_ERODE operation.
+    sys.path.insert(0, str(ROOT / 'tools'))
+    import build_unitmenu_materials as generator
+    with zipfile.ZipFile(ROOT / 'для переделывания интерфейса.zip') as ui_zip:
+        raw = ui_zip.read(generator.PREFIX + 'zcity_delta/unitmenu/limbs/head.png')
+    source = Image.open(io.BytesIO(raw)).convert('RGBA').getchannel('A')
+    bbox = source.point(lambda p: 255 if p > generator.ALPHA_THRESHOLD else 0).getbbox()
+    old = generator.HEAD_SOURCE_LAYOUT
+    old_w, old_h, old_px, old_py, old_iw, old_ih = old[2], old[3], old[4], old[5], old[6], old[7]
+    full = Image.new('L', (old_w, old_h), 0)
+    full.paste(source.crop(bbox).resize((old_iw, old_ih), Image.Resampling.LANCZOS),
+               (old_px, old_py))
+    expected = full.filter(ImageFilter.MinFilter(generator.JOINT_ERODE))
+    split_y = old_py + generator.HUMAN_LAYOUT['head'][7]
+    reunited = Image.new('L', (old_w, old_h), 0)
+    for part, destination_y in (
+            ('head', old_py - generator.HUMAN_LAYOUT['head'][5]),
+            ('neck', split_y - generator.HUMAN_LAYOUT['neck'][5])):
+        alpha = Image.open(limb_dir / (part + '_fill.png')).convert('RGBA').getchannel('A')
+        destination_x = old_px - generator.HUMAN_LAYOUT[part][4]
+        layer = Image.new('L', (old_w, old_h), 0)
+        layer.paste(alpha, (destination_x, destination_y))
+        reunited = ImageChops.lighter(reunited, layer)
+    difference = ImageChops.difference(expected, reunited)
+    diff_px = difference.load()
+    for yy in range(max(0, split_y - 2), min(old_h, split_y + 3)):
+        for xx in range(old_w):
+            diff_px[xx, yy] = 0
+    check('S53 head + neck preserve the original silhouette outside their joint seam',
+          difference.getbbox() is None)
+
     hand_frames = [Image.open(CONN / 'materials/wszc/minigame' / name).convert('RGBA')
                    for name in ('hand_idle.png', 'hand_click.png')]
     grip_pixels = [im.getpixel((round(0.4 * (im.width - 1)),
@@ -556,7 +621,7 @@ try:
           all(im.size == (512, 1260) for im in hand_frames)
           and all(px[3] > 200 and px[0] > px[1] > px[2] for px in grip_pixels))
     mats = [p for p in (CONN / 'materials').rglob('*') if p.is_file()]
-    check('S21 connector ships 649 UI materials', len(mats) == 649)
+    check('S21 connector ships 651 UI materials', len(mats) == 651)
     checksums = (CONN / 'MATERIALS.sha256').read_text(encoding='utf-8').splitlines()
     check('S22 MATERIALS.sha256 has 614 source entries',
           len([l for l in checksums if l.strip() and not l.startswith('#')]) == 614)
@@ -572,12 +637,12 @@ def validate_zips():
         assert z.testzip() is None
         full = {i.filename: z.read(i.filename) for i in z.infolist()}
     conn_files = {p.relative_to(CONN).as_posix(): p.read_bytes() for p in CONN.rglob('*') if p.is_file()}
-    assert len(conn_files) == len(compat) == 664
+    assert len(conn_files) == len(compat) == 666
     assert all(compat['woundsystem_zcity_compat/' + r] == d for r, d in conn_files.items())
     mirror = {n[len('garrysmod/addons/casualties_unknown_health_system_beta/materials/'):]: d
               for n, d in full.items()
               if n.startswith('garrysmod/addons/casualties_unknown_health_system_beta/materials/')}
-    assert len(mirror) == 649
+    assert len(mirror) == 651
     assert all(mirror[r[len('materials/'):]] == d for r, d in conn_files.items() if r.startswith('materials/'))
     assert json.loads(compat['woundsystem_zcity_compat/addon.json'])
     bridge = [n for n in full if n.endswith('woundbridge/sv_woundbridge.lua')]
@@ -593,8 +658,13 @@ def validate_zips():
     assert 'WSZC.IsMinigameGameplaySprite' in shipped_layout
     assert 'origBoardRect' not in shipped_layout
     assert 'function WSZC.WoundViewEmptyClick' in shipped_layout
+    assert 'local function EnsureNeckLimb' in shipped_layout
+    assert 'function WSZC.UnitmenuTooltipLines' in shipped_layout
+    assert 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/neck_fill.png' in compat
+    assert 'wszc/unitmenu/limbs/neck_edge.png' in mirror
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
-    assert len(full) == 2769
+    # +2 neck PNGs in the connector and +2 in the C:U material mirror.
+    assert len(full) == 2773
     return True
 
 
@@ -614,6 +684,12 @@ else:
     lua.execute(r'''
 CLIENT = true; SERVER = false
 math.Clamp = function(v, lo, hi) if v < lo then return lo end; if v > hi then return hi end; return v end
+math.Round = function(v) return math.floor(v + 0.5) end
+table.Copy = function(t)
+    local out = {}
+    for k, v in pairs(t or {}) do if type(v) == "table" then out[k] = table.Copy(v) else out[k] = v end end
+    return out
+end
 CurTime = function() return 100 end
 RealTime = function() return 100 end
 FrameTime = function() return 0.016 end
@@ -687,6 +763,8 @@ surface = {
     DrawOutlinedRect = function(x, y, w, h)
         table.insert(surfaceCalls, { kind = "outline", x = x, y = y, w = w, h = h }) end,
     DrawLine = function() end, DrawPoly = function() end, DrawText = function() end,
+    SetFont = function(_) end,
+    GetTextSize = function(t) return #t * 10, 22 end,
 }
 MATERIAL_CACHE = {}
 Material = function(path)
@@ -926,12 +1004,14 @@ end)()
 end)()
 ''')
 
-    rt('R16 geometry table has 15 human-proportioned limbs', '''
+    rt('R16 geometry table has 16 human-proportioned limbs and a neck joint', '''
 (function()
     local n = 0
     for _ in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do n = n + 1 end
     local g = WSZC_UNITMENU_LIMB_GEOMETRY
-    return n == 15 and g.head.cy < g.thorax.cy and g.thorax.cy < g.thigh_R.cy
+    return n == 16 and g.head.cy < g.neck.cy and g.neck.cy < g.thorax.cy
+       and math.abs((g.head.cy + g.head.hoverH / 2) - (g.neck.cy - g.neck.hoverH / 2)) < 0.3
+       and g.thorax.cy < g.thigh_R.cy
        and g.thigh_R.cy < g.crus_R.cy and g.crus_R.cy < g.foot_R.cy
        and g.thorax.w > g.head.w and g.thigh_R.w < g.thorax.w
        and math.abs(g.arm_R.cx + g.arm_L.cx - 1497.5) < 0.11
@@ -1234,16 +1314,117 @@ end)()
     end
     local k = convars["zc_woundsystem_compat_unitmenu_scale"]:GetFloat()
     WSZC.ApplyUnitmenuDoll(limbs, mats, k)
-    local head
-    for _, l in ipairs(limbs) do if l.id == "head" then head = l end end
+    local head, neck
+    for _, l in ipairs(limbs) do
+        if l.id == "head" then head = l end
+        if l.id == "neck" then neck = l end
+    end
     local gh = WSZC_UNITMENU_LIMB_GEOMETRY.head
-    return #limbs == 15 and head ~= nil
+    local gn = WSZC_UNITMENU_LIMB_GEOMETRY.neck
+    return #limbs == 16 and head ~= nil and neck ~= nil
+       and neck.matM == mats.neck.fill and neck.matO == mats.neck.edge
+       and neck.sourceW == gn.hoverW and neck.sourceH == gn.hoverH
+       and math.abs(neck.oy - (gn.cy - 750) * k) < 0.001
        and head.matM == mats.head.fill and head.matO == mats.head.edge
        and math.abs(head.ox - (gh.cx - 750) * k) < 0.001
        and math.abs(head.oy - (gh.cy - 750) * k) < 0.001
        and head.size == 0.25 and head.sourceW == gh.hoverW and head.sourceH == gh.hoverH
        and head.texturePadding == 0 and head.flip == false
        and head._WSZCUnitmenuOriginal.matM ~= nil
+end)()
+''')
+
+    rt('R38 native first-life insertion creates one neck with independent healthy state', '''
+(function()
+    local mats, limbs = {}, {}
+    for id, g in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do
+        mats[id] = { fill = Material("wszc/unitmenu/limbs/" .. id .. "_fill.png"),
+                     edge = Material("wszc/unitmenu/limbs/" .. id .. "_edge.png"),
+                     cx = g.cx, cy = g.cy, w = g.w, h = g.h,
+                     hoverW = g.hoverW, hoverH = g.hoverH }
+        if id ~= "neck" then
+            limbs[#limbs + 1] = { id = id, matM = Material("cu/m"), matO = Material("cu/o"),
+                ox = 0, oy = 0, size = 2, order = id == "head" and 8 or 5,
+                sourceW = 64, sourceH = 64, texturePadding = 1, flip = true }
+        end
+    end
+    local GUIState = { HoverAnims = { head = 0 }, LastHoverStates = { head = false },
+        HudLimbShakeScratch = {}, openTime = 0 }
+    local function CUFactory(GUIState, Limbs)
+        return function() return GUIState, Limbs end
+    end
+    hook.Add("HUDPaint", "WoundDollAndPanel", CUFactory(GUIState, limbs))
+    WoundSystemClientState = { PlayerLimbs = {
+        head = { skin = 12, muscle = 34, broken = true, customStatuses = { OLD = true } },
+    } }
+    WSZC.ClearCULimbsCache()
+    WSZC.ApplyUnitmenuDoll(limbs, mats, 0.25)
+    local headAt, neckAt = 0, 0
+    for i, limb in ipairs(limbs) do
+        if limb.id == "head" then headAt = i end
+        if limb.id == "neck" then neckAt = i end
+    end
+    local state = WoundSystemClientState.PlayerLimbs.neck
+    local created = #limbs == 16 and neckAt == headAt + 1
+        and GUIState.HoverAnims.neck == 0 and GUIState.LastHoverStates.neck == false
+        and state and state.skin == 100 and state.muscle == 100
+        and state.broken == false and state.customStatuses.OLD == nil
+    WSZC.ApplyUnitmenuDoll(limbs, mats, 0.25)
+    local idempotent = #limbs == 16
+    local restored = WSZC.RestoreUnitmenuDoll() and #limbs == 15
+    WSZC.ApplyUnitmenuDoll(limbs, mats, 0.25)
+    _WSZCTestLimbs, _WSZCTestMats = limbs, mats
+    return created and idempotent and restored and #limbs == 16
+end)()
+''')
+
+    rt('R39 Neck hitbox and PostDrawHUD tooltip match the screenshot text', '''
+(function()
+    local neck
+    for _, limb in ipairs(_WSZCTestLimbs) do if limb.id == "neck" then neck = limb end end
+    local scale = ScrH() / 1080
+    local dollScale = 1.5 * scale
+    mouseX = ScrW() / 2 + neck.ox * dollScale
+    mouseY = ScrH() / 2 + 20 * scale + neck.oy * dollScale
+    local hit = WSZC.UnitmenuHover(mouseX, mouseY)
+    local title, skin, muscle = WSZC.UnitmenuTooltipLines("neck", { skin = 100, muscle = 100 })
+    WoundSystemHealthHUDOpen = true
+    textCalls = {}
+    hook._t["PostDrawHUD"]["WSZC_UnitmenuLimbTooltip"]()
+    WoundSystemHealthHUDOpen = false
+    local drawn = { title = false, skin = false, muscle = false }
+    for _, call in ipairs(textCalls) do
+        if call.t == "Neck" then drawn.title = true end
+        if call.t == "Skin: 100%" then drawn.skin = true end
+        if call.t == "Muscle: 100%" then drawn.muscle = true end
+    end
+    return hit and hit.id == "neck" and title == "Neck"
+       and skin == "Skin: 100%" and muscle == "Muscle: 100%"
+       and drawn.title and drawn.skin and drawn.muscle
+end)()
+''')
+
+    rt('R40 Broken neck moodle reads neck.broken, never a duplicate head fracture', '''
+(function()
+    WoundSystem.Moodles = { Definitions = {}, DefById = {}, rebuilt = false }
+    WoundSystem.Moodles.Register = function(id, def)
+        WoundSystem.Moodles.DefById[id] = def
+        WoundSystem.Moodles.Definitions[#WoundSystem.Moodles.Definitions + 1] = def
+    end
+    WoundSystem.Moodles.RebuildNow = function() WoundSystem.Moodles.rebuilt = true end
+    local states = WoundSystemClientState.PlayerLimbs
+    states.neck.broken, states.neck.boneHealTimer = true, 50
+    states.head.broken = true
+    local installed = WSZC.InstallNeckMoodle()
+    local def = WoundSystem.Moodles.DefById.brokenneck
+    local mood = def and def.condition({ limbs = states }) or nil
+    states.neck.broken = false
+    local headOnly = def and def.condition({ limbs = states }) or false
+    hook.Remove("HUDPaint", "WoundDollAndPanel")
+    WSZC.ClearCULimbsCache()
+    return installed and mood and mood.title == "Broken neck"
+       and mood.desc == "The neck is fractured." and mood.intensity == 2
+       and headOnly == false and WoundSystem.Moodles.rebuilt
 end)()
 ''')
 

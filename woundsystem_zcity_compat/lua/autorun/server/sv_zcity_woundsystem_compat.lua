@@ -150,11 +150,12 @@ local FALLBACK_PARENT_LIMB = {
     hand_L = "forearm_L", forearm_L = "arm_L", arm_L = "thorax",
     foot_R = "crus_R", crus_R = "thigh_R", thigh_R = "abdomen",
     foot_L = "crus_L", crus_L = "thigh_L", thigh_L = "abdomen",
-    head = "thorax", abdomen = "thorax",
+    neck = "head", head = "thorax", abdomen = "thorax",
 }
 
 local FALLBACK_RAGDOLL_BONES = {
-    { limb = "head", patterns = { "head", "neck", "jaw", "face" } },
+    { limb = "neck", patterns = { "neck" } },
+    { limb = "head", patterns = { "head", "jaw", "face" } },
     { limb = "hand_L", patterns = { "l_hand", "l hand", "left hand", "bip01_l_finger", "leftfinger" } },
     { limb = "hand_R", patterns = { "r_hand", "r hand", "right hand", "bip01_r_finger", "rightfinger" } },
     { limb = "forearm_L", patterns = { "l_forearm", "l forearm", "left forearm", "l_lowerarm", "left lowerarm" } },
@@ -213,6 +214,7 @@ end
 local function FallbackRagdollBoneNameToLimb(boneName)
     boneName = string.lower(tostring(boneName or ""))
     if boneName == "" then return nil end
+    if string.find(boneName, "neck", 1, true) then return "neck" end
     local const = WSZC.Const or {}
     local patterns = const.RagdollDamageBones or FALLBACK_RAGDOLL_BONES
     for _, candidate in ipairs(patterns) do
@@ -724,6 +726,7 @@ function WSZC.Setup()
     end
 
     WSZC.H = H
+    if WSZC.InstallNeckState then WSZC.InstallNeckState(H) end
 
     -- A future C:U build may already provide the full bridge API.  Even then,
     -- install our external-minigame implementation: the supplied C:U build has
@@ -833,6 +836,7 @@ function WSZC.Setup()
     H.Const.LimbEffectClamps = H.Const.LimbEffectClamps or FALLBACK_LIMB_CLAMPS
     H.Const.BodyEffectClamps = H.Const.BodyEffectClamps or FALLBACK_BODY_CLAMPS
     H.Const.DrugEffectAliases = H.Const.DrugEffectAliases or FALLBACK_DRUG_ALIASES
+    if WSZC.InstallNeckState then WSZC.InstallNeckState(H) end
 
     -- External-minigame API for ZCity's non-instant medical SWEPs.  The
     -- implementation lives in sv_zcity_woundsystem_compat_minigames.lua and

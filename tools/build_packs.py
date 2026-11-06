@@ -8,7 +8,7 @@ only the parts this repository owns:
 
   * garrysmod/addons/woundsystem_zcity_compat/**      <- the connector folder
   * garrysmod/addons/casualties_unknown_health_system_beta/materials/**
-        <- the exact same 649 UI materials mirrored into C:U
+        <- the exact same 651 UI materials mirrored into C:U
   * root docs (README_INSTALL.md / ZCity_binds.md / WORKSHOP_IDS.txt)
   * garrysmod/cfg/zcity_binds.cfg
   * MANIFEST.txt (counts + sha256 of the 11 connector Lua files)
@@ -135,8 +135,9 @@ def main():
     lua = [r for r in conn if r.endswith('.lua')]
     mats = [r for r in conn if r.startswith('materials/')]
     assert len(lua) == 11, ('connector Lua count', len(lua))
-    assert len(mats) >= 649, ('connector material count', len(mats))
-    for marker in ('limbs/head_fill.png', 'limbs/thorax_edge.png',
+    assert len(mats) >= 651, ('connector material count', len(mats))
+    for marker in ('limbs/head_fill.png', 'limbs/neck_fill.png',
+                   'limbs/neck_edge.png', 'limbs/thorax_edge.png',
                    'homigrad/handanim/hand.png', 'handanim/3_3.png',
                    'wszc/minigame/hand_idle.png', 'wszc/minigame/hand_click.png'):
         assert any(marker in m for m in mats), marker

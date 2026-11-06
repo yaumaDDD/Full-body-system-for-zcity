@@ -95,6 +95,19 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
     `OpenHealthHUD()` мог навсегда заблокироваться после выключения физиологии C:U,
     и сбрасывает шрапнель при респавне (в том числе после `LoadPlayerPersistData`
     при переходе между картами).
+11. Добавляет в WoundView настоящую 16-ю часть `neck`, а не рисует статичный
+    mockup. Исходный head-силуэт масштабируется один раз и только потом режется
+    на голову/шею, поэтому человеческие пропорции и тонкий шов сохраняются.
+    `EnsureNeckLimb` вставляет часть в нативные `Limbs`, инициализирует
+    `GUIState.HoverAnims/LastHoverStates`, а `EnsureNeckClientState` — полный
+    `PlayerLimbs.neck`. Hit-test и tooltip в `PostDrawHUD` показывают `Neck`,
+    `Skin: N%`, `Muscle: N%`; стандартные action points и иконка перелома C:U
+    работают на шейном state. `org.skull`, `Bip01_Neck1` и `neckartery`
+    маршрутизируются на neck, а `head.dmg` удалён, чтобы не было второго
+    перелома на голове. Сервер оборачивает C:U `InitPlayer`, добавляет отдельный
+    `PlayerSpawn` timer и force-sync для уже подключённых игроков: первая жизнь
+    не остаётся с неинициализированными частями. Родные ZCity HUD, таймер и
+    нижние слоты продолжают рисоваться своими аддонами.
 
 ## Шрапнель: общий протокол, раздельные источники
 
@@ -269,7 +282,7 @@ FakeUp `PlayerSpawn` сервер видит `OverrideSpawn == true` и сохр
 `3389728250` (Glide), `3389795738` (GTAV helicopters). На выделенном сервере эти
 ID должны быть в `workshop.vdf` / `+host_workshop_collection`, иначе клиенты
 увидят ERROR-модели и `missing material` в консоли. В исходном ZIP C:U лежат только Lua, 3 шрифта и 3 скомпилированных шейдера —
-звуков и материалов там нет. **В этой сборке это исправлено**: 649 UI-материалов
+звуков и материалов там нет. **В этой сборке это исправлено**: 651 UI-материал
 (`casunknown-images/*`, `woundsystem/*`, родные лимбы `middle/`+`outlines/`,
 кадры руки, .vtf/.vmt) упакованы в `woundsystem_zcity_compat/materials/` и
 зеркально в `casualties_unknown_health_system_beta/materials/` full pack.
@@ -417,7 +430,7 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_bandaged_shrapnel_infection` | этот аддон (server) | **`1`** — медленная внутренняя инфекция закрытых повязкой фрагментов; `0` отключает только рост инфекции, не цикл unwrap→extract. |
 | `zc_woundsystem_compat_shrapnel_infection_death_delay` | этот аддон (server) | **`600`** — секунды от полного покрытия шрапнели на конечности до смертельной инфекции мозга без полного aftercare; торс = 40%, мозг = 70% таймера; диапазон `60..3600`. |
 | `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | **`0.55`** — общий визуальный масштаб руки во всех C:U/WSZC мини-играх; применяется ровно один раз, native hitbox/rotation не меняются; центр спрайта пересчитывается вокруг pivot. Миграция revision 6 заменяет прежний `1.0`. Диапазон `0.2..1`. |
-| `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 слоёв `unitmenu/limbs` архива; `0` — родные спрайты C:U. |
+| `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 исходных слоёв `unitmenu/limbs` в 16 частей (включая neck); `0` — родные спрайты C:U без добавленной шеи. |
 | `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.25` — native-калибровка `0.24` + 4.17% линейного размера; диапазон `0.1..0.8`. |
 | `zc_woundsystem_compat_unitmenu_tint` | этот аддон (client) | `1` — белый `SetDrawColor` для `*_fill.png` (стандартный чёрный иначе умножается на чёрный `finalMiddle`). `*_edge.png` не трогается: обводка по форме лимба и её затемнение при наведении остаются за C:U. |
 | `zc_woundsystem_compat_hide_minigame_text` | этот аддон (client) | `1` — убрать заголовок / счётчик / три строки инструкций / `Press RMB/ESC to exit` и верхнюю панель во **всех** 5 C:U + 2 WSZC мини-играх. **Тёмное затемнение заднего фона (`Clip.DrawBackdrop`) сохранено** — по запросу владельца «во всех мини играх было затемнение заднего фона как раньше». AED-статус `WoundSystemAEDStatus` убран только внутри активной мини-игры. **`minigameshrapnel.png` — передний слой раны, НЕ удаляется.** Иконки, осколок, рука, пинцет, `bandageOuter`, уведомления ZCity, красный death-текст, капли и `Icons.*` остаются. `0` — вернуть как было. |
@@ -478,7 +491,7 @@ SWEP. В authority-режиме каждая такая доза дополни�
    сохранённые «испорченные» организмы.
 
 4. **Дробовик в ногу: кровь на всех лимбах.** `PushShadow` писал один
-   глобальный `org.bleed` в каждый из 15 C:U limb'ов — поэтому HUD показывал
+   глобальный `org.bleed` в каждый из 16 C:U limb'ов — поэтому HUD показывал
    капли и на голове, и на руках. Теперь `WSZC.LimbBleedMap()` разбирает
    `org.wounds[n][4]` (имя кости, например `ValveBiped.Bip01_R_Calf`) и
    `org.arterialwounds[n][7]` (`rlegartery`, `larmartery`, …), мапит их в
@@ -807,16 +820,16 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
 - Хуки сторонних аддонов (`PreHomigradDamage`, `HomigradDamage`,
  `PostEntityTakeDamage`, `simple eye gore`, `zcitygore`, `project hemogen blood`)
  не переопределяются.
-- Проверено синтаксически (`luaparser`, 10 файлов) и на заглушечном Lua-рантайме
- (проверки теперь лежат в репозитории: `tools/tests/test_wszc_regression.py`
+- Проверено синтаксически (`luaparser`, 11 файлов) и на заглушечном Lua-рантайме
+ (проверки лежат в репозитории: `tools/tests/test_wszc_regression.py`
  — статические маркеры всех прошлых фиксов, `ALL_LUA_OK 11/11`,
- `CJK_CLEAN`, PIL-проверка человеческих пропорций и белой обводки,
- 649 материалов и `MATERIALS.sha256`, оба ZIP / зеркало /
- `MANIFEST.txt`, а также 29 рантайм-проверок на lupa: фильтр HUD,
- full-screen клип, рука ровно на курсоре, скрытый курсор,
- точечный фильтр текста мини-игр (включая AED), сохранение уведомлений ZCity,
- сохранение hover-цвета обводки, `FindCULimbs` fallback, конвары —
- `TEST_OK 65/65`). Раньше
+ `CJK_CLEAN`, PIL-проверка человеческих пропорций, белой обводки и
+ попиксельного воссоединения head+neck вне шва, 651 материал и
+ `MATERIALS.sha256`, оба ZIP / зеркало / `MANIFEST.txt`, а также runtime-проверки
+ lupa: фильтр HUD, full-screen клип, рука ровно на курсоре, скрытый курсор,
+ точечный фильтр текста мини-игр, native first-life neck insertion, hit-test,
+ tooltip и `Broken neck` — `TEST_OK 99/99`. Вместе с gameplay `84/84` и
+ bandage `31/31` актуальный итог — **214/214**). Раньше
  наборы были в `/tmp` и не пережили очистку песочницы; скрипт сборки
  тоже перенесён в `tools/build_packs.py`. На живом GMod-сервере
  ассистентом не прогонялось.
@@ -835,15 +848,15 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
 |---|---|
 | `для переделывания интерфейса.zip` | 216 PNG: `zcity_delta/unitmenu/*`, `homigrad/handanim/*` (9 кадров руки), `bleedanim`, `limbs`, 159 moodles, traits, smiley |
 | `для того чтобы все работало вместе материалы для UI.zip` | 362 файла: весь `casunknown-images/*` (18 старых лимбов `middle/`+`outlines/` с `_padded`, 43 иконки, 66 экранов, 43 предмета, мини-игры), `woundsystem/*`, 7 `.vtf`, 6 `.vmt` |
-| генераторы `tools/build_unitmenu_materials.py` + `tools/build_minigame_hand.py` | 33 PNG куклы + 2 человеческие руки (`wszc/unitmenu/`, `wszc/minigame/`) |
+| генераторы `tools/build_unitmenu_materials.py` + `tools/build_minigame_hand.py` | 35 PNG куклы (32 limb + 3 status) + 2 человеческие руки (`wszc/unitmenu/`, `wszc/minigame/`) |
 
-Итого **649 файлов**. Плюс 36 алиасов, которые создаёт упаковщик: 25 точных
+Итого **651 файл**. Плюс 36 алиасов, которые создаёт упаковщик: 25 точных
 camelCase-копий (архив в lowercase, Linux-клиент регистрозависим) и 11
 переносов — C:U ищет `handgraspidle1.png` / `minigameshrapnel.png` в папках
 `dislocationminigame`, `shrapnelminigame`, `syringeminigame`, а архив держит их
 только в `bandageminigame`; отдельно `screen/hemothoraxfill_red.png`.
 14 PNG-дублей `(1)`, `(2)`, `(3)` из корня второго архива побайтово проверены и
-пропущены. Скрипт сборки `zcity_full_pack.zip` зеркалирует те же 649 файлов в
+пропущены. Скрипт сборки `zcity_full_pack.zip` зеркалирует те же 651 файл в
 `garrysmod/addons/casualties_unknown_health_system_beta/materials/`, поэтому
 аддон C:U тоже полный. Lua исходных аддонов не меняется.
 
@@ -966,7 +979,7 @@ alpha >96 (иначе `r_foot.png` с прозрачной левой полов
 `zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` ТОЛЬКО для
 `*_fill.png`; `*_edge.png` намеренно не перекрашивается, чтобы `finalOutline` +
 `HoverAnims` затемняли обводку при наведении штатно. **Реакция на наведение не
-изменена.** 15 id лимбов, ховер-хитбоксы и `REMOVE SHRAPNEL` /
+изменена.** 16 id лимбов, ховер-хитбоксы и `REMOVE SHRAPNEL` /
 `FIX DISLOCATION` не изменились.
 `WSZC.FindCULimbs()` получил кэш, запасные пути поиска (все хуки +
 экспортированные таблицы C:U) и повтор в `PreDrawHUD`, чтобы геометрия не
@@ -1168,7 +1181,7 @@ end
 (был слишком высокий «квадрат»), `abdomen` 234×191 → **236×288** (был слишком
 низкий), `forearm` 134 → **211** (был слишком короткий), `hand` 143 → **107**
 (была слишком широкая), `crus` 95×253 → **84×220**, `foot` 105×105 → **80×100**
-(были массивные «ботинки»), `head` 120×178 → **118×198**. 30 PNG пересобраны,
+(были массивные «ботинки»), `head` 120×178 → **118×198**. 32 limb PNG пересобраны,
 `wszc_unitmenu_geometry.lua` перегенерирован.
 
 **Не тронуто по просьбе владельца:** стандартный чёрный `(0,0,0)`, обводка по
@@ -1267,7 +1280,7 @@ runtime-код **не изменялись**. Живой GMod агентом н�
 изменялись**. HUD-панель и оранжевые треугольники с `2-10` не копировались.
 
 Живой GMod агентом не запускался: проверено headless (регрессия, `ALL_LUA_OK`,
-пересборка 30 PNG + Lua и обоих ZIP), принятие — только по свежим live-скринам.
+пересборка 32 limb PNG + Lua и обоих ZIP), принятие — только по свежим live-скринам.
 
 ## №10 (по `Screenshot_3-7.png` / `Screenshot_4-6.png`): доводка куклы, курсор и затемнение
 

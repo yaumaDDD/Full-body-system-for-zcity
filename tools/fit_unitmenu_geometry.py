@@ -9,7 +9,7 @@ of eyeballed:
   1. build a target mask from Screenshot_1.png.  The doll is true black
      (RGB 0..8) while the woven room background is RGB 30..80, so
      ``max(RGB) < 20`` isolates the doll without touching it;
-  2. render the 15 VERBATIM archive silhouettes into SCREEN space using the
+  2. render the VERBATIM archive silhouettes into SCREEN space using the
      exact same linear placement C:U uses (S=0.4155, centre=(682.5,558.2),
      mat:Width()/Height() are the POT sprite sizes);
   3. report intersection-over-union, and optionally run a bounded coordinate
@@ -47,8 +47,9 @@ W, H = 1365, 1079
 ROI = (300, 200, 1050, 900)
 S, CX, CY = G.LIVE_S, G.LIVE_CX, G.LIVE_CY
 # The native arms/hands are measurably asymmetric.  Fit every limb separately;
-# the semi-transparent head is contour-checked separately, not threshold-fitted.
-ORDER = tuple(k for k in G.LIMB_LAYERS if k != 'head')
+# the semi-transparent head+neck composite is contour-checked separately, not
+# threshold-fitted.  Neck is a crop of that same head source, not a new shape.
+ORDER = tuple(k for k in G.LIMB_LAYERS if k not in ('head', 'neck'))
 SEEDS = {
     'thorax': (682, 400), 'abdomen': (682, 500),
     'arm_R': (580, 350), 'arm_L': (780, 350),
@@ -137,9 +138,17 @@ def render(boxes, alphas, include_head=True):
         return None
     canvas = Image.new('L', (W, H), 0)
     white = {}
-    for limb, (cx, cy, w, h, px, py, iw, ih) in lay.items():
-        if limb == 'head' and not include_head:
-            continue
+    for limb, authored in lay.items():
+        if limb == 'neck':
+            continue  # included in the unsplit head silhouette below
+        if limb == 'head':
+            if not include_head:
+                continue
+            # The metric predates the interactive joint.  Render the original
+            # 67x102 outer silhouette; head+neck have exactly the same union.
+            cx, cy, w, h, px, py, iw, ih = G.HEAD_SOURCE_LAYOUT
+        else:
+            cx, cy, w, h, px, py, iw, ih = authored
         scaled = alphas[limb].resize((iw, ih), Image.Resampling.LANCZOS)
         if limb.startswith('foot_'):
             scaled = G.SquareToe(scaled)   # Screenshot_8 flat sole, unchanged

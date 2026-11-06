@@ -936,8 +936,10 @@ end)
 ---------------------------------------------------------------------------
 -- WoundView doll + minigame hand, built from "для переделывания интерфейса.zip"
 ---------------------------------------------------------------------------
--- The repository archive ships 15 pre-positioned 1500x1500 RGBA limb layers
--- (zcity_delta/unitmenu/limbs), three pixel status icons and nine realistic
+-- The repository archive ships 15 pre-positioned 1500x1500 RGBA limb layers;
+-- the generator splits the source head into independent head/neck sprites, so
+-- the runtime doll has 16 interactive parts (zcity_delta/unitmenu/limbs),
+-- three pixel status icons and nine realistic
 -- hand frames (homigrad/handanim).  Stock C:U/ZCity Lua never references them,
 -- so this connector installs them at runtime:
 --   * C:U's `Limbs` upvalue (WoundDollAndPanel) is MUTATED IN PLACE: new
@@ -1035,7 +1037,7 @@ local function BuildUnitmenuMaterials()
             count = count + 1
         end
     end
-    if count < 15 then return nil end
+    if count < 16 then return nil end
     unitmenuMats = built
     return unitmenuMats
 end
@@ -1222,6 +1224,55 @@ end
 --- The result is cached: C:U builds `Limbs` once at load time, so re-walking
 --- every frame would be pure overhead.
 local cachedCULimbs
+local cachedCUGUIState
+
+--- GUIState is private too.  The native draw loop calls math.Approach on
+--- HoverAnims[limb.id] for EVERY entry, so inserting neck without initializing
+--- these two tables would turn the first non-hovered frame into a Lua error.
+local function FindCUGUIState()
+    if type(cachedCUGUIState) == "table"
+        and type(cachedCUGUIState.HoverAnims) == "table"
+        and type(cachedCUGUIState.LastHoverStates) == "table" then
+        return cachedCUGUIState
+    end
+    if not (debug and debug.getupvalue and hook and hook.GetTable) then return nil end
+    local seen = {}
+    local function walk(fn, depth)
+        if type(fn) ~= "function" or depth > 4 or seen[fn] then return nil end
+        seen[fn] = true
+        local i = 1
+        while true do
+            local name, value = debug.getupvalue(fn, i)
+            if not name then break end
+            if name == "GUIState" and type(value) == "table"
+                and type(value.HoverAnims) == "table"
+                and type(value.LastHoverStates) == "table" then
+                cachedCUGUIState = value
+                return value
+            end
+            if type(value) == "function" then
+                local found = walk(value, depth + 1)
+                if found then return found end
+            end
+            i = i + 1
+        end
+        return nil
+    end
+    local hud = hook.GetTable().HUDPaint
+    if type(hud) == "table" then
+        if type(hud.WoundDollAndPanel) == "function" then
+            local found = walk(hud.WoundDollAndPanel, 0)
+            if found then return found end
+        end
+        for _, fn in pairs(hud) do
+            local found = walk(fn, 0)
+            if found then return found end
+        end
+    end
+    if type(savedHudFn) == "function" then return walk(savedHudFn, 0) end
+    return nil
+end
+
 local function FindCULimbs()
     if cachedCULimbs and IsCULimbsTable(cachedCULimbs) then return cachedCULimbs end
     if not (debug and debug.getupvalue and hook and hook.GetTable) then return nil end
@@ -1306,11 +1357,70 @@ local function FindCULimbs()
     return nil
 end
 WSZC.FindCULimbs = FindCULimbs
-WSZC.ClearCULimbsCache = function() cachedCULimbs = nil end
+WSZC.ClearCULimbsCache = function()
+    cachedCULimbs = nil
+    cachedCUGUIState = nil
+end
 
 local dollPatched = false
 
+--- Fresh C:U-compatible state for the sixteenth limb.  Copy unknown future
+--- fields from head, but never copy its CURRENT damage into the new neck.
+local function EnsureNeckClientState()
+    local states = type(WoundSystemClientState) == "table"
+        and WoundSystemClientState.PlayerLimbs or nil
+    if type(states) ~= "table" then return nil end
+    if type(states.neck) == "table" then return states.neck end
+
+    local state = type(states.head) == "table" and table.Copy(states.head) or {}
+    state.skin, state.muscle, state.muscleStrength = 100, 100, 1
+    state.pain, state.bleed = 0, 0
+    state.infection, state.infectionSpeed = 0, 0
+    state.shrapnel, state.disinfectTime = 0, 0
+    state.broken, state.dislocated = false, false
+    state.boneHealTimer, state.dislocationTimer = 0, 0
+    state.temperature, state.oxygen, state.stress = 37, 100, 0
+    state.isBandaged, state.hasInjection = false, false
+    state.dismembered, state.furBloodAmount = false, 0
+    state.bandageMinigameSpeedMult = 1
+    state.eyes = 2
+    state.customStatuses = {}
+    states.neck = state
+    return state
+end
+WSZC.EnsureNeckClientState = EnsureNeckClientState
+
+--- Add neck immediately after head in C:U's OWN Limbs array.  Consequently
+--- all native rendering, fracture icons, action points and net updates use the
+--- same entry; this is not a second doll or a head texture with another label.
+local function EnsureNeckLimb(limbs)
+    if type(limbs) ~= "table" then return nil end
+    EnsureNeckClientState()
+    local head, headIndex, neck
+    for i, limb in ipairs(limbs) do
+        if limb.id == "head" then head, headIndex = limb, i end
+        if limb.id == "neck" then neck = limb end
+    end
+    if neck then return neck end
+    if not head then return nil end
+
+    local guiState = FindCUGUIState()
+    if not guiState then return nil end
+    guiState.HoverAnims.neck = tonumber(guiState.HoverAnims.neck) or 0
+    guiState.LastHoverStates.neck = guiState.LastHoverStates.neck == true
+
+    neck = {}
+    for key, value in pairs(head) do neck[key] = value end
+    neck.id = "neck"
+    neck._WSZCNeck = true
+    neck._WSZCUnitmenuOriginal = nil
+    table.insert(limbs, headIndex + 1, neck)
+    return neck
+end
+WSZC.EnsureNeckLimb = EnsureNeckLimb
+
 local function ApplyDoll(limbs, mats, k)
+    EnsureNeckLimb(limbs)
     for _, limb in ipairs(limbs) do
         local g = mats[limb.id]
         if g then
@@ -1341,16 +1451,134 @@ WSZC.ApplyUnitmenuDoll = ApplyDoll
 function WSZC.RestoreUnitmenuDoll()
     local limbs = FindCULimbs()
     if not limbs then return false end
-    for _, limb in ipairs(limbs) do
-        local orig = limb._WSZCUnitmenuOriginal
-        if orig then
-            for key, value in pairs(orig) do limb[key] = value end
-            limb._WSZCUnitmenuOriginal = nil
+    for i = #limbs, 1, -1 do
+        local limb = limbs[i]
+        if limb._WSZCNeck then
+            -- Native C:U has no neck material.  Keep PlayerLimbs.neck for net
+            -- state/moodles, but never leave a duplicate head in the old doll.
+            table.remove(limbs, i)
+        else
+            local orig = limb._WSZCUnitmenuOriginal
+            if orig then
+                for key, value in pairs(orig) do limb[key] = value end
+                limb._WSZCUnitmenuOriginal = nil
+            end
         end
     end
     dollPatched = false
     return true
 end
+
+---------------------------------------------------------------------------
+-- Source-screenshot limb tooltip (the stock C:U doll has no such hover card).
+---------------------------------------------------------------------------
+local UNITMENU_LIMB_NAMES = {
+    head = "Head", neck = "Neck", thorax = "Thorax", abdomen = "Abdomen",
+    arm_R = "Right upper arm", arm_L = "Left upper arm",
+    forearm_R = "Right forearm", forearm_L = "Left forearm",
+    hand_R = "Right hand", hand_L = "Left hand",
+    thigh_R = "Right thigh", thigh_L = "Left thigh",
+    crus_R = "Right shin", crus_L = "Left shin",
+    foot_R = "Right foot", foot_L = "Left foot",
+}
+
+local function UnitmenuUIScale()
+    local value = 1
+    local cv = GetConVar and GetConVar("woundsys_ui_scale") or nil
+    if cv then value = math.Clamp(cv:GetFloat(), 0.6, 1.6) end
+    if ScrH() <= 600 then return value * 0.72 end
+    if ScrH() <= 768 then return value * 0.86 end
+    return value
+end
+
+--- Reproduce C:U's own rectangle hit test, including its order (a later limb
+--- wins an overlap) and pain shake.  The tooltip therefore names the SAME part
+--- that a click/action point selects, rather than maintaining a second layout.
+function WSZC.UnitmenuHover(mx, my)
+    if type(mx) ~= "number" or type(my) ~= "number" then return nil end
+    local limbs = FindCULimbs()
+    local states = type(WoundSystemClientState) == "table"
+        and WoundSystemClientState.PlayerLimbs or nil
+    if not (limbs and states) then return nil end
+
+    local scale = (ScrH() / 1080) * UnitmenuUIScale()
+    local dollScale = 1.5 * scale
+    local centerX, centerY = ScrW() / 2, ScrH() / 2 + 20 * scale
+    local guiState = FindCUGUIState()
+    local shakes = guiState and guiState.HudLimbShakeScratch or nil
+    local openTime = guiState and guiState.openTime or 0
+    local hovered
+
+    for _, limb in ipairs(limbs) do
+        local state = states[limb.id]
+        local alpha = math.Clamp((CurTime() - (openTime + (limb.order or 0) * 0.03)) * 8, 0, 1)
+        if state and not state.dismembered and alpha > 0 then
+            local scaleMult = dollScale * (limb.size or 1)
+            local shake = shakes and shakes[limb.id] or nil
+            local cx = centerX + limb.ox * dollScale + (shake and shake.x or 0)
+            local cy = centerY + limb.oy * dollScale + (shake and shake.y or 0)
+            local matW = limb.matO and limb.matO.Width and limb.matO:Width() or 0
+            local matH = limb.matO and limb.matO.Height and limb.matO:Height() or 0
+            local w = (limb.sourceW or matW) * scaleMult
+            local h = (limb.sourceH or matH) * scaleMult
+            if mx > cx - w / 2 and mx < cx + w / 2
+                and my > cy - h / 2 and my < cy + h / 2 then
+                hovered = { id = limb.id, state = state, x = cx, y = cy,
+                            w = w, h = h, alpha = alpha }
+            end
+        end
+    end
+    return hovered
+end
+
+function WSZC.UnitmenuTooltipLines(id, state)
+    local title = UNITMENU_LIMB_NAMES[id] or tostring(id or "Limb")
+    local skin = math.Clamp(math.Round(tonumber(state and state.skin) or 0), 0, 100)
+    local muscle = math.Clamp(math.Round(tonumber(state and state.muscle) or 0), 0, 100)
+    return title, string.format("Skin: %d%%", skin), string.format("Muscle: %d%%", muscle)
+end
+
+hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip", function()
+    if WoundSystemHealthHUDOpen ~= true or not cvUnitmenuDoll:GetBool() then return end
+    if WSZC.WSZCMinigameActive() or WSZC.NativeMinigameActive() then return end
+    local ply = LocalPlayer()
+    if IsValid(ply) and ply.Alive and not ply:Alive() then return end
+
+    local mx, my = gui.MousePos()
+    local hovered = WSZC.UnitmenuHover(mx, my)
+    if not hovered then return end
+    local title, skinLine, muscleLine = WSZC.UnitmenuTooltipLines(hovered.id, hovered.state)
+
+    local scale = ScrH() / 1080
+    local font = "ZB_ProotOSMedium"
+    surface.SetFont(font)
+    local titleW = surface.GetTextSize(title)
+    local skinW = surface.GetTextSize(skinLine)
+    local muscleW = surface.GetTextSize(muscleLine)
+    local padX, padTop = 18 * scale, 18 * scale
+    local lineStep = 34 * scale
+    local w = math.max(160 * scale, math.max(titleW, skinW, muscleW) + 2 * padX)
+    local h = 126 * scale
+    local x, y = mx + 28 * scale, my + 20 * scale
+    if x + w > ScrW() - 8 * scale then x = mx - w - 28 * scale end
+    if y + h > ScrH() - 8 * scale then y = ScrH() - h - 8 * scale end
+    x, y = math.max(8 * scale, x), math.max(8 * scale, y)
+
+    -- PostDrawHUD is outside WoundView.  Do not let its hidden-scanner filter
+    -- eat a perfectly valid tooltip when hovering the left arm/hand.
+    local filtered = WSZC.CUHudFiltered
+    WSZC.CUHudFiltered = false
+    surface.SetDrawColor(0, 0, 0, 200 * (hovered.alpha or 1))
+    surface.DrawRect(x, y, w, h)
+    local textColor = Color(255, 255, 255, 255 * (hovered.alpha or 1))
+    draw.SimpleText(title, font, x + padX, y + padTop, textColor,
+        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    draw.SimpleText(skinLine, font, x + padX, y + padTop + lineStep, textColor,
+        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    draw.SimpleText(muscleLine, font, x + padX, y + padTop + lineStep * 2, textColor,
+        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    WSZC.CUHudFiltered = filtered
+end)
 
 local function ApplyUnitmenuIcons()
     local icons = _G.Icons
@@ -1707,6 +1935,39 @@ local function PatchActionButtonOffset()
 end
 WSZC.PatchActionButtonOffset = PatchActionButtonOffset
 
+--- C:U's stock brokenneck moodle reads head.broken.  The native ZCity skull
+--- fracture is now owned by the independent neck state, so re-register ONLY
+--- that public definition; all other moodles and their layout stay untouched.
+function WSZC.InstallNeckMoodle()
+    local moodles = WoundSystem and WoundSystem.Moodles or nil
+    if type(moodles) ~= "table" or type(moodles.Register) ~= "function" then return false end
+    local current = moodles.DefById and moodles.DefById.brokenneck or nil
+    if current and current._WSZCNeckState then return true end
+    moodles.Register("brokenneck", {
+        icon = "brokenneck",
+        chippedOnly = true,
+        _WSZCNeckState = true,
+        condition = function(ctx)
+            local limbs = ctx and ctx.limbs or nil
+            local state = limbs and (limbs.neck or limbs.head) or nil
+            if not state and type(WoundSystemClientState) == "table"
+                and type(WoundSystemClientState.PlayerLimbs) == "table" then
+                local playerLimbs = WoundSystemClientState.PlayerLimbs
+                state = playerLimbs.neck or playerLimbs.head
+            end
+            if type(state) ~= "table" or not state.broken then return nil end
+            local timerValue = tonumber(state.boneHealTimer) or 0
+            return {
+                intensity = math.Clamp(math.Round(timerValue * 0.03), 0, 3),
+                title = "Broken neck",
+                desc = "The neck is fractured.",
+            }
+        end,
+    })
+    if moodles.RebuildNow then moodles.RebuildNow() end
+    return true
+end
+
 WSZC.NextUnitmenuInstall = 0
 hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     local now = CurTime and CurTime() or 0
@@ -1714,6 +1975,7 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     WSZC.NextUnitmenuInstall = now + 1
     WSZC.InstallMaterialTracker()
     PatchActionButtonOffset()
+    WSZC.InstallNeckMoodle()
 
     if cvUnitmenuDoll:GetBool() then
         local mats = BuildUnitmenuMaterials()
@@ -1734,6 +1996,20 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     -- every handgrasp* sprite when the player explicitly selects arrow-only.
     if cvHandanim:GetBool() or cvHideHand:GetBool() then
         WSZC.InstallNativeHandOverride()
+    end
+end)
+
+-- First-life bootstrap: do not wait for a respawn or for the player to open
+-- WoundView before neck exists in the client state and native Limbs array.
+hook.Add("InitPostEntity", "WSZC_UnitmenuNeckFirstLife", function()
+    EnsureNeckClientState()
+    WSZC.InstallNeckMoodle()
+    WSZC.NextUnitmenuInstall = 0
+    if not cvUnitmenuDoll:GetBool() then return end
+    local mats, limbs = BuildUnitmenuMaterials(), FindCULimbs()
+    if mats and limbs then
+        ApplyDoll(limbs, mats, math.Clamp(cvDollScale:GetFloat(), 0.1, 0.8))
+        dollPatched = true
     end
 end)
 
