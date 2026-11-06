@@ -75,8 +75,10 @@ limb из `hitgroup/dmgstack/HitBones`, включая голову, торс и
   обычную артерию; искусственного bleed-бонуса нет.
 * **Явный `reset organism` / `WB.ResetOrganism` очищает организм полностью**:
   шрапнель всех источников, tagged-раны, irritation, накопленную инфекцию,
-  ZCity-визуалы повязок/жгутов, residue и C:U limb-state. Внутренний
-  `ragdoll → standing` (`OverrideSpawn`) сохраняет весь organism: native и
+  ZCity-визуалы повязок/жгутов, residue и C:U limb-state. Отдельно обнуляется
+  `brokenribs`: родной ZCity reset очищает `chest`, но забывает это производное
+  поле, из-за чего красная иконка перелома рёбер возвращалась после ресета.
+  Внутренний `ragdoll → standing` (`OverrideSpawn`) сохраняет весь organism: native и
   third-party поля, wounds/arterialwounds, ампутации, шрапнель и инфекцию.
   Настоящий respawn и явный reset эту медицинскую структуру не сохраняют.
 * **Дополнительный медицинский WoundView откачен**: новые vital signs,

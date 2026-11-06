@@ -165,8 +165,11 @@ artery key в organism не меняются. `BestTourniquetLimb()` выбир�
 
 Явный `hg_organism_clear` / `WB.ResetOrganism` полностью удаляет все фрагменты,
 источники, tagged-раны, накопленную инфекцию, ZCity `bandaged_limbs` /
-`tourniquets`, ампутации/раны и C:U residue. Этот explicit-reset context отделён
-от внутреннего `ragdoll → standing`, где сохраняется весь organism.
+`tourniquets`, ампутации/раны и C:U residue. Дополнительно очищается
+`org.brokenribs`: native `Org Clear` сбрасывает `org.chest`, но оставляет это
+поле, иначе следующий `PushShadow()` снова включает иконку перелома рёбер.
+Этот explicit-reset context отделён от внутреннего `ragdoll → standing`, где
+сохраняется весь organism, включая текущий перелом.
 
 Потеря сознания владельца сессии (`otrub/needotrub`, NW unconscious,
 `consciousness < 0.4`) либо его смерть закрывает WSZC и нативные C:U мини-игры,

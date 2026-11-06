@@ -2810,6 +2810,10 @@ function WSZC.ClearAllShrapnel(ply, org)
         org.wounds = {}
         org.arterialwounds = {}
         org.bleed, org.internalBleed, org.bleedStart = 0, 0, 0
+        -- Native Org Clear "Main" resets org.chest but forgets brokenribs.
+        -- Fractured() reads that derived field, so leaving it behind brings
+        -- the red thorax fracture icon straight back on the next shadow pass.
+        org.brokenribs = 0
         org.pain, org.avgpain, org.painadd = 0, 0, 0
         org.shock, org.hurt, org.hurtadd = 0, 0, 0
         org.immobilization, org.disorientation = 0, 0
@@ -2987,6 +2991,10 @@ function WSZC.InstallResetStructureGuard()
 
         if not down then
             RestoreShrapnelShadow(org)
+            -- A genuine standing spawn is a real clear, not a ragdoll
+            -- transition.  Cover the same native brokenribs omission here;
+            -- FakeUp/down transitions deliberately keep the injury instead.
+            org.brokenribs = 0
             ClearMovementPenalties(org)
             return a, b, c
         end

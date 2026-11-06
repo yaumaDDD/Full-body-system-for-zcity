@@ -45,7 +45,7 @@
 | В мини-игре персонаж не ходит, не крутит камерой и виден курсор | включается вместе с `zc_woundsystem_compat_minigames 1` (без отдельного конвара) |
 | Шрапнель только от дробовика и взрыва, не от пистолетов | `zc_woundsystem_compat_shrapnel_only_shotgun_blast 1` |
 | Дробовик/взрыв оставляют осколки в фактически раненой части (`org.dmgstack` / `HitBones`), не только в кистях/стопах; стекло отдельно сохраняет правило `hand_L/R` / `foot_L/R` | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
-| `reset organism` не поднимает персонажа, сохраняет down-структуру и полностью очищает раны/шрапнель/инфекцию/повязки/жгуты/C:U residue | `zc_woundsystem_compat_preserve_reset_structure 1`; внутренний FakeUp (`OverrideSpawn`) сохраняет весь organism, включая wounds/arteries/ампутации/third-party поля, а настоящий respawn очищает его |
+| `reset organism` не поднимает персонажа, сохраняет down-структуру и полностью очищает раны/шрапнель/инфекцию/повязки/жгуты/C:U residue и красный перелом рёбер | `zc_woundsystem_compat_preserve_reset_structure 1`; дополнительно очищается забытое native-кодом поле `org.brokenribs`. Внутренний FakeUp (`OverrideSpawn`) сохраняет весь organism, включая wounds/arteries/ампутации/переломы/third-party поля, а настоящий respawn очищает его |
 | Шрапнель сохраняется при падении/подъёме из ragdoll | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
 | Стекло в ragdoll (руки/ноги) даёт осколки | `zc_woundsystem_compat_glass_shrapnel 1` |
 | Ошибки в shrapnel-мини-игре → боль и нарастающее кровотечение | включается вместе с `zc_woundsystem_compat_shadow 1` |

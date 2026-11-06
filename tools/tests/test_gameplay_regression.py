@@ -400,10 +400,15 @@ ply.organism.blood, ply.organism.pain = 1200, 80
 hg.send_organism = function() end; hg.send_bareinfo = function() end
 hg.organism = { Clear = function(org)
     local owner = org.owner
+    -- Native Org Clear "Main" resets org.chest but forgets the derived
+    -- org.brokenribs value.  Preserve that real upstream omission here so the
+    -- reset regression cannot be hidden by an unrealistically complete mock.
+    local nativeStaleBrokenRibs = org.brokenribs
     for key in pairs(org) do if key ~= "owner" then org[key] = nil end end
     org.owner = owner
     org.alive, org.otrub, org.blood, org.pain = true, false, 5000, 0
     org.bleed, org.internalBleed = 0, 0
+    org.chest, org.brokenribs = 0, nativeStaleBrokenRibs
     org.wounds, org.arterialwounds = {}, {}
 end }
 restoreCalls = 0
@@ -884,6 +889,7 @@ ply.organism.arterialwounds = {
 }
 ply.organism.blood = 2345
 ply.organism.consciousness = 0.71
+ply.organism.brokenribs = 3
 ply.organism.customNativeOrgan = { nested = { value = 42 } }
 OverrideSpawn = true -- native hg.FakeUp sets this around its internal ply:Spawn()
 hg.organism.Clear(ply.organism)
@@ -894,6 +900,7 @@ local preserved = ply.organism.rarmamputated == true
     and #ply.organism.wounds == 1 and ply.organism.wounds[1][1] == 7
     and #ply.organism.arterialwounds == 1 and ply.organism.arterialwounds[1][1] == 10
     and ply.organism.customNativeOrgan.nested.value == 42
+    and ply.organism.brokenribs == 3
     and ply.organism.owner == ply
 ply.organism.rarmamputated = true
 hg.WoundBridge.ResetOrganism(ply)
@@ -903,6 +910,37 @@ return preserved, explicitStillClears
 ''')
     check("R40 FakeUp spawn retains native wounds, arteries, amputations and custom organs", fakeup_snapshot[0])
     check("R41 explicit organism reset still clears every amputation and artery", fakeup_snapshot[1])
+
+    rib_reset = lua.execute(r'''
+local ply = MakePlayer()
+ply._limbs.thorax = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+ply.organism.chest = 1
+ply.organism.brokenribs = 3
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local reproduced = WSZC.Fractured(ply.organism, "thorax", { dmg = "chest" })
+    and ply._limbs.thorax.broken == true
+assert(hg.WoundBridge.ResetOrganism(ply))
+-- Let the normal 4 Hz shadow pass run after reset.  It must not resurrect the
+-- icon from native Org Clear's stale brokenribs field.
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local cleared = (tonumber(ply.organism.chest) or 0) == 0
+    and (tonumber(ply.organism.brokenribs) or 0) == 0
+    and not WSZC.Fractured(ply.organism, "thorax", { dmg = "chest" })
+    and ply._limbs.thorax.broken == false
+return reproduced, cleared
+''')
+    check("R51 explicit reset clears native stale brokenribs and the thorax fracture icon", rib_reset[0] and rib_reset[1])
+
+    respawn_ribs = lua.execute(r'''
+local ply = MakePlayer()
+ply.organism.chest = 1
+ply.organism.brokenribs = 3
+hg.organism.Clear(ply.organism) -- genuine standing spawn, not FakeUp/ragdoll
+return (tonumber(ply.organism.chest) or 0) == 0
+    and (tonumber(ply.organism.brokenribs) or 0) == 0
+''')
+    check("R52 genuine organism spawn clear also removes stale brokenribs", respawn_ribs)
 
     context_client = LuaRuntime(unpack_returned_tuples=True)
     context_client.execute(r'''
