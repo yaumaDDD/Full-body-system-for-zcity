@@ -1124,9 +1124,44 @@ function WSZC.BestTourniquetLimb(ply, spec, preferred)
     return best and best.id or nil
 end
 
---- Replace only WB.SwepHeal's private BestLimb upvalue.  Bandages, syringes
---- and non-authority mode keep the stock function byte-for-byte; tourniquets
---- use the two-tier selector above and cannot be vetoed by a dismembered flag.
+--- Select a bandage target from the authoritative wounds, not C:U's 4 Hz
+--- presentation shadow.  Native BestLimb skips every `isBandaged` limb and can
+--- also select a damage-only shadow bleed for which org.wounds has no entry.
+--- Both cases produce a session/progress UI with no treatable target.  A real
+--- partially dressed wound must remain eligible until it is actually closed.
+function WSZC.BestBandageLimb(ply, spec, preferred)
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    local org = IsValid(ply) and ply.organism or nil
+    if type(limbs) ~= "table" or type(org) ~= "table" then return nil end
+
+    local bestId, bestScore
+    for limbId, state in pairs(limbs) do
+        if type(state) == "table" and not state.dismembered then
+            local bleed = math.max(tonumber(NormalBleedingOnLimb(ply, org, limbId)) or 0, 0)
+            local aftercare = org.wszc_shrapnel_aftercare
+                and org.wszc_shrapnel_aftercare[limbId] ~= nil or false
+            -- A zero-severity extraction wound still needs its FINAL dressing.
+            -- Artery-only and damage-only shadow entries deliberately do not
+            -- qualify: the former needs a tourniquet, the latter has no real
+            -- bandage wound and used to make every input a no-op.
+            if bleed > 0.1 or aftercare then
+                local score = bleed + (aftercare and 0.2 or 0)
+                    + (limbId == preferred and 1000 or 0)
+                if not bestScore or score > bestScore
+                    or (score == bestScore and limbId < bestId) then
+                    bestId, bestScore = limbId, score
+                end
+            end
+        end
+    end
+    return bestId
+end
+
+--- Replace only WB.SwepHeal's private BestLimb upvalue.  Syringes and
+--- non-authority mode keep the stock function byte-for-byte.  Tourniquets use
+--- the two-tier selector above; bandages use real normal-wound severity and
+--- cannot be vetoed by a stale C:U isBandaged flag or phantom shadow bleed.
 local patchedTourniquetSelectors = setmetatable({}, { __mode = "k" })
 local function PatchTourniquetBestLimb(swepHeal)
     if type(swepHeal) ~= "function" or not (debug and debug.getupvalue and debug.setupvalue) then
@@ -1140,8 +1175,12 @@ local function PatchTourniquetBestLimb(swepHeal)
             local wrapped = function(ply, spec, preferred)
                 local isTourniquet = type(spec) == "table" and spec.kind == "apply"
                     and string.upper(tostring(spec.item or "")) == "TOURNIQUET"
+                local isBandage = type(spec) == "table" and spec.kind == "bandage"
                 if Authority() and isTourniquet then
                     return WSZC.BestTourniquetLimb(ply, spec, preferred)
+                end
+                if Authority() and isBandage then
+                    return WSZC.BestBandageLimb(ply, spec, preferred)
                 end
                 return bestLimb(ply, spec, preferred)
             end

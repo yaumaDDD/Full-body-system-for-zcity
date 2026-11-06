@@ -1652,6 +1652,52 @@ end)()
 end)()
 ''')
 
+    rt('R38 native HUD skips only disinfect icon and balances LINEAR filtering', '''
+(function()
+    filterCalls = {}
+    TEXFILTER = { LINEAR = 77 }
+    render = {
+        PushFilterMag = function(v) filterCalls[#filterCalls + 1] = "mag:" .. v end,
+        PushFilterMin = function(v) filterCalls[#filterCalls + 1] = "min:" .. v end,
+        PopFilterMin = function() filterCalls[#filterCalls + 1] = "popMin" end,
+        PopFilterMag = function() filterCalls[#filterCalls + 1] = "popMag" end,
+    }
+    Icons.disinfected = Material("native/disinfected")
+    Icons.infectionneutral = Material("native/infection")
+    Icons.smallbleed = Material("native/bleeding")
+    local handState = { disinfectTime = 120, infection = 4 }
+    WoundSystemClientState = { PlayerLimbs = { hand_R = handState } }
+
+    local function AddHudIcon(items, mat)
+        items[#items + 1] = mat
+    end
+    local function NativeWoundView()
+        local items = {}
+        AddHudIcon(items, Icons.disinfected)
+        AddHudIcon(items, Icons.infectionneutral)
+        AddHudIcon(items, Icons.smallbleed)
+        NativeWoundViewIcons = items
+    end
+    hook.Add("HUDPaint", "WoundDollAndPanel", NativeWoundView)
+    local installed = WSZC.InstallCUHudFilter()
+    local installedAgain = WSZC.InstallDisinfectedIconFilter()
+    hook._t["HUDPaint"]["WoundDollAndPanel"]()
+
+    local count, disinfected, infection, bleeding = 0, 0, 0, 0
+    for _, mat in ipairs(NativeWoundViewIcons or {}) do
+        count = count + 1
+        if mat == Icons.disinfected then disinfected = disinfected + 1 end
+        if mat == Icons.infectionneutral then infection = infection + 1 end
+        if mat == Icons.smallbleed then bleeding = bleeding + 1 end
+    end
+    local filters = table.concat(filterCalls, ",")
+    return installed and installedAgain and count == 2 and disinfected == 0
+        and infection == 1 and bleeding == 1 and handState.disinfectTime == 120
+        and handState.infection == 4
+        and filters == "mag:77,min:77,popMin,popMag"
+end)()
+''')
+
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)
 passed = sum(1 for _, ok in results if ok)

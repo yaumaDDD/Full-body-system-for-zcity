@@ -54,6 +54,19 @@ limb из `hitgroup/dmgstack/HitBones`, включая голову, торс и
 
 ## Исправления этой сборки
 
+**Правки по живым `Screenshot_8/11.png` (2026-11-07):** бинт теперь выбирает
+конечность по авторитетным `organism.wounds` и обязательному shrapnel-aftercare,
+поэтому stale C:U `isBandaged` не блокирует повторную обработку, а shadow-only
+`bleed` без настоящей раны не создаёт бесполезную сессию. После остановки
+последнего обычного кровотечения native-сессия автоматически закрывается через
+`completed` → `onClose/AfterUse`, удаляя virtual slot и client overlay; расход
+по-прежнему равен реально удалённой severity без второго Consume. Ложный значок
+`disinfected/processing` пропускается только в native `AddHudIcon` — настоящие
+infection/bleed/fracture и действие `disinfectTime` сохраняются. Внешние контуры
+получили узкий alpha-fringe (`EDGE_AA_RADIUS=0.45`) и scoped LINEAR sampling с
+гарантированным восстановлением filter stack; pinned geometry, head/neck seam
+`y=317`, abdomen seam `y=520`, fit и hitboxes не изменены.
+
 **Отдельная интерактивная шея (2026-11-06):** исходный head-силуэт масштабируется
 один раз, затем разделяется на `head` и `neck`; контур человеческой куклы не
 растягивается второй раз. В собственную таблицу `Limbs` C:U добавлена 16-я

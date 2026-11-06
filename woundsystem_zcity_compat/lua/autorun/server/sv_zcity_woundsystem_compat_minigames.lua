@@ -872,6 +872,20 @@ local function ProcessBandageInput(_, ply)
     SendSlot(ply, session)
     SendAck(ply, session, ACK_BANDAGE, inputSeq)
 
+    -- A native ZCity session is complete when the REAL ordinary wounds are
+    -- closed (or the required final shrapnel dressing has landed).  Previously
+    -- the roll simply stayed open at 100%; further circles were acknowledged
+    -- but could neither treat nor consume, looking exactly like a bandage that
+    -- did not work.  Close through the normal path so WB.onClose/AfterUse runs,
+    -- the virtual slot is removed and the client overlay/cursor are released.
+    local aftercareRemaining = WSZC.ShrapnelAftercarePending
+        and WSZC.ShrapnelAftercarePending(session.target, session.limbId) or false
+    if session.nativeBandage and CurrentBandageBleeding(session) <= 0.0001
+        and not aftercareRemaining then
+        StopMinigame(ply, "completed")
+        return
+    end
+
     if physicalEmpty or session.startAmount - session.deferredUsed <= 0.001 then
         StopMinigame(ply, "empty")
     end

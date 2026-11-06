@@ -145,6 +145,8 @@ EDGE_WIDTH = 17               # MinFilter size -> ~8 source px / 3.3 live px.
 EDGE_WIDTH_OVERRIDES = {'hand_R': 11, 'hand_L': 11}
                               # Native fingers use a finer ~2 px contour; 17
                               # eats the narrow finger interiors completely.
+EDGE_AA_RADIUS = 0.45         # Sub-source-pixel alpha fringe: smooth the live
+                              # contour without moving its measured silhouette.
 ABDOMEN_SEAM_Y = 520.5        # Sub-pixel phase puts the dominant row at 520.
 ABDOMEN_SEAM_WIDTH = 2        # One dominant screen row; neighbours stay < 11/255.
 HEAD_SEAM_WIDTH = 3           # Native head/neck joint is one row at y=317.
@@ -350,6 +352,13 @@ def main():
     for limb_id, mask in hard.items():
         edge_width = EDGE_WIDTH_OVERRIDES.get(limb_id, EDGE_WIDTH)
         contour = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(edge_width)))
+        # MinFilter produces a binary, stair-stepped source contour.  Keep its
+        # exact measured shape/width, but add a tiny alpha fringe before GMod
+        # downsamples it.  Neck is excluded because its calibrated one-row seam
+        # is threshold-sensitive; the head cut and abdomen seam are authored
+        # BELOW this step and retain their exact native profile.
+        if limb_id != 'neck':
+            contour = contour.filter(ImageFilter.GaussianBlur(EDGE_AA_RADIUS))
         if limb_id == 'head':
             # Neck owns the one-row joint at y=317; do not draw a second
             # horizontal head outline into the same pixels.

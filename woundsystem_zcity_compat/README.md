@@ -165,8 +165,12 @@ map и irritation; обычные раны остаются. Откат рост
 заново под действующей повязкой. Попадание в заранее перевязанную конечность
 помечается так же. Артериальная рана остаётся отдельной и требует жгута.
 
-На конечности сразу появляется штатная C:U `infection.png`; слот ложного
-`disinfected/processing` использует ту же иконку, а `disinfectTime` обнуляется.
+На конечности сразу появляется штатная C:U `infection.png`, а на covered-ране
+`disinfectTime` обнуляется. Отдельный значок обработки `Icons.disinfected`
+больше **не рисуется вообще**: native `AddHudIcon` пропускает только этот один
+материал, поэтому infection/bleed/fracture и остальные медицинские иконки не
+затрагиваются. Обычный серверный `disinfectTime` и его сопротивление заражению
+сохраняются — скрыт именно визуальный индикатор, а не эффект обеззараживания.
 Серверный таймер идёт по анатомическим стадиям: **конечность 0–240 с → торс с
 240 с → мозг с 420 с → смерть с 600 с**. Значения `state.infection` показывают
 стадии штатным HUD, а `infectionSpeed=0` не даёт физиологии C:U добавить второй
@@ -328,7 +332,7 @@ ZCity вызывает `WoundSystem.Health.StartExternalMinigame()` только
 
 | ZCity-предмет / режим | Поведение |
 | --- | --- |
-| `weapon_bandage_sh`, `weapon_bigbandage_sh`, `weapon_medkit_sh` режим `1` | **bandage мини-игра**: лечение идёт по мере намотки; `modeValues` списывается ровно на фактически удалённую severity (не на фиксированный процент C:U), с учётом остатка и без двойного Consume |
+| `weapon_bandage_sh`, `weapon_bigbandage_sh`, `weapon_medkit_sh` режим `1` | **bandage мини-игра**: цель выбирается по реальным `organism.wounds`/aftercare, а не по 4 Hz `isBandaged/bleed`-тени C:U; лечение идёт по мере намотки, `modeValues` списывается ровно на фактически удалённую severity (не на фиксированный процент C:U), с учётом остатка и без двойного Consume. После закрытия последней обычной раны native-сессия автоматически получает `completed`, проходит обычный `onClose/AfterUse` и удаляет overlay/virtual slot |
 | `weapon_morphine`, `weapon_fentanyl` | **syringe мини-игра**: доза и расход идут по мере нажатия поршня |
 | `weapon_naloxone` | **мгновенно**, хотя в ZCity есть `spec.mg` (oneshot) |
 | `weapon_needle`, `weapon_medkit_sh` режим `5` | **мгновенно** (`INJECTION` / SALINE, apply) |
@@ -359,7 +363,7 @@ SWEP. В authority-режиме каждая такая доза дополни�
   `WSZC_SyringeState`, закрывает через `WSZC_BandageClose` / `WSZC_SyringeClose`
   и `WSZC_MinigameClose`.
 - `session.startAmount`, `session.deferredUsed`, `onProgress`, `onClose` и
-  причины закрытия (`dead`, `respawn`, `disabled`, `needle_break`,
+  причины закрытия (`completed`, `dead`, `respawn`, `disabled`, `needle_break`,
   `invalid_limb`, `replaced`, `target_gone`, `empty`, `user_cancel`) совпадают
   с контрактом `WB.StartMinigame()`.
 - Родные C:U сессии bandage/syringe тоже учитываются в `HasExternalMinigame`

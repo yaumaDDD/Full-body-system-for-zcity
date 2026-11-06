@@ -101,12 +101,19 @@
 severity 4 стоит 4 заряда и у малого (40), и у большого (150) бинта, а не
 фиксированные `100/12 × def/100`. Остаток предмета ограничивает лечение; пустые
 круги, artery-only и завершающий aftercare при нулевой severity бесплатны.
+Цель бинта выбирается по реальным `organism.wounds`/aftercare, а не по stale
+`isBandaged` или shadow-only bleed; после последнего treatment native-сессия
+завершается `completed`, проходит `onClose/AfterUse` и снимает overlay/slot.
+Ложный `disinfected/processing` скрыт точечно в native `AddHudIcon`, при этом
+infection/bleed/fracture и настоящий `disinfectTime` не затрагиваются.
 
 Кукла расставлена по приложенному зелёному WoundView-эталону `2222.png`:
 16 независимых `REFERENCE_BOXES`, crop-first head/neck и раздельная калибровка
 каждой части. **Стандартный чёрный `(0,0,0)`** сохранён. **Обводка по форме
-каждого лимба** использует `EDGE_WIDTH=17` (3–4 px), для пальцев 11; ни один
-белый пиксель не касается границы прямоугольного спрайта. Neck один владеет
+каждого лимба** использует `EDGE_WIDTH=17` (3–4 px), для пальцев 11, плюс
+`EDGE_AA_RADIUS=0.45` и LINEAR filtering только на время native WoundView;
+ни один белый пиксель не касается границы прямоугольного спрайта. Neck без blur
+один владеет
 швом `y=317`, abdomen имеет внутренний seam `y=520`; «конструктора» и единого
 `outer_band` нет.
 `..._unitmenu_tint 1` ставит белый `SetDrawColor` только для `*_fill.png`, а

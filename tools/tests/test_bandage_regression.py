@@ -594,6 +594,10 @@ return startedOK, halfOK, completeOK
     check("R10 180 reverse degrees keep the dressing on and spend no item", unwrap[1])
     check("R11 360 reverse degrees unwrap exactly once and close the session", unwrap[2])
 
+    # Keep the authoritative server runtime for the final client->net->server
+    # end-to-end regression below.
+    server_lua = lua
+
     # ---------------------------------------------------------- client UI --
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(r'''
@@ -868,6 +872,107 @@ return forwardDegrees == 0, reverseDegrees >= 360, unwrapLabel and infectionIcon
     check("R12 forward wrapping motion does not count as reverse unwrapping", client_unwrap[0])
     check("R13 a reverse circle accumulates 360 degrees in the real client Think", client_unwrap[1])
     check("R14 completed unwrap shows UNWRAP percent and standard infection icon", client_unwrap[2])
+
+    # --------------------------------------- real client -> net -> server ---
+    client_circle = lua.execute(r'''
+local mg = WSZCBandageMinigame
+local think = hook._t.WSZC_BandageInput
+local clock = 200
+CurTime = function() return clock end
+WSZC.MinigameHUDOpen = true
+WSZC.MinigameHandPinned = function() return true end
+WSZC.PinMinigameHandToCursor = function(mg)
+    local mx, my = gui.MousePos()
+    mg.handScreenX, mg.handScreenY = mx, my
+    mg.handScreenVelX, mg.handScreenVelY = 0, 0
+    mg._hp_acc = 0
+    return mx, my
+end
+
+ClientWire, wire = {}, nil
+net.Start = function(name) wire = { name = name, writes = {} } end
+net.WriteUInt = function(value) wire.writes[#wire.writes + 1] = { "uint", value } end
+net.WriteFloat = function(value) wire.writes[#wire.writes + 1] = { "float", value } end
+net.WriteString = function(value) wire.writes[#wire.writes + 1] = { "string", value } end
+net.SendToServer = function()
+    ClientWire[#ClientWire + 1] = wire
+    wire = nil
+end
+
+local function place(physicalAngle)
+    local rad = math.rad(physicalAngle)
+    local scale = 1.7 -- mocked 1000x1000, fullscreen off => CFG 1.7
+    local x = 500 + math.sin(rad) * 260 * scale
+    local y = 500 - math.cos(rad) * 260 * scale
+    gui.MousePos = function() return x, y end
+end
+
+mouseDown = false
+place(0)
+mg.OpenFromServer({ sessionId = 105, limbId = "hand_R", mode = "gauze", slotIdx = 6 })
+think()
+mouseDown = true
+think()
+local grabbed = mg.holdingBandage
+for angle = 5, 360, 5 do
+    clock = clock + 0.02
+    place(angle)
+    think()
+end
+clock = clock + 0.2
+think() -- flush the final partial network batch
+
+ClientWireDegrees, ClientWireSessions = {}, {}
+local sum = 0
+for _, message in ipairs(ClientWire) do
+    if message.name == "WSZC_BandageInput" then
+        local degrees = message.writes[2][2]
+        ClientWireDegrees[#ClientWireDegrees + 1] = degrees
+        ClientWireSessions[#ClientWireSessions + 1] = message.writes[1][2]
+        sum = sum + degrees
+    end
+end
+ClientCircleOK = grabbed and mg.totalDegreesWrapped >= 360 and sum >= 360
+    and #ClientWireDegrees > 0
+for _, sessionId in ipairs(ClientWireSessions) do
+    if sessionId ~= 105 then ClientCircleOK = false end
+end
+return ClientCircleOK, mg.totalDegreesWrapped, sum, #ClientWireDegrees
+''')
+    check("R24 real clockwise client circle emits 360 degrees for the native session", client_circle[0])
+
+    degrees = [float(v) for v in lua.execute('return ClientWireDegrees').values()]
+    lua_degrees = ', '.join('%.9g' % value for value in degrees)
+    end_to_end = server_lua.execute(r'''
+WSZC.MinigameSessions = {}
+local Patient = BandagePatientFactory
+local patient = Patient()
+WSZC.RealAddShrapnel(patient, "hand_R", 3, "shotgun") -- severity 4 / bleed 8
+local swep = NativeBandageSwepFactory(40)
+local session = NativeBandageSessionFactory(105, patient, swep, 40, 100)
+NativeCloseReason = nil
+session.onClose = function(_, _, reason) NativeCloseReason = reason end
+sent = {}
+for _, degrees in ipairs(CLIENT_DEGREES) do
+    readQueue = { 105, degrees }
+    receivers["WSZC_BandageInput"](0, session.owner)
+end
+local closePacket, slotClose = false, false
+for _, message in ipairs(sent) do
+    if message.name == "WSZC_BandageClose" and message.writes[2][2] == "completed" then
+        closePacket = true
+    end
+    if message.name == "WSZC_MinigameClose" then slotClose = true end
+end
+return WSZC.RealGetBandageBleeding(patient, "hand_R") == 0
+    and swep.modeValues[1] == 36
+    and math.abs(session.deferredUsed - 10) < 0.001
+    and session._calls() == 0 -- no second native onProgress consumption
+    and session._applied() >= 0.02
+    and WSZC.MinigameSessions[session.owner] == nil
+    and NativeCloseReason == "completed" and closePacket and slotClose
+'''.replace('CLIENT_DEGREES', '{ ' + lua_degrees + ' }'))
+    check("R25 client packets really close the wound, spend four units and complete/close server session", end_to_end)
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

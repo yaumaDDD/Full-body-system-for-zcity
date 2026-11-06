@@ -924,8 +924,10 @@ return treated == 0
     and ply._limbs.hand_R.infection == 0
 ''')
     check("R58 final dressing completes aftercare even if extraction bleeding clotted", zero_aftercare)
-    check("S16 covered-shrapnel UI replaces processing with stock infection",
-          'icons.disinfected = Material("casunknown-images/icons/infection.png"' in layout_s
+    check("S16 processing icon is filtered alone; infection and disinfect mechanics survive",
+          "function WSZC.InstallDisinfectedIconFilter()" in layout_s
+          and "mat == icons.disinfected" in layout_s
+          and 'icons.disinfected = Material("casunknown-images/icons/infection.png"' not in layout_s
           and "state.disinfectTime = 0" in organism_s
           and "state.infectionSpeed = 0" in organism_s)
 
@@ -1442,16 +1444,24 @@ ply.organism.arterialwounds = {
     { 5, Vector(), Angle(), "ValveBiped.Bip01_R_UpperArm", 0, Vector(), "rarmartery" },
     { 40, Vector(), Angle(), "ValveBiped.Bip01_L_Thigh", 0, Vector(), "llegartery" },
 }
+-- A dressed hand still has a REAL ordinary wound; the much larger thigh bleed
+-- is artery-only shadow presentation and must not steal the bandage target.
+ply._limbs.hand_R = { bleed = 25, isBandaged = true, dismembered = false }
+ply.organism.wounds = {
+    { 4, Vector(), Angle(), "ValveBiped.Bip01_R_Hand", 0 },
+}
 local BestLimb = function() return "native_bandage_site" end
 local NativeSwepHeal = function(target, spec, preferred)
     return BestLimb(target, spec, preferred)
 end
 local patched = WSZC.PatchTourniquetBestLimb(NativeSwepHeal)
 local tourniquet = NativeSwepHeal(ply, { kind = "apply", item = "TOURNIQUET", pick = "extremity" })
-local bandage = NativeSwepHeal(ply, { kind = "bandage", item = "GAUZE" })
-return patched and tourniquet == "arm_R" and bandage == "native_bandage_site"
+local bandage = NativeSwepHeal(ply, { kind = "bandage", item = "GAUZE" }, "hand_R")
+local arteryOnly = NativeSwepHeal(ply, { kind = "bandage", item = "GAUZE" }, "thigh_L")
+return patched and tourniquet == "arm_R" and bandage == "hand_R"
+    and arteryOnly == "hand_R" -- never the phantom 100-bleed artery-only thigh
 ''')
-    check("R49 installed BestLimb upvalue prioritizes only tourniquet, never bandage", selector_upvalue)
+    check("R49 installed BestLimb uses real tourniquet/bandage targets despite stale shadow flags", selector_upvalue)
 
     status_client = LuaRuntime(unpack_returned_tuples=True)
     status_client.execute(r'''
