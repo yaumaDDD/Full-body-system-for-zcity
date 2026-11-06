@@ -87,9 +87,10 @@ check('S06 native geometry unchanged; C:U human hand is the default pointer',
       and '"zc_woundsystem_compat_handanim", "1"' in layout_s)
 check('S07 hand pivot + native scale convars exist',
       all(x in layout_s for x in ('hand_pivot_x', 'hand_pivot_y', 'hand_max_screen')))
-check('S08 human hand keeps exact native C:U rect and rotation',
+check('S08 compact hand keeps native C:U centre, aspect and rotation',
       'HandRectForCursor' in layout_s
       and 'return cx, cy, nw, nh' in layout_s
+      and 'cvHandScale:GetFloat() * cvHandanimScale:GetFloat()' in layout_s
       and 'WSZC.HandRectForCursor(x, y, w, h, rot)' in layout_s
       and 'origRectRotated(nx, ny, nw, nh, rot, ...)' in layout_s
       and 'UnitmenuHandRotatedCenter' not in layout_s)
@@ -270,6 +271,11 @@ check('S45 minigame cursor is held for games our IsActive() probes miss',
       and 'WSZC._NextCursorFix = now + 0.05' in minigames_s
       and minigames_s.count('cmd:SetMouseX(0)') == 0
       and minigames_s.count('cmd:SetMouseY(0)') == 0)
+_enable_cursor_block = minigames_s.split('local function EnableMinigameClicker()', 1)[1].split('\nend', 1)[0]
+check('S53 cursor watchdog never reasserts the arrow over an active hand',
+      'if WSZC.SyncMinigameCursor then WSZC.SyncMinigameCursor() end' in _enable_cursor_block
+      and 'RestoreMinigameCursor' not in _enable_cursor_block
+      and 'producing the visible arrow flicker' in _enable_cursor_block)
 # One fracture / one dislocation point per arm or leg (owner 2026-11-05).
 # Parse the actual Lua anchor table so a future edit cannot silently smear
 # bone states back onto all three C:U limbs of an arm/leg.
@@ -326,8 +332,10 @@ check('S51 human C:U hand artwork, native rotation and one-time default migratio
       and 'zc_woundsystem_compat_hand_mode_revision' in layout_s
       and 'function WSZC.MigrateHumanHandDefaults()' in layout_s
       and 'UnitmenuHandRotatedCenter' not in src('woundsystem_zcity_compat/lua/autorun/client/wszc_cl_bandage.lua')
-      and '"zc_woundsystem_compat_hand_cursor_scale", "1"' in layout_s
+      and '"zc_woundsystem_compat_hand_cursor_scale", "0.55"' in layout_s
       and '"zc_woundsystem_compat_handanim_scale", "1"' in layout_s
+      and 'cvHandModeRevision:SetInt' not in layout_s
+      and 'cvHandModeRevision, 4' in layout_s
       and (CONN / 'materials/wszc/minigame/hand_idle.png').is_file()
       and (CONN / 'materials/wszc/minigame/hand_click.png').is_file())
 check('S48 silhouettes are NOT redrawn; only native limb boxes change',
@@ -687,6 +695,7 @@ WSZC = { WSZCMinigameActive = function() return false end }
 ''')
     lua.execute((CLIENT / 'wszc_unitmenu_geometry.lua').read_text(encoding='utf-8'))
     lua.execute(layout_s)
+    lua.execute(minigames_s)
 
     def rt(name, code):
         try:
@@ -766,7 +775,7 @@ end)()
 end)()
 ''')
 
-    rt('R07 pinned hand uses the exact native C:U rect at the cursor', '''
+    rt('R07 compact hand keeps the native centre at the cursor', '''
 (function()
     EnableDrawnHandMode()
     WoundSystemShrapnelMinigame = { active = true }
@@ -776,7 +785,9 @@ end)()
     WoundSystemShrapnelMinigame = { active = false }
     local c = surfaceCalls[#surfaceCalls]
     if not c or c.kind ~= "rot" then return false end
-    return c.x == 500 and c.y == 400 and c.w == 512 and c.h == 1260 and c.rot == 290
+    return c.x == 500 and c.y == 400 and c.rot == 290
+       and math.abs(c.w - 512 * 0.55) < 0.001
+       and math.abs(c.h - 1260 * 0.55) < 0.001
 end)()
 ''')
 
@@ -792,11 +803,12 @@ end)()
 end)()
 ''')
 
-    rt('R09 native hand size has no hidden shrink or screen cap', '''
+    rt('R09 shared 0.55 scale applies once without a screen cap', '''
 (function()
     EnableDrawnHandMode()
     local x, y, w, h = WSZC.HandRectForCursor(500, 400, 5000, 12000)
-    return w == 5000 and h == 12000
+    return math.abs(w - 5000 * 0.55) < 0.001
+       and math.abs(h - 12000 * 0.55) < 0.001
 end)()
 ''')
 
@@ -867,15 +879,18 @@ end)()
 end)()
 ''')
 
-    rt('R15 unitmenu defaults and WSZC hand geometry are exact C:U', '''
+    rt('R15 unitmenu defaults and WSZC hand use the shared 0.55 scale', '''
 (function()
-    local w, h, px, py = WSZC.UnitmenuHandGeometry(512, 1260, 2)
+    local effectiveScale = 2 * WSZC.HandCursorScale()
+    local w, h, px, py = WSZC.UnitmenuHandGeometry(512, 1260, effectiveScale)
     return convars["zc_woundsystem_compat_unitmenu_scale"]._v == "0.25"
        and convars["zc_woundsystem_compat_hand_pivot_x"]._v == "0.4"
        and convars["zc_woundsystem_compat_hand_pivot_y"]._v == "0.1"
-       and convars["zc_woundsystem_compat_hand_cursor_scale"]._v == "1"
+       and convars["zc_woundsystem_compat_hand_cursor_scale"]._v == "0.55"
        and convars["zc_woundsystem_compat_handanim_scale"]._v == "1"
-       and w == 1024 and h == 2520 and px == 0.4 and py == 0.1
+       and math.abs(w - 512 * 1.1) < 0.001
+       and math.abs(h - 1260 * 1.1) < 0.001
+       and px == 0.4 and py == 0.1
        and convars["zc_woundsystem_compat_unitmenu_doll"]._v == "1"
        and convars["zc_woundsystem_compat_hide_minigame_text"]._v == "1"
 end)()
@@ -946,7 +961,8 @@ end)()
     WoundSystemShrapnelMinigame = { active = false }
     mouseX, mouseY = 500, 400
     return c.kind == "rot" and c.x == 700 and c.y == 300
-       and c.w == 512 and c.h == 1260
+       and math.abs(c.w - 512 * 0.55) < 0.001
+       and math.abs(c.h - 1260 * 0.55) < 0.001
        and state.handScreenX == 700 and state.handScreenY == 300
 end)()
 ''')
@@ -959,7 +975,9 @@ end)()
     local x, y, w, h = WSZC.HandRectForCursor(200, 150, 512, 1260)
     convars["zc_woundsystem_compat_hand_pin_cursor"]._v = "1"
     mouseX, mouseY = 500, 400
-    return x == 200 and y == 150 and w == 512 and h == 1260
+    return x == 200 and y == 150
+       and math.abs(w - 512 * 0.55) < 0.001
+       and math.abs(h - 1260 * 0.55) < 0.001
 end)()
 ''')
 
@@ -1253,16 +1271,16 @@ end)()
     convars["zc_woundsystem_compat_handanim_scale"]._v = "0.55"
     convars["zc_woundsystem_compat_hand_pivot_x"]._v = "0.32"
     convars["zc_woundsystem_compat_hand_pivot_y"]._v = "0.11"
-    convars["zc_woundsystem_compat_hand_mode_revision"]._v = "2"
+    convars["zc_woundsystem_compat_hand_mode_revision"]._v = "3"
     local migrated = WSZC.MigrateHumanHandDefaults() == true
         and convars["zc_woundsystem_compat_handanim"]._v == "1"
-        and convars["zc_woundsystem_compat_hand_cursor_scale"]._v == "1"
+        and convars["zc_woundsystem_compat_hand_cursor_scale"]._v == "0.55"
         and convars["zc_woundsystem_compat_handanim_scale"]._v == "1"
         and convars["zc_woundsystem_compat_hide_minigame_hand"]._v == "0"
         and convars["zc_woundsystem_compat_hide_minigame_cursor"]._v == "1"
         and convars["zc_woundsystem_compat_hand_pivot_x"]._v == "0.4"
         and convars["zc_woundsystem_compat_hand_pivot_y"]._v == "0.1"
-        and convars["zc_woundsystem_compat_hand_mode_revision"]._v == "3"
+        and convars["zc_woundsystem_compat_hand_mode_revision"]._v == "4"
     convars["zc_woundsystem_compat_handanim_scale"]._v = "0.9"
     convars["zc_woundsystem_compat_hide_minigame_hand"]._v = "1"
     local preserved = WSZC.MigrateHumanHandDefaults() == false
@@ -1271,6 +1289,26 @@ end)()
     convars["zc_woundsystem_compat_hand_mode_revision"]._v = "0"
     WSZC.MigrateHumanHandDefaults()
     return migrated and preserved
+end)()
+''')
+
+    rt('R36 cursor watchdog leaves the arrow hidden on every refresh', '''
+(function()
+    EnableDrawnHandMode()
+    WoundSystemShrapnelMinigame = { active = true }
+    WSZC._MinigameForceOffUntil = 0
+    WSZC._NextCursorFix = 0
+    cursorValue = "arrow"
+    hook._t["Think"]["WSZC_MinigameCursorWatch"]()
+    local first = clickerOn == true and cursorValue == "blank"
+    -- Simulate C:U/ZCity resetting the VGUI cursor between watchdog ticks.
+    cursorValue = "arrow"
+    WSZC._NextCursorFix = 0
+    hook._t["Think"]["WSZC_MinigameCursorWatch"]()
+    local second = clickerOn == true and cursorValue == "blank"
+    WoundSystemShrapnelMinigame = { active = false }
+    WSZC.ForceReleaseMinigameCursor()
+    return first and second and cursorValue == "arrow"
 end)()
 ''')
 

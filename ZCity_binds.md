@@ -66,14 +66,15 @@
 Мини-игра `FIX DISLOCATION` из WoundView — родная C:U, но компат уменьшает её
 клип (`zc_woundsystem_compat_native_minigame_zoom`, по умолчанию `0.75`) и
 стартовое смещение кости (`zc_woundsystem_compat_dislocation_start`, по
-умолчанию `35`), чтобы кость была на экране и нажималась. Размер спрайта руки
-в мини-играх бинта/шприца — `zc_woundsystem_compat_hand_cursor_scale`.
+умолчанию `35`), чтобы кость была на экране и нажималась. Общий размер спрайта руки
+во всех мини-играх — `zc_woundsystem_compat_hand_cursor_scale` (0.55).
 
 Внешний вид куклы WoundView и руки мини-игр теперь берётся из архива
 `для переделывания интерфейса.zip`: 15 слоёв `zcity_delta/unitmenu/limbs`,
 иконки `status/*` и кадры `homigrad/handanim`. Управление: 
 `zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.24),
-`zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_handanim_scale` (1).
+`zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_hand_cursor_scale` (0.55),
+`zc_woundsystem_compat_handanim_scale` (1, без второго уменьшения).
 Две WSZC мини-игры раскрываются на весь экран: `zc_woundsystem_compat_fullscreen_minigame` (1).
 Нативные C:U shrapnel/dislocation/AED **по умолчанию в авторском размере 760 px**:
 `zc_woundsystem_compat_fullscreen_native` (0), `zc_woundsystem_compat_native_minigame_zoom` (1).
@@ -81,8 +82,8 @@
 Клик по пустой области WoundView закрывает окно: `zc_woundsystem_compat_close_on_empty_click` (1).
 Рука мини-игры ставится кончиками пальцев ровно на курсор:
 `zc_woundsystem_compat_hand_pivot_x` (0.4), `..._hand_pivot_y` (0.1),
-Размер и координаты полностью нативные, без дополнительного уменьшения.
-Системный курсор скрывается при каждой отрисовке руки:
+Визуальный размер ×0.55; центр, pivot, rotation и hitbox нативные.
+Системный курсор скрывается при каждой отрисовке руки и после cursor watchdog:
 `zc_woundsystem_compat_hide_minigame_cursor` (1), откат — 0.
 Человеческая рука использует штатные HandPhysics и поворот C:U:
 `zc_woundsystem_compat_handanim` (1), `..._hand_pin_cursor` (0), точка захвата

@@ -31,16 +31,18 @@ local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_z
 -- two WSZC minigames that were authored for it.
 local cvFullscreenNative = CreateClientConVar("zc_woundsystem_compat_fullscreen_native", "0", true, false,
     "0 = keep native C:U shrapnel / dislocation / AED at their authored 760 px size; 1 = stretch them fullscreen")
-local cvHandScale = CreateClientConVar("zc_woundsystem_compat_hand_cursor_scale", "1", true, false,
-    "Additional WSZC hand scale; 1 = exact native C:U size (0.2 .. 1)", 0.2, 1)
+local cvHandScale = CreateClientConVar("zc_woundsystem_compat_hand_cursor_scale", "0.55", true, false,
+    "Shared minigame hand scale; 0.55 = compact human hand (0.2 .. 1)", 0.2, 1)
 local cvHideMinigameText = CreateClientConVar("zc_woundsystem_compat_hide_minigame_text", "1", true, false,
     "1 = remove every header / instruction / exit-hint text and dark panel in all minigames")
 local cvCloseEmptyClick = CreateClientConVar("zc_woundsystem_compat_close_on_empty_click", "1", true, false,
     "1 = close WoundView when left-clicking an empty area outside the doll, slots and action point")
 
---- Multiplier for the huge C:U hand sprites (512x1260 source images).
+--- Shared visual multiplier for the huge C:U hand sprites (512x1260).
+--- WSZC applies it in HandCursorScale(); the native override applies the SAME
+--- value in HandDrawSize(), so bandage, syringe and extraction stay identical.
 function WSZC.HandCursorScale()
-    return cvHandScale and cvHandScale:GetFloat() or 1
+    return cvHandScale and cvHandScale:GetFloat() or 0.55
 end
 
 --- sh_handphysics.lua adds a pain-driven pseudo-noise offset to the mouse
@@ -957,14 +959,14 @@ local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "
 local cvHandanim = CreateClientConVar("zc_woundsystem_compat_handanim", "1", true, false,
     "1 = human C:U-style hand; 0 = original C:U hand frames")
 local cvHandanimScale = CreateClientConVar("zc_woundsystem_compat_handanim_scale", "1", true, false,
-    "Additional human hand scale; 1 = exact native C:U size (0.2 .. 1.5)", 0.2, 1.5)
+    "Additional human hand scale; 1 = no extra multiplier beyond shared scale (0.2 .. 1.5)", 0.2, 1.5)
 -- Exact native C:U grip fractions in its original 512x1260 rectangle.
 local cvHandPivotX = CreateClientConVar("zc_woundsystem_compat_hand_pivot_x", "0.4", true, false,
     "Grip point inside the hand sprite, X fraction 0..1", 0, 1)
 local cvHandPivotY = CreateClientConVar("zc_woundsystem_compat_hand_pivot_y", "0.1", true, false,
     "Grip point inside the hand sprite, Y fraction 0..1", 0, 1)
 local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_screen", "0.34", true, false,
-    "Legacy unused option: exact native C:U hand size is not screen-capped")
+    "Legacy unused option: the compact hand is scaled, not screen-capped")
 local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "1", true, false,
     "1 = hide the OS arrow only while the drawn minigame hand is active")
 local cvHideHand = CreateClientConVar("zc_woundsystem_compat_hide_minigame_hand", "0", true, false,
@@ -976,12 +978,12 @@ local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_curso
 local cvHandModeRevision = CreateClientConVar("zc_woundsystem_compat_hand_mode_revision", "0", true, false,
     "Internal one-time migration revision for the C:U human hand defaults")
 function WSZC.MigrateHumanHandDefaults()
-    -- Revision 3 removes the old 0.45/0.55 double-shrink and restores C:U's
-    -- exact native pivot.  Reapply the OS-arrow preference too: the hand is
-    -- now drawn every frame at the same position as C:U's original pointer.
-    if cvHandModeRevision:GetFloat() >= 3 then return false end
+    -- Revision 4 replaces the screen-filling 1.0 hand with one shared 0.55
+    -- visual scale.  Keep handanim_scale at 1: 0.45 * 0.55 must NOT return.
+    -- Pivot, native rotation and gameplay hitboxes are deliberately unchanged.
+    if cvHandModeRevision:GetFloat() >= 4 then return false end
     local defaults = {
-        { cvHandScale, 1 }, { cvHandanim, 1 }, { cvHandanimScale, 1 },
+        { cvHandScale, 0.55 }, { cvHandanim, 1 }, { cvHandanimScale, 1 },
         { cvHandPivotX, 0.4 }, { cvHandPivotY, 0.1 },
         { cvHideCursor, 1 }, { cvHideHand, 0 }, { cvHandPinCursor, 0 },
     }
@@ -989,7 +991,7 @@ function WSZC.MigrateHumanHandDefaults()
         local cv, value = entry[1], entry[2]
         if cv.SetFloat then pcall(cv.SetFloat, cv, value) end
     end
-    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 3) end
+    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 4) end
     return true
 end
 WSZC.MigrateHumanHandDefaults()
@@ -1388,9 +1390,11 @@ function WSZC.InstallNativeHandOverride()
     end
 
     local function HandDrawSize(w, h)
-        local k = math.Clamp(cvHandanimScale:GetFloat(), 0.2, 1.5)
-        -- Exact C:U geometry by default: k=1 and both source ratios are 1.
-        -- No second 0.55 scale, screen cap or alternate aspect correction.
+        -- The native and WSZC paths must not disagree: both now include the
+        -- shared 0.55 cursor scale exactly once, then the optional human-hand
+        -- multiplier (1 by default).  Only this DRAW rectangle shrinks;
+        -- MG.handDrawW/H and every extraction/dislocation hitbox stay native.
+        local k = math.Clamp(cvHandScale:GetFloat() * cvHandanimScale:GetFloat(), 0.04, 1.5)
         local nw = w * (WSZC.UnitmenuHandSrcW / 512) * k
         local nh = h * (WSZC.UnitmenuHandSrcH / 1260) * k
         return nw, nh
@@ -1434,8 +1438,9 @@ function WSZC.InstallNativeHandOverride()
         return mx, my
     end
 
-    --- Keep C:U's exact draw centre, rectangle and rotation.  Only optional
-    --- pin mode changes the centre; there is NO custom pivot/rotation math.
+    --- Keep C:U's exact draw centre and rotation.  The shared visual scale
+    --- shrinks about that same centre; optional pin mode is the only position
+    --- override, and there is NO alternate pivot/rotation math.
     function WSZC.HandRectForCursor(cx, cy, w, h, rot)
         local mx, my = WSZC.PinNativeHandToCursor()
         if mx then cx, cy = mx, my end
