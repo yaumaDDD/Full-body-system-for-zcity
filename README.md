@@ -258,8 +258,8 @@ limb из `hitgroup/dmgstack/HitBones`, включая голову, торс и
   первый же удар при боли > 75.
 * **Рука и курсор**: pain-shake из `sh_handphysics.lua` (`shakeX 120` /
   `shakeY 40`) обнулён в обеих наших мини-играх, максимальный шаг пружины
-  ограничен, а спрайт руки 512×1260 уменьшен конваром
-  `zc_woundsystem_compat_hand_cursor_scale 0.45`. Нативные мини-игры C:U
+  ограничен штатно, а спрайт руки 512×1260 имеет исходный CU-размер:
+  дополнительный `zc_woundsystem_compat_hand_cursor_scale` равен `1`. Нативные мини-игры C:U
   теперь тоже входят в `WSZC.MinigameActive()`: курсор удерживается, камера и
   движение зафиксированы и в dislocation/shrapnel.
 * **Перед проверкой**: распакуйте именно этот `zcity_full_pack.zip` (или
@@ -311,13 +311,13 @@ limb из `hitgroup/dmgstack/HitBones`, включая голову, торс и
   перелома/вывиха/крови берутся
   из архива. Рука в бинте/шприце и в нативных мини-играх C:U —
   `wszc/minigame/hand_idle.png` (ладонь) и `hand_click.png` (кулак), полученные
-  из реальных `homigrad/handanim` и повёрнутые в вертикальную CU-позу 512×1024.
-  Pivot `(0.32,0.11)` находится на коже между пальцами; штатные HandPhysics,
+  из реальных `homigrad/handanim` и повёрнутые в вертикальную CU-позу 512×1260.
+  Pivot `(0.4,0.1)` находится на коже между пальцами; штатные HandPhysics,
   поворот 290° и idle/click-переход сохранены. Конвары:
   `zc_woundsystem_compat_unitmenu_doll 1`,
   `zc_woundsystem_compat_unitmenu_scale 0.25`,
   `zc_woundsystem_compat_handanim 1`,
-  `zc_woundsystem_compat_handanim_scale 0.55`. Исходные ZIP-аддоны не
+  `zc_woundsystem_compat_handanim_scale 1`. Исходные ZIP-аддоны не
   правятся; оба сгенерированных спрайта лежат в самом коннекторе,
   поэтому WIP-аддон и чужие файлы больше не нужны. Если сборка GMod закрывает
   `debug.getupvalue`, остаётся родная кукла C:U: логика WoundView, мини-игр и
@@ -380,11 +380,12 @@ chrome-шрифтов **и AED-статуса** и только пока мин�
 `homigrad/handanim`, поворачивает их пальцами вверх и сохраняет открытую ладонь
 и кулак в `materials/wszc/minigame/`. По умолчанию рука следует штатной
 `MG.handScreenX/Y` и `HandPhysics`: инерция, боль, idle/click и поворот не
-подавляются. Pivot `zc_woundsystem_compat_hand_pivot_x 0.32` /
-`..._hand_pivot_y 0.11` совмещает захват с CU-точкой; ширина ≤
-`..._hand_max_screen 0.34 * ScrW`, высота ≤ 78% экрана. Системный курсор скрыт
-только в активной мини-игре (`..._hide_minigame_cursor 1`) и восстанавливается
-на выходе. Для жёсткого пина к реальному `gui.MousePos()` можно включить
+подавляются. Pivot `zc_woundsystem_compat_hand_pivot_x 0.4` /
+`..._hand_pivot_y 0.1` — исходные CU-значения. Размеры `512×1260`, координаты
+`x/y/w/h` и `rot` не пересчитываются, дополнительные коэффициенты равны `1`,
+экранного cap больше нет: заменяется ТОЛЬКО материал. Системный курсор скрыт
+в активной мини-игре (`..._hide_minigame_cursor 1`), повторно скрывается при
+каждой отрисовке руки и восстанавливается на выходе. Для жёсткого пина к реальному `gui.MousePos()` можно включить
 `..._hand_pin_cursor 1`; для обычной стрелки без руки — `..._hide_minigame_hand 1`.
 
 **Фон WoundView.** `WoundDollAndPanel` рисует полноэкранный `woundbg` с альфой
@@ -731,14 +732,16 @@ GMod не запускался — принятие по свежему live-с�
 3. **Возвращена человеческая рука в режиме C:U.** Прежний режим «только
    стрелка» отменён. `tools/build_minigame_hand.py` поворачивает реальные кадры
    `homigrad/handanim/hand.png` / `3_3.png` в вертикальную CU-позу и создаёт
-   `wszc/minigame/hand_idle.png` / `hand_click.png` (512×1024). По умолчанию:
+   `wszc/minigame/hand_idle.png` / `hand_click.png` (512×1260). По умолчанию:
    `zc_woundsystem_compat_handanim 1`, `..._hide_minigame_hand 0`,
    `..._hide_minigame_cursor 1`, `..._hand_pin_cursor 0`. Ладонь/кулак,
    HandPhysics, инерция, наклон и игровые хитбоксы остаются штатными C:U;
    системная стрелка скрыта только во время активной мини-игры и возвращается
    на выходе. Для прежнего arrow-only режима: `..._hide_minigame_hand 1`.
-   Одноразовая миграция `..._hand_mode_revision 2` обновляет старые сохранённые
-   no-hand значения, после чего ручные настройки больше не перезаписываются.
+   Миграция `..._hand_mode_revision 3` дополнительно убирает сохранённые
+   коэффициенты `0.45`/`0.55` и старый pivot: размер и положение снова точно
+   совпадают с C:U. Обычная стрелка подавляется при каждой отрисовке руки.
+   После миграции ручные настройки больше не перезаписываются.
 
 4. **Курсор не пропадал после мини-игры.** `DisableMinigameClicker()` раньше
    делал `return` при `WoundSystemHealthHUDOpen == true`, поэтому
@@ -787,8 +790,10 @@ GMod не запускался — принятие по свежему live-с�
    `hide_minigame_hand 1`, после закрытия и для мёртвого игрока всегда
    восстанавливается `arrow`. `WSZC_MinigameCursor` (Think) проверяет
    `vgui.CursorVisible()` и перезапускает clicker после C:U watchdog /
-   радиального меню ZCity, не выключая mouse input. Старые archived no-hand
-   настройки один раз мигрирует `MigrateHumanHandDefaults()` (revision 2),
+   радиального меню ZCity, не выключая mouse input. `UnitmenuHandMat()`
+   дополнительно вызывает `SyncMinigameCursor()` на КАЖДОЙ отрисовке руки,
+   поэтому стрелка не возвращается между периодическими Think-проверками.
+   Старые archived no-hand настройки мигрирует `MigrateHumanHandDefaults()` (revision 3),
    поэтому обновление не оставляет прежнюю комбинацию «нет руки + blank».
    Ручной выбор arrow-only сохраняется и больше не перезаписывается.
 

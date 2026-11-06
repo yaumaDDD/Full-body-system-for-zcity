@@ -3,8 +3,8 @@
 
 The source frames point left and include a horizontal sleeve.  C:U instead
 holds the fingertips upward with the sleeve below them.  Rotate both frames by
-70 degrees clockwise, crop transparent space and place them on a 512x1024
-canvas.  No silhouette, anatomy or skin texture is synthesized.
+75 degrees clockwise, crop transparent space and place them on C:U's exact
+512x1260 canvas.  No silhouette, anatomy or skin texture is synthesized.
 """
 from pathlib import Path
 from PIL import Image
@@ -12,9 +12,9 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / 'woundsystem_zcity_compat/materials/homigrad/handanim'
 OUTPUT = ROOT / 'woundsystem_zcity_compat/materials/wszc/minigame'
-CANVAS = (512, 1024)
+CANVAS = (512, 1260)
 MARGIN = 16
-ROTATE = -70
+ROTATE = -75
 
 
 def build(source_name, output_name):

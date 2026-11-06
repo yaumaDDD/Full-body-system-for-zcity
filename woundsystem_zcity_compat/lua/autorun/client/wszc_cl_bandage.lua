@@ -608,9 +608,8 @@ local function EnsureOverlay()
         local screenX = cx + (MG.handPos.x * baseScale)
         local screenY = cy - (MG.handPos.y * baseScale)
         
-        -- The generated 512x1024 human palm/fist follows C:U's vertical pose.
-        -- UnitmenuHandGeometry supplies its fingertip pivot and scale; if the
-        -- materials are unavailable, fall back to the original C:U sprites.
+        -- Human palm/fist on C:U's exact 512x1260 canvas.  Revision 3 keeps
+        -- native scale/pivot/position; only the material is substituted.
         local handScale = CFG.HandCursorScale * ((WSZC and WSZC.HandCursorScale and WSZC.HandCursorScale()) or 1)
         local handDrawW, handDrawH, handPivotX, handPivotY
         if WSZC and WSZC.UnitmenuHandGeometry then
@@ -643,11 +642,7 @@ local function EnsureOverlay()
         local cy_hand = handY + (handDrawH * handPivotY)
         local angle = HandPhysics.Rotation(MG, (MG.handPos and MG.handPos.x) and (MG.handPos.x * 0.02) or 0)
         if WSZC and WSZC.UnitmenuHandAngle then angle = WSZC.UnitmenuHandAngle(angle) end
-        if WSZC and WSZC.UnitmenuHandActive and WSZC.UnitmenuHandActive()
-            and WSZC.UnitmenuHandRotatedCenter then
-            cx_hand, cy_hand = WSZC.UnitmenuHandRotatedCenter(
-                cx_hand, cy_hand, handDrawW, handDrawH, handPivotX, handPivotY, angle)
-        end
+        -- Exact native C:U call: same centre, dimensions, pivot and rotation.
         surface.DrawTexturedRectRotated(cx_hand, cy_hand, handDrawW, handDrawH, angle)
         if WoundSystem and WoundSystem.MinigameClip then
             WoundSystem.MinigameClip.End(clipActive)

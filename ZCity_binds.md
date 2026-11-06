@@ -73,19 +73,20 @@
 `для переделывания интерфейса.zip`: 15 слоёв `zcity_delta/unitmenu/limbs`,
 иконки `status/*` и кадры `homigrad/handanim`. Управление: 
 `zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.24),
-`zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_handanim_scale` (0.55).
+`zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_handanim_scale` (1).
 Две WSZC мини-игры раскрываются на весь экран: `zc_woundsystem_compat_fullscreen_minigame` (1).
 Нативные C:U shrapnel/dislocation/AED **по умолчанию в авторском размере 760 px**:
 `zc_woundsystem_compat_fullscreen_native` (0), `zc_woundsystem_compat_native_minigame_zoom` (1).
 Растяжение нативных игр ломало рану и растягивало осколок; `1` — вернуть его.
 Клик по пустой области WoundView закрывает окно: `zc_woundsystem_compat_close_on_empty_click` (1).
 Рука мини-игры ставится кончиками пальцев ровно на курсор:
-`zc_woundsystem_compat_hand_pivot_x` (0.32), `..._hand_pivot_y` (0.11),
-`..._hand_max_screen` (0.34). Системный курсор скрывается:
+`zc_woundsystem_compat_hand_pivot_x` (0.4), `..._hand_pivot_y` (0.1),
+Размер и координаты полностью нативные, без дополнительного уменьшения.
+Системный курсор скрывается при каждой отрисовке руки:
 `zc_woundsystem_compat_hide_minigame_cursor` (1), откат — 0.
 Человеческая рука использует штатные HandPhysics и поворот C:U:
 `zc_woundsystem_compat_handanim` (1), `..._hand_pin_cursor` (0), точка захвата
-`..._hand_pivot_x 0.32` / `..._hand_pivot_y 0.11`, системный курсор
+`..._hand_pivot_x 0.4` / `..._hand_pivot_y 0.1`, системный курсор
 скрыт только во время игры (`..._hide_minigame_cursor 1`). Спрайты:
 `wszc/minigame/hand_idle.png` / `hand_click.png`; arrow-only откат:
 `..._hide_minigame_hand 1`. Кукла расставлена по приложенному

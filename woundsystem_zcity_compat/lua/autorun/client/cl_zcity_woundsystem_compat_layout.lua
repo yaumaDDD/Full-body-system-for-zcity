@@ -31,8 +31,8 @@ local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_z
 -- two WSZC minigames that were authored for it.
 local cvFullscreenNative = CreateClientConVar("zc_woundsystem_compat_fullscreen_native", "0", true, false,
     "0 = keep native C:U shrapnel / dislocation / AED at their authored 760 px size; 1 = stretch them fullscreen")
-local cvHandScale = CreateClientConVar("zc_woundsystem_compat_hand_cursor_scale", "0.45", true, false,
-    "Size of the on-screen hand in WSZC bandage/syringe minigames (0.2 .. 1)", 0.2, 1)
+local cvHandScale = CreateClientConVar("zc_woundsystem_compat_hand_cursor_scale", "1", true, false,
+    "Additional WSZC hand scale; 1 = exact native C:U size (0.2 .. 1)", 0.2, 1)
 local cvHideMinigameText = CreateClientConVar("zc_woundsystem_compat_hide_minigame_text", "1", true, false,
     "1 = remove every header / instruction / exit-hint text and dark panel in all minigames")
 local cvCloseEmptyClick = CreateClientConVar("zc_woundsystem_compat_close_on_empty_click", "1", true, false,
@@ -956,16 +956,15 @@ local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "
 -- click frame and rotation; the OS arrow is hidden only while a game is active.
 local cvHandanim = CreateClientConVar("zc_woundsystem_compat_handanim", "1", true, false,
     "1 = human C:U-style hand; 0 = original C:U hand frames")
-local cvHandanimScale = CreateClientConVar("zc_woundsystem_compat_handanim_scale", "0.55", true, false,
-    "Size of the realistic minigame hand (0.2 .. 1.5)", 0.2, 1.5)
--- Grip point in the generated 512x1024 sprite.  It sits between the fingers,
--- close to C:U's native (0.4, 0.1), rather than at the rectangle centre.
-local cvHandPivotX = CreateClientConVar("zc_woundsystem_compat_hand_pivot_x", "0.32", true, false,
+local cvHandanimScale = CreateClientConVar("zc_woundsystem_compat_handanim_scale", "1", true, false,
+    "Additional human hand scale; 1 = exact native C:U size (0.2 .. 1.5)", 0.2, 1.5)
+-- Exact native C:U grip fractions in its original 512x1260 rectangle.
+local cvHandPivotX = CreateClientConVar("zc_woundsystem_compat_hand_pivot_x", "0.4", true, false,
     "Grip point inside the hand sprite, X fraction 0..1", 0, 1)
-local cvHandPivotY = CreateClientConVar("zc_woundsystem_compat_hand_pivot_y", "0.11", true, false,
+local cvHandPivotY = CreateClientConVar("zc_woundsystem_compat_hand_pivot_y", "0.1", true, false,
     "Grip point inside the hand sprite, Y fraction 0..1", 0, 1)
 local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_screen", "0.34", true, false,
-    "Cap the minigame hand width at this fraction of ScrW (0.1 .. 1)", 0.1, 1)
+    "Legacy unused option: exact native C:U hand size is not screen-capped")
 local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "1", true, false,
     "1 = hide the OS arrow only while the drawn minigame hand is active")
 local cvHideHand = CreateClientConVar("zc_woundsystem_compat_hide_minigame_hand", "0", true, false,
@@ -977,17 +976,20 @@ local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_curso
 local cvHandModeRevision = CreateClientConVar("zc_woundsystem_compat_hand_mode_revision", "0", true, false,
     "Internal one-time migration revision for the C:U human hand defaults")
 function WSZC.MigrateHumanHandDefaults()
-    if cvHandModeRevision:GetFloat() >= 2 then return false end
+    -- Revision 3 removes the old 0.45/0.55 double-shrink and restores C:U's
+    -- exact native pivot.  Reapply the OS-arrow preference too: the hand is
+    -- now drawn every frame at the same position as C:U's original pointer.
+    if cvHandModeRevision:GetFloat() >= 3 then return false end
     local defaults = {
-        { cvHandanim, 1 }, { cvHandanimScale, 0.55 },
-        { cvHandPivotX, 0.32 }, { cvHandPivotY, 0.11 },
+        { cvHandScale, 1 }, { cvHandanim, 1 }, { cvHandanimScale, 1 },
+        { cvHandPivotX, 0.4 }, { cvHandPivotY, 0.1 },
         { cvHideCursor, 1 }, { cvHideHand, 0 }, { cvHandPinCursor, 0 },
     }
     for _, entry in ipairs(defaults) do
         local cv, value = entry[1], entry[2]
         if cv.SetFloat then pcall(cv.SetFloat, cv, value) end
     end
-    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 2) end
+    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 3) end
     return true
 end
 WSZC.MigrateHumanHandDefaults()
@@ -995,7 +997,7 @@ local cvDollTint = CreateClientConVar("zc_woundsystem_compat_unitmenu_tint", "1"
     "1 = draw the slate limbs with a white tint so they do not render pure black")
 
 WSZC.UnitmenuHandSrcW = 512
-WSZC.UnitmenuHandSrcH = 1024
+WSZC.UnitmenuHandSrcH = 1260
 
 local unitmenuMats, unitmenuIcons = nil, nil
 local handIdleMat, handClickMat, handMatsChecked = nil, nil, false
@@ -1070,6 +1072,10 @@ end
 function WSZC.UnitmenuHandMat(clicked)
     local idle = UnitmenuHandMaterials()
     if not idle then return nil end
+    -- C:U/other addons may reset the VGUI cursor after our 0.15 s Think sync.
+    -- Reapply it on EVERY actual hand draw so no ordinary arrow flickers or
+    -- remains visible alongside the C:U hand pointer.
+    if WSZC.SyncMinigameCursor then WSZC.SyncMinigameCursor() end
     return clicked and handClickMat or idle
 end
 
@@ -1108,15 +1114,6 @@ function WSZC.UnitmenuHandAngle(angle)
     return tonumber(angle) or 0
 end
 
---- surface.DrawTexturedRectRotated rotates around the RECT centre, while C:U
---- gameplay uses the fingertip pivot.  Compensate the centre so that pivot
---- stays on the same gameplay point at every angle (including 290 degrees).
-function WSZC.UnitmenuHandRotatedCenter(px, py, w, h, pivotX, pivotY, angle)
-    local ox, oy = (pivotX - 0.5) * w, (pivotY - 0.5) * h
-    local rad = math.rad(tonumber(angle) or 0)
-    local c, s = math.cos(rad), math.sin(rad)
-    return px - (ox * c - oy * s), py - (ox * s + oy * c)
-end
 WSZC.UnitmenuHandActive = function() return UnitmenuHandMaterials() ~= nil end
 
 ---------------------------------------------------------------------------
@@ -1388,19 +1385,11 @@ function WSZC.InstallNativeHandOverride()
 
     local function HandDrawSize(w, h)
         local k = math.Clamp(cvHandanimScale:GetFloat(), 0.2, 1.5)
-        -- Native C:U geometry is authored for 512x1260.  Substitute the human
-        -- 512x1024 rectangle only at DRAW time; MG.handDrawW/H and every grab
-        -- hitbox keep their original values.
+        -- Exact C:U geometry by default: k=1 and both source ratios are 1.
+        -- No second 0.55 scale, screen cap or alternate aspect correction.
         local nw = w * (WSZC.UnitmenuHandSrcW / 512) * k
         local nh = h * (WSZC.UnitmenuHandSrcH / 1260) * k
-        -- Full-screen native games scale Clip.Scale() up.  Cap both axes so
-        -- the vertical sleeve cannot swallow the wound or leave the screen.
-        local maxW = ScrW() * math.Clamp(cvHandMaxScreen:GetFloat(), 0.1, 1)
-        local maxH = ScrH() * 0.78
-        local f = 1
-        if maxW > 0 and nw > maxW then f = math.min(f, maxW / nw) end
-        if maxH > 0 and nh > maxH then f = math.min(f, maxH / nh) end
-        return nw * f, nh * f
+        return nw, nh
     end
     WSZC.HandDrawSize = HandDrawSize
 
@@ -1441,16 +1430,13 @@ function WSZC.InstallNativeHandOverride()
         return mx, my
     end
 
-    --- C:U passes its gameplay pivot as the rotated rect centre.  Preserve
-    --- that point (or the real cursor in optional pin mode), compensate for
-    --- the new sprite pivot AND the rotation, and leave all hitboxes alone.
+    --- Keep C:U's exact draw centre, rectangle and rotation.  Only optional
+    --- pin mode changes the centre; there is NO custom pivot/rotation math.
     function WSZC.HandRectForCursor(cx, cy, w, h, rot)
         local mx, my = WSZC.PinNativeHandToCursor()
         if mx then cx, cy = mx, my end
         local nw, nh = HandDrawSize(w, h)
-        local px, py = HandPivot()
-        local nx, ny = WSZC.UnitmenuHandRotatedCenter(cx, cy, nw, nh, px, py, rot)
-        return nx, ny, nw, nh
+        return cx, cy, nw, nh
     end
 
     surface.DrawTexturedRectRotated = function(x, y, w, h, rot, ...)
