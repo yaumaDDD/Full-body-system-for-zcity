@@ -13,9 +13,8 @@ only the parts this repository owns:
   * garrysmod/cfg/zcity_binds.cfg
   * MANIFEST.txt (counts + sha256 of the 11 connector Lua files)
 
-Upstream files stay untouched except two deterministic compatibility patches:
-the removed empty-notice line in sv_woundbridge.lua and the DFrame fallback
-for ZCity's admin/queue menus when their custom ZFrame is not registered.
+No file of any upstream addon is modified except the single already-patched
+line in z_city/lua/homigrad/woundbridge/sv_woundbridge.lua.
 
 Usage: python3 tools/build_packs.py
 """
@@ -38,8 +37,6 @@ ROOT_DOCS = {
     'WORKSHOP_IDS.txt': ROOT / 'WORKSHOP_IDS.txt',
 }
 CFG_ENTRY = 'garrysmod/cfg/zcity_binds.cfg'
-MODESELECT_ENTRY = ('garrysmod/addons/z_city/gamemodes/zcity/gamemode/'
-                    'libraries/cl_modeselect_menu.lua')
 DOCS_IN_ZIP = set(ROOT_DOCS) | {'MANIFEST.txt'}
 
 
@@ -60,20 +57,6 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def patch_modeselect_menu(data):
-    """Keep ZFrame when available, but never index a nil admin-menu panel."""
-    create = b'local frame = vgui.Create("ZFrame")'
-    fallback = b'local frame = vgui.Create("ZFrame") or vgui.Create("DFrame")'
-    border = b'frame:SetBorder(false)'
-    guarded = b'if frame.SetBorder then frame:SetBorder(false) end'
-    if data.count(fallback) == 2 and data.count(guarded) == 2:
-        return data
-    assert data.count(create) == 2, 'unexpected ZFrame call-site count'
-    assert data.count(border) == 2, 'unexpected SetBorder call-site count'
-    data = data.replace(create, fallback)
-    return data.replace(border, guarded)
-
-
 def build_manifest(old_text, entries, conn):
     old_lines = old_text.splitlines()
     # Keep the source-archive hashes and the patch note verbatim.
@@ -83,7 +66,7 @@ def build_manifest(old_text, entries, conn):
     for line in old_lines:
         if line.startswith('Исходные архивы'):
             section = 'archives'
-        elif line.startswith('Патч') and 'внутри сборки' in line:
+        elif line.startswith('Патч внутри сборки'):
             section = 'patch'
         elif line.startswith('Lua-исходники коннектора'):
             section = 'lua'
@@ -91,17 +74,6 @@ def build_manifest(old_text, entries, conn):
             archive_lines.append(line)
         elif section == 'patch':
             patch_lines.append(line)
-
-    # Keep the original woundbridge note, but do not retain its obsolete
-    # "only this file" heading after adding the admin-menu compatibility patch.
-    patch_lines = [line for line in patch_lines
-                   if not (line.startswith('Патч') and 'внутри сборки' in line)]
-    patch_lines.insert(0, 'Патчи внутри сборки:')
-    if not any('cl_modeselect_menu.lua' in line for line in patch_lines):
-        patch_lines += [
-            '  z_city/gamemodes/zcity/gamemode/libraries/cl_modeselect_menu.lua —',
-            '  F6 admin/queue: ZFrame, а при его отсутствии штатный DFrame.',
-        ]
 
     groups = defaultdict(lambda: [0, 0])
     for name, data in entries.items():
@@ -184,8 +156,6 @@ def main():
         if name in DOCS_IN_ZIP or name == CFG_ENTRY:
             continue
         entries[name] = data
-
-    entries[MODESELECT_ENTRY] = patch_modeselect_menu(entries[MODESELECT_ENTRY])
 
     for rel, data in conn.items():
         entries[CONN_PREFIX + rel] = data
