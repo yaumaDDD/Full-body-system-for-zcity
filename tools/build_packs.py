@@ -99,7 +99,9 @@ def build_manifest(old_text, entries, conn):
     lines = [
         'ZCity full pack - manifest',
         '==========================',
-        'Всего файлов в архиве: %d' % len(entries),
+        # MANIFEST.txt is inserted after this text is built, but it is still a
+        # file in the final archive and must be included in the advertised total.
+        'Всего файлов в архиве: %d' % (len(entries) + 1),
         '',
         'Папка аддона                                             файлов       байт',
         '--------------------------------------------------------------------------',

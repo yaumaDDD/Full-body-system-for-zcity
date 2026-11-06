@@ -665,6 +665,8 @@ def validate_zips():
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
     # +2 neck PNGs in the connector and +2 in the C:U material mirror.
     assert len(full) == 2773
+    declared_total = re.search(r'Всего файлов в архиве:\s*(\d+)', manifest)
+    assert declared_total and int(declared_total.group(1)) == len(full)
     return True
 
 
