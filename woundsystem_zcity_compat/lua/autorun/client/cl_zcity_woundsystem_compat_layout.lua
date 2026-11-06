@@ -17,11 +17,11 @@ WSZC._ClientLayoutLoaded = true
 
 local cvFullscreen = CreateClientConVar("zc_woundsystem_compat_fullscreen_minigame", "1", true, false,
     "1 = stretch the bandage / syringe minigames over the whole screen")
-local cvZoom = CreateClientConVar("zc_woundsystem_compat_minigame_zoom", "1", true, false,
+local cvZoom = CreateClientConVar("zc_woundsystem_compat_minigame_zoom", "0.85", true, false,
     "Extra size multiplier for the WSZC minigames (0.7 .. 1.8)", 0.7, 1.8)
 local cvClamp = CreateClientConVar("zc_woundsystem_compat_clamp_adrenaline", "1", true, false,
     "1 = clamp the shadow organism's adrenaline/painkiller so ZCity camera FX stay sane")
-local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_zoom", "1", true, false,
+local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_zoom", "0.85", true, false,
     "Size of native C:U minigames when fullscreen_native is 0 (0.4 .. 1.2)", 0.4, 1.2)
 -- Live regression (Screenshot_2-8): fullscreen_native=1 multiplied Clip.Scale()
 -- by NativeFullscreenK, so a 26x138 shrapnelpiece.png was stretched into a
@@ -344,6 +344,12 @@ function WSZC.ApplyFullscreenClip()
             local base = patchedScaleOriginal()
             if WSZC.MinigameFullscreenNative() and WSZC.NativeMinigameActive() then
                 return base * WSZC.NativeFullscreenK(base)
+            end
+            if WSZC.NativeMinigameActive() and not WSZC.MinigameFullscreenNative() then
+                -- GetRect() above shrinks the clipping frame.  Scale the game
+                -- coordinate system too, otherwise only the border gets smaller
+                -- while sprites and ScreenToSim hitboxes keep the old size.
+                return base * math.Clamp(cvNativeZoom:GetFloat(), 0.4, 1.2)
             end
             return base
         end
@@ -976,22 +982,22 @@ local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_curso
 -- Archived 0/1 values from the former no-hand build survive a default change.
 -- Migrate them once; afterwards every convar above remains user-configurable.
 local cvHandModeRevision = CreateClientConVar("zc_woundsystem_compat_hand_mode_revision", "0", true, false,
-    "Internal one-time migration revision for the C:U human hand defaults")
+    "Internal one-time migration revision for hand and minigame layout defaults")
 function WSZC.MigrateHumanHandDefaults()
-    -- Revision 4 replaces the screen-filling 1.0 hand with one shared 0.55
-    -- visual scale.  Keep handanim_scale at 1: 0.45 * 0.55 must NOT return.
-    -- Pivot, native rotation and gameplay hitboxes are deliberately unchanged.
-    if cvHandModeRevision:GetFloat() >= 4 then return false end
+    -- Revision 5 adds the moderate 0.85 zoom-out while retaining the shared
+    -- 0.55 hand scale.  Keep handanim_scale at 1: 0.45 * 0.55 must NOT return.
+    if cvHandModeRevision:GetFloat() >= 5 then return false end
     local defaults = {
         { cvHandScale, 0.55 }, { cvHandanim, 1 }, { cvHandanimScale, 1 },
         { cvHandPivotX, 0.4 }, { cvHandPivotY, 0.1 },
         { cvHideCursor, 1 }, { cvHideHand, 0 }, { cvHandPinCursor, 0 },
+        { cvZoom, 0.85 }, { cvNativeZoom, 0.85 },
     }
     for _, entry in ipairs(defaults) do
         local cv, value = entry[1], entry[2]
         if cv.SetFloat then pcall(cv.SetFloat, cv, value) end
     end
-    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 4) end
+    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 5) end
     return true
 end
 WSZC.MigrateHumanHandDefaults()
@@ -1094,6 +1100,18 @@ function WSZC.UnitmenuHandGeometry(srcW, srcH, scale)
                math.Clamp(cvHandPivotY:GetFloat(), 0, 1)
     end
     return (srcW * scale), (srcH * scale), 0.4, 0.1
+end
+
+--- Return a draw centre whose rotated artwork pivot lands exactly on cx/cy.
+--- This is the same local-vector rotation used by C:U DrawPivotedRect():
+--- x*c-y*s, x*s+y*c.  Keeping the centre fixed while shrinking a tall hand
+--- leaves its fingertips far below the cursor, so the pivot must be the anchor.
+function WSZC.HandRectAtPivot(cx, cy, w, h, rot, px, py)
+    px, py = tonumber(px) or 0.4, tonumber(py) or 0.1
+    local lx, ly = (0.5 - px) * w, (0.5 - py) * h
+    local angle = math.rad(tonumber(rot) or 0)
+    local c, s = math.cos(angle), math.sin(angle)
+    return cx + lx * c - ly * s, cy + lx * s + ly * c, w, h
 end
 
 function WSZC.UnitmenuHandAlpha(fallback)
@@ -1438,14 +1456,15 @@ function WSZC.InstallNativeHandOverride()
         return mx, my
     end
 
-    --- Keep C:U's exact draw centre and rotation.  The shared visual scale
-    --- shrinks about that same centre; optional pin mode is the only position
-    --- override, and there is NO alternate pivot/rotation math.
+    --- handScreenX/Y is C:U's grip point, not its rectangle centre.  Preserve
+    --- that point while applying the one shared scale and exact native rotation.
+    --- Optional pin mode only changes the target to the physical cursor.
     function WSZC.HandRectForCursor(cx, cy, w, h, rot)
         local mx, my = WSZC.PinNativeHandToCursor()
         if mx then cx, cy = mx, my end
         local nw, nh = HandDrawSize(w, h)
-        return cx, cy, nw, nh
+        local px, py = HandPivot()
+        return WSZC.HandRectAtPivot(cx, cy, nw, nh, rot, px, py)
     end
 
     surface.DrawTexturedRectRotated = function(x, y, w, h, rot, ...)

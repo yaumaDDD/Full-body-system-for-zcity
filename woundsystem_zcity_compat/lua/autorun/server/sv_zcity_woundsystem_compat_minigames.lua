@@ -707,9 +707,11 @@ local function ProcessBandageInput(_, ply)
     -- An artery is not a bandage target.  Do not spend even a partial roll
     -- when no ordinary bleeding remains; still ACK and refresh the state so
     -- the client can show the persistent blood drop / TOURNIQUET prompt.
+    local finalAftercare = WSZC.ShrapnelAftercarePending
+        and WSZC.ShrapnelAftercarePending(session.target, session.limbId) or false
     if WSZC.GetBandageBleeding and WSZC.OrganismAuthority
         and WSZC.OrganismAuthority() and type(session.target.organism) == "table"
-        and CurrentBandageBleeding(session) <= 0.0001 then
+        and CurrentBandageBleeding(session) <= 0.0001 and not finalAftercare then
         SendBandageState(ply, session)
         SendAck(ply, session, ACK_BANDAGE, inputSeq)
         return

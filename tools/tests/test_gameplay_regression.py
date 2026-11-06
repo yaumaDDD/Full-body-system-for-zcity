@@ -61,10 +61,12 @@ check("S04 added WoundView cards are rolled back; native geometry remains",
       and "DrawVitalRow" not in layout_s and "LIMB STATUS" not in layout_s
       and "WSZC_UNITMENU_LIMB_GEOMETRY" in layout_s)
 check("S05 bandage budget and ordinary bleed are bounded for a physical roll",
-      'zc_woundsystem_compat_bandage_strength", "2"' in organism_s
+      'zc_woundsystem_compat_bandage_strength", "3"' in organism_s
       and 'zc_woundsystem_compat_bleeding_multiplier", "0.55"' in organism_s
       and "org.bleedingmul = math.min" in organism_s
-      and "+ count * (0.018 + irritation * 0.002) * dt * growth, 0.5, 8)" in organism_s)
+      and "+ count * (0.018 + irritation * 0.002) * dt * growth, 0, 8)" in organism_s
+      and "function WSZC.ShrapnelBandageInProgress" in organism_s
+      and "managedZero" in organism_s)
 check("S06 physical tourniquet treats before native and requires a real wound",
       "directTourniquetTreated" in server_main_s
       and "if authoritativeTourniquet then" in server_main_s
@@ -700,6 +702,164 @@ return bandageAllowed, noRegrow, infected, unwrapGate, secondClickNative,
     check("R54 only full re-bandaging clears extraction aftercare and infection", complications[6])
     check("R22 a pellet into an already dressed limb is covered without external bleed", complications[7])
     check("R59 partial extraction can be re-bandaged without curing remaining infection", complications[8])
+
+    timed_bandage = lua.execute(r'''
+-- Real GAUZE: a 100-durability roll, 12 complete turns, one partial effect per
+-- turn.  A second ordinary wound deliberately remains after the shrapnel is
+-- closed: the old code recreated the fragment wound on the very next tick.
+local ply = MakePlayer()
+table.insert(ply.organism.wounds, {
+    12, Vector(0, 0, 0), Angle(0, 0, 0),
+    "ValveBiped.Bip01_R_Hand", CurTime(),
+})
+WSZC.AddShrapnel(ply, "hand_R", 3, "shotgun") -- physical maximum: 5 pieces
+local function TaggedWound()
+    for _, wound in pairs(ply.organism.wounds) do
+        if wound.wszcShrapnel then return wound end
+    end
+end
+local function NativeWound()
+    for _, wound in pairs(ply.organism.wounds) do
+        if not wound.wszcShrapnel and not wound.wszcShrapnelExtraction then return wound end
+    end
+end
+local operator = MakePlayer()
+WSZC.MinigameSessions = {
+    [operator] = {
+        kind = "bandage", mode = "gauze", target = ply,
+        limbId = "hand_R", closed = false,
+    },
+}
+local function NativeRemoveZeroWounds(org)
+    -- Exact native sv_blood behaviour: zero entries do NOT survive for our
+    -- managed-zero table check to find on the next tick.
+    for i = #org.wounds, 1, -1 do
+        if type(org.wounds[i]) == "table" and (tonumber(org.wounds[i][1]) or 0) == 0 then
+            table.remove(org.wounds, i)
+        end
+    end
+end
+local profile = { effects = { bandageSlowAmount = 45 } }
+local perWrap = 100 / 12
+local firstClosed, firstDidNotRespawn = false, false
+for wrap = 1, 12 do
+    WSZC.ApplyBandageToOrganism(
+        { ply = ply, limbId = "hand_R", limb = ply._limbs.hand_R },
+        profile, (perWrap / perWrap) / 12)
+    local tagged, native = TaggedWound(), NativeWound()
+    if wrap == 1 then
+        firstClosed = tagged and tagged[1] == 0
+            and native and native[1] > 0
+            and not WSZC.IsShrapnelBandaged(ply, "hand_R")
+            and ply.organism.wszc_shrapnel_closed.hand_R == true
+        NativeRemoveZeroWounds(ply.organism)
+        WSZC.TickLodgedShrapnel(ply, ply.organism, 0.5)
+        WSZC.TickShrapnelAftercare(ply, ply.organism, 0.5)
+        tagged = TaggedWound()
+        firstDidNotRespawn = (not tagged or tagged[1] == 0)
+            and ply.organism.wszc_shrapnel_closed.hand_R == true
+    else
+        WSZC.TickLodgedShrapnel(ply, ply.organism, 0.5)
+        WSZC.TickShrapnelAftercare(ply, ply.organism, 0.5)
+    end
+    WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+end
+local entry = ply.organism.wszc_bandaged_shrapnel.hand_R
+local completed = firstClosed and firstDidNotRespawn
+    and WSZC.GetBandageBleeding(ply, "hand_R") == 0
+    and WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and ply._limbs.hand_R.shrapnel == 5
+    and (not TaggedWound() or TaggedWound()[1] == 0)
+    and ply.organism.wszc_shrapnel_closed.hand_R == true
+    and entry and entry.infectionAge > 0
+WSZC.MinigameSessions = {}
+
+-- Active treatment freezes NEW fragment growth, not the existing bleed.  Once
+-- the session ends the ordinary lodged-wound simulation resumes normally.
+local waiting = MakePlayer()
+WSZC.AddShrapnel(waiting, "hand_R", 3, "shotgun")
+local waitingWound = WSZC.EnsureLodgedWound(waiting, waiting.organism, "hand_R", 5)
+local severity, pain = waitingWound[1], waiting.organism.avgpain
+WSZC.MinigameSessions = {
+    [operator] = { kind = "bandage", mode = "gauze", target = waiting,
+                   limbId = "hand_R", closed = false },
+}
+for _ = 1, 20 do WSZC.TickLodgedShrapnel(waiting, waiting.organism, 0.5) end
+local grace = waitingWound[1] == severity and waiting.organism.avgpain == pain
+    and WSZC.GetBandageBleeding(waiting, "hand_R") > 0
+WSZC.MinigameSessions = {}
+WSZC.TickLodgedShrapnel(waiting, waiting.organism, 0.5)
+local resumed = waitingWound[1] > severity and waiting.organism.avgpain > pain
+
+-- With no unrelated wound, one complete physical turn now closes even the
+-- maximum initial 5-piece wound; the fragment itself and infection cycle stay.
+local quick = MakePlayer()
+WSZC.AddShrapnel(quick, "hand_R", 3, "shotgun")
+WSZC.ApplyBandageToOrganism(
+    { ply = quick, limbId = "hand_R", limb = quick._limbs.hand_R },
+    profile, 1 / 12)
+local oneTurn = WSZC.GetBandageBleeding(quick, "hand_R") == 0
+    and WSZC.IsShrapnelBandaged(quick, "hand_R")
+    and quick._limbs.hand_R.shrapnel == 5
+
+-- The SAME native table.remove race exists for aftercare.  Close its small
+-- wound while a larger ordinary wound remains, delete zero entries exactly as
+-- sv_blood does, and verify that only pain/age (not external bleed) continues.
+local after = MakePlayer()
+table.insert(after.organism.wounds, {
+    20, Vector(0, 0, 0), Angle(0, 0, 0),
+    "ValveBiped.Bip01_R_Hand", CurTime(),
+})
+WSZC.StartShrapnelAftercare(after, after.organism, "hand_R", 1)
+WSZC.ApplyBandageToOrganism(
+    { ply = after, limbId = "hand_R", limb = after._limbs.hand_R }, profile, 1 / 12)
+local aftercareMarker = after.organism.wszc_shrapnel_aftercare_closed
+    and after.organism.wszc_shrapnel_aftercare_closed.hand_R == true
+NativeRemoveZeroWounds(after.organism)
+WSZC.TickShrapnelAftercare(after, after.organism, 0.5)
+local extractionReopened, ordinaryLeft = false, false
+for _, wound in pairs(after.organism.wounds) do
+    if wound.wszcShrapnelExtraction and (tonumber(wound[1]) or 0) > 0 then
+        extractionReopened = true
+    elseif not wound.wszcShrapnelExtraction and (tonumber(wound[1]) or 0) > 0 then
+        ordinaryLeft = true
+    end
+end
+local aftercareStable = aftercareMarker and not extractionReopened and ordinaryLeft
+    and WSZC.ShrapnelAftercarePending(after, "hand_R")
+    and after.organism.wszc_shrapnel_aftercare_closed.hand_R == true
+
+-- A clot marker must never suppress a NEW pellet on a limb whose shrapnel was
+-- closed but whose unrelated native wound keeps it out of the covered state.
+local reinjured = MakePlayer()
+table.insert(reinjured.organism.wounds, {
+    20, Vector(0, 0, 0), Angle(0, 0, 0),
+    "ValveBiped.Bip01_R_Hand", CurTime(),
+})
+WSZC.AddShrapnel(reinjured, "hand_R", 1, "shotgun") -- 3 pieces
+WSZC.ApplyBandageToOrganism(
+    { ply = reinjured, limbId = "hand_R", limb = reinjured._limbs.hand_R }, profile, 1 / 12)
+local closedNotCovered = reinjured.organism.wszc_shrapnel_closed.hand_R == true
+    and not WSZC.IsShrapnelBandaged(reinjured, "hand_R")
+-- Keep the clot record but remove the physical dressing; otherwise the stock
+-- rule for a pellet into an ALREADY DRESSED limb correctly covers the new hit.
+reinjured.bandaged_limbs = {}
+reinjured._limbs.hand_R.isBandaged = false
+WSZC.AddShrapnel(reinjured, "hand_R", 1, "shotgun") -- 5 pieces, NEW injury
+local reopenedSeverity = 0
+for _, wound in pairs(reinjured.organism.wounds) do
+    if wound.wszcShrapnel then reopenedSeverity = math.max(reopenedSeverity, wound[1]) end
+end
+local newHitOpens = closedNotCovered and reinjured._limbs.hand_R.shrapnel == 5
+    and math.abs(reopenedSeverity - 4) < 0.001
+    and reinjured.organism.wszc_shrapnel_closed.hand_R ~= true
+return completed, grace and resumed, oneTurn, aftercareStable, newHitOpens
+''')
+    check("R60 timed GAUZE wraps close mixed shrapnel bleeding without wound respawn", timed_bandage[0])
+    check("R61 active bandaging pauses only new shrapnel growth, then ticks resume", timed_bandage[1])
+    check("R62 one real GAUZE turn can close the maximum initial shrapnel wound", timed_bandage[2])
+    check("R63 native zero-wound removal cannot reopen partially dressed aftercare", timed_bandage[3])
+    check("R64 a new pellet reopens a previously clotted but uncovered shrapnel wound", timed_bandage[4])
 
     infection_timeline = lua.execute(r'''
 local ply = MakePlayer()

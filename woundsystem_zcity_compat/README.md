@@ -170,11 +170,22 @@ severity от `0.3`, затем `+0.015/с` (cap 6), плюс медленный
 infection timer. После следующего unwrap/extraction послеуход начинается снова;
 очищение инфекции происходит только при повязке после ПОСЛЕДНЕГО фрагмента.
 
-Обычный treatment budget бинта умножается на `2`, а `org.bleedingmul`
+Обычный treatment budget бинта умножается на `3`, а `org.bleedingmul`
 ограничен `0.55`. Конвары: `zc_woundsystem_compat_bandaged_shrapnel_infection`,
 `zc_woundsystem_compat_shrapnel_infection_death_delay`,
 `zc_woundsystem_compat_bandage_strength`,
 `zc_woundsystem_compat_bleeding_multiplier`.
+
+Complication-рана обрабатывается первой. Пока открыта обычная WSZC-перевязка
+этой конечности (в том числе другим игроком), `ShrapnelBandageInProgress()`
+приостанавливает только новый рост lodged severity/pain; существующее кровотечение
+продолжается до реальной обработки. Нулевая tagged/extraction запись не удаляется
+компакцией как мусор и не поднимается обратно до `0.5` между кругами. Дополнительные
+`org.wszc_shrapnel_closed` / `org.wszc_shrapnel_aftercare_closed` сохраняют clot
+даже после native `sv_blood.lua:131 table.remove(org.wounds,i)`; новый осколок,
+новое извлечение и unwrap очищают marker и разрешают настоящую новую рану. После
+извлечения `ShrapnelAftercarePending()` разрешает финальный server input даже
+при нулевом внешнем кровотечении; artery-only бинт по-прежнему не расходуется.
 
 Ампутация не является синонимом arterial bleeding. Native
 `hg.organism.AmputateLimb()` создаёт arterial wound и ОТДЕЛЬНО ставит
@@ -390,15 +401,15 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа и сохраняет структуру ZCity (`otrub`/`fake`/`canmove`), но полностью очищает раны/шрапнель/C:U residue; `0` — исходный ZCity reset. |
 | `zc_woundsystem_compat_shrapnel_lodged_effects` | этот аддон (server) | `1` — любой неизвлечённый fragment наращивает tagged ZCity-рану, боль и кровотечение; `0` — отключить только этот рост. |
 | `zc_woundsystem_compat_fullscreen_minigame` | этот аддон (client) | `1` — мини-игры бинта/шприца на весь экран; `0` — исходный квадрат ~760 px C:U. |
-| `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `1.0` — базовый размер мини-игры; диапазон `0.7..1.8`. |
-| `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | **`1`** — авторский размер НАТИВНЫХ мини-игр C:U (вправление, осколки, AED), квадрат 760 px без shrink; диапазон `0.4..1.2`. |
+| `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `0.85` — умеренно отдалённый размер мини-игры; диапазон `0.7..1.8`. |
+| `zc_woundsystem_compat_native_minigame_zoom` | этот аддон (client) | **`0.85`** — умеренно отдалённые НАТИВНЫЕ мини-игры C:U (вправление, осколки, AED): квадрат 646 px при исходных 760 px; `GetRect()` и `Clip.Scale()` меняются вместе, поэтому изображение и hitbox совпадают. `1` возвращает 760 px; диапазон `0.4..1.2`. |
 | `zc_woundsystem_compat_fullscreen_native` | этот аддон (client) | **`0`** — нативные C:U мини-игры в авторском размере. `1` — прежнее растяжение на весь экран; live-откат показал огромный обрезанный осколок и потерю нижней части раны. |
 | `zc_woundsystem_compat_close_on_empty_click` | этот аддон (client) | **`1`** — клик по пустой области WoundView закрывает окно через `WoundSystem.CloseHealthHUD()`; кукла, 5 слотов, кнопки инструментов, action point, UNI-HEALTH и drag исключены. |
-| `zc_woundsystem_compat_bandage_strength` | этот аддон (server) | **`2`** — множитель реального treatment budget бинта для ZCity ordinary wounds; не лечит артерии и не дублирует mirror. |
+| `zc_woundsystem_compat_bandage_strength` | этот аддон (server) | **`3`** — множитель реального treatment budget бинта для ZCity ordinary wounds; не лечит артерии и не дублирует mirror. |
 | `zc_woundsystem_compat_bleeding_multiplier` | этот аддон (server) | **`0.55`** — верхний cap `org.bleedingmul` для обычных ран; меньшее серверное значение не повышается, arterial formula не использует этот множитель. |
 | `zc_woundsystem_compat_bandaged_shrapnel_infection` | этот аддон (server) | **`1`** — медленная внутренняя инфекция закрытых повязкой фрагментов; `0` отключает только рост инфекции, не цикл unwrap→extract. |
 | `zc_woundsystem_compat_shrapnel_infection_death_delay` | этот аддон (server) | **`600`** — секунды от полного покрытия шрапнели на конечности до смертельной инфекции мозга без полного aftercare; торс = 40%, мозг = 70% таймера; диапазон `60..3600`. |
-| `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | **`0.55`** — общий визуальный масштаб руки во всех C:U/WSZC мини-играх; применяется ровно один раз, native hitbox/центр/rotation не меняются. Миграция revision 4 заменяет прежний `1.0`. Диапазон `0.2..1`. |
+| `zc_woundsystem_compat_hand_cursor_scale` | этот аддон (client) | **`0.55`** — общий визуальный масштаб руки во всех C:U/WSZC мини-играх; применяется ровно один раз, native hitbox/rotation не меняются; центр спрайта пересчитывается вокруг pivot. Миграция revision 5 заменяет прежний `1.0`. Диапазон `0.2..1`. |
 | `zc_woundsystem_compat_unitmenu_doll` | этот аддон (client) | `1` — собрать куклу WoundView из 15 слоёв `unitmenu/limbs` архива; `0` — родные спрайты C:U. |
 | `zc_woundsystem_compat_unitmenu_scale` | этот аддон (client) | `0.25` — native-калибровка `0.24` + 4.17% линейного размера; диапазон `0.1..0.8`. |
 | `zc_woundsystem_compat_unitmenu_tint` | этот аддон (client) | `1` — белый `SetDrawColor` для `*_fill.png` (стандартный чёрный иначе умножается на чёрный `finalMiddle`). `*_edge.png` не трогается: обводка по форме лимба и её затемнение при наведении остаются за C:U. |
@@ -409,7 +420,7 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_hide_minigame_cursor` | этот аддон (client) | `1` — скрывать OS-стрелку только во время активной мини-игры с рукой; hand draw и cursor watchdog применяют `blank`, не переключаясь периодически на `arrow`; на выходе и при `hide_minigame_hand 1` стрелка восстанавливается. |
 | `zc_woundsystem_compat_hand_pivot_x` / `..._hand_pivot_y` | этот аддон (client) | `0.4` / `0.1` — точка захвата на коже между пальцами; native `MG.handDrawW/H` и хитбоксы не меняются. |
 | `zc_woundsystem_compat_hand_pin_cursor` | этот аддон (client) | `0` — штатные C:U HandPhysics, инерция и поворот; `1` — опциональный жёсткий пин к `gui.MousePos()` с синхронизацией MG. |
-| `zc_woundsystem_compat_hand_mode_revision` | этот аддон (client) | Служебная миграция `4`: устанавливает компактный общий scale `0.55`, сохраняет CU pivot/rotation/hitbox и скрытие стрелки, затем не перезаписывает пользовательские настройки. |
+| `zc_woundsystem_compat_hand_mode_revision` | этот аддон (client) | Служебная миграция `5`: устанавливает компактный общий scale `0.55`, сохраняет CU pivot/rotation/hitbox и скрытие стрелки, затем не перезаписывает пользовательские настройки. |
 | `zc_woundsystem_compat_dislocation_start` | этот аддон (server) | `35` — стартовое смещение кости в мини-игре вправления (было 100); диапазон `10..100`. Меньше = кость на экране и меньше ударов. |
 | `zc_woundsystem_compat_hide_cu_inventory` | этот аддон (client) | `1` — скрыть 5 слотов C:U, их рамки, drag&drop и подбор мировых предметов; виртуальный слот `6` остаётся. |
 | `zc_woundsystem_compat_hide_unit_panel` | этот аддон (client) | `1` — скрыть левый сканер `UNI-HEALTH v2.03` внутри WoundView. |
@@ -905,8 +916,8 @@ camelCase-копий (архив в lowercase, Linux-клиент регистр
 `zc_woundsystem_compat_fullscreen_minigame 1`. Нативные C:U (shrapnel,
 dislocation, AED) **по умолчанию НЕ растягиваются**:
 `zc_woundsystem_compat_fullscreen_native 0` и
-`zc_woundsystem_compat_native_minigame_zoom 1` дают родной квадрат 760 px без
-shrink. Причина — live-откат: `fullscreen_native 1` умножал `Clip.Scale()` на
+`zc_woundsystem_compat_native_minigame_zoom 0.85` дают умеренно отдалённый квадрат
+646 px вместо исходных 760 px; `1` возвращает прежний размер. Причина — live-откат: `fullscreen_native 1` умножал `Clip.Scale()` на
 `NativeFullscreenK()` (до 2.2×), из-за чего осколок 26×138 превращался в
 огромный обрезанный чёрно-оранжевый спрайт, а нижняя часть раны уходила за
 экран («я осколок рожаю или че, где нижняя часть откуда он достается?»).
@@ -975,8 +986,9 @@ chrome-шрифтов **и AED-статуса** и только пока мин�
 подавляются. Pivot `zc_woundsystem_compat_hand_pivot_x 0.4` /
 `..._hand_pivot_y 0.1` — исходные CU-значения. Исходный canvas `512×1260`
 рисуется с общим коэффициентом `hand_cursor_scale 0.55` и дополнительным
-`handanim_scale 1`; центр `x/y`, пропорции и `rot` сохраняются, hitbox'ы не
-меняются, экранного cap нет. Системный курсор скрыт в активной мини-игре
+`handanim_scale 1`; пропорции и `rot` сохраняются. Центр вычисляется из
+повёрнутого pivot, поэтому пальцы остаются на `MG.handScreenX/Y`; логические
+hitbox'ы отдельно не меняются, экранного cap нет. Системный курсор скрыт в активной мини-игре
 (`..._hide_minigame_cursor 1`), повторно скрывается при каждой отрисовке руки
 и после КАЖДОГО срабатывания cursor watchdog, восстанавливается на выходе.
 Watchdog больше не ставит `arrow` каждые 0.05 с поверх `blank`. Для жёсткого
@@ -1129,7 +1141,7 @@ end
 | Претензия | Что было не так | Исправление |
 | --- | --- | --- |
 | «рукой двигать не могу в бандаже» | `InputMouseApply` и `SetupMove` вызывали `cmd:SetMouseX(0)` / `SetMouseY(0)`. При `gui.EnableScreenClicker(true)` GMod питает `gui.MousePos()` из того же `CUserCmd` mouse delta — обнуление прибивало курсор к `(0,0)`, и `HandPhysics.Step()` видел нулевую цель. | Оба сеттера удалены. Заморозка камеры (`SetViewAngles`), нулевое движение/кнопки и `return nil` сохранены. Мышь доходит и до VGUI-курсора, и до мини-игры. |
-| «я осколок рожаю или че, где нижняя часть откуда он достается?» | `minigameshrapnel.png` ошибочно сочли чёрной панелью и подавляли в `surface.DrawTexturedRect`; это **передний слой раны** (`cl_shrapnel.lua:421`, `cl_syringe.lua:540`). Плюс `fullscreen_native 1` умножал `Clip.Scale()` на `NativeFullscreenK()` до 2.2×, растягивая осколок 26×138 в огромный обрезанный спрайт и уводя низ раны за экран. | Подавление удалено полностью; добавлены `WSZC.IsMinigameWoundLayer()` и белый список `WSZC.IsMinigameGameplaySprite()` (рана, осколок, рука, пинцет, `bandageOuter`, `Icons.*`) в HUD-фильтре. `fullscreen_native` по умолчанию `0`, `native_minigame_zoom` `1` → авторский квадрат 760 px. `text=all` убирает только заголовки/инструкции/чёрный chrome. |
+| «я осколок рожаю или че, где нижняя часть откуда он достается?» | `minigameshrapnel.png` ошибочно сочли чёрной панелью и подавляли в `surface.DrawTexturedRect`; это **передний слой раны** (`cl_shrapnel.lua:421`, `cl_syringe.lua:540`). Плюс `fullscreen_native 1` умножал `Clip.Scale()` на `NativeFullscreenK()` до 2.2×, растягивая осколок 26×138 в огромный обрезанный спрайт и уводя низ раны за экран. | Подавление удалено полностью; добавлены `WSZC.IsMinigameWoundLayer()` и белый список `WSZC.IsMinigameGameplaySprite()` (рана, осколок, рука, пинцет, `bandageOuter`, `Icons.*`) в HUD-фильтре. `fullscreen_native` по умолчанию `0`, `native_minigame_zoom` `0.85` → квадрат 646 px; `1` → прежние 760 px. `text=all` убирает только заголовки/инструкции/чёрный chrome. |
 | «почему шрапнель пропадает при вставании из рагдолла» | `RESET_KEEP` не содержал `wszc_shrapnel*`, поэтому `hg.organism.Clear()` стирал тень; а `PlayerSpawn` безусловно занулял organism и C:U limbs, перебивая `RestoreShrapnelSoon` (0/0.3 с) из-за неопределённого порядка хуков. | Три поля добавлены в `RESET_KEEP`; `CarryShrapnelShadow()`/`RestoreShrapnelShadow()` переживают и ветку `down=false`; `hook.Add("Fake"/"FakeUp"/"HG_OnWakeOtrub")` ставит `_WSZCRagdollTransitionUntil`; `WSZC.ReconcileSpawnShrapnel()` при переходе **восстанавливает** из авторитетного organism, а чистит C:U только на настоящем респавне. `SyncShrapnel()` больше не копирует свежую пустую таблицу limbs обратно в organism в том же тике. |
 | «сделай wound view куклу не таким цветом, верни стандартный и обводку по краям тоже» | `(42,56,60)` + единый `outer_band` + прямоугольные `seam_lines` — отклонено live. | Выбор владельца: **`black_anatomy` + `native_outline`**. `_fill` = стандартный чёрный `(0,0,0)` исходных слоёв архива; `_edge` = тонкая линия по форме **каждого** лимба (`mask - MinFilter(mask, 9)`), вписанная с `EDGE_PAD_MIN=6`, поэтому ноль белых пикселей на границах спрайтов. Наша `HUMAN_LAYOUT` сохранена; `native_tint`/`middle/*`/`1da8b4a`/`b47a0cb`/рамки не возвращались. Hover `finalOutline`/`HoverAnims` сохранён. |
 | «почему когда я нажимаю на пустую область wound view окно не закрывается» | В самом C:U нет generic outside-click close: `CloseHealthHUD()` зовётся только по клавише, смерти и респавну; `GUIState` — local `:1702`. | Добавлено новое WSZC-поведение: `WSZC.WoundViewEmptyClick(mx,my,s)` + `Think`-хук `WSZC_WoundViewEmptyClickClose` по переднему фронту ЛКМ вызывает `WoundSystem.CloseHealthHUD()`. Исключены кукла, 5 слотов, кнопки инструментов, action point, UNI-HEALTH, тултипы, drag, активная мини-игра, внешние меню и фокус ввода. Откат: `zc_woundsystem_compat_close_on_empty_click 0`. |
@@ -1364,7 +1376,7 @@ GMod не запускался — принятие по свежему live-с�
    HandPhysics, инерция, наклон и игровые хитбоксы остаются штатными C:U;
    системная стрелка скрыта только во время активной мини-игры и возвращается
    на выходе. Для прежнего arrow-only режима: `..._hide_minigame_hand 1`.
-   Актуальная миграция `..._hand_mode_revision 4` заменяет слишком большой
+   Актуальная миграция `..._hand_mode_revision 5` заменяет слишком большой
    scale `1.0` общим `0.55` во всех мини-играх, оставляя pivot/центр/rotation
    и hitbox'ы C:U. Обычная стрелка подавляется при каждой отрисовке руки и
    при каждом cursor watchdog; прежний безусловный `RestoreMinigameCursor()`
@@ -1420,7 +1432,7 @@ GMod не запускался — принятие по свежему live-с�
    радиального меню ZCity, не выключая mouse input. `UnitmenuHandMat()`
    дополнительно вызывает `SyncMinigameCursor()` на КАЖДОЙ отрисовке руки,
    поэтому стрелка не возвращается между периодическими Think-проверками.
-   Старые archived no-hand настройки мигрирует `MigrateHumanHandDefaults()` (revision 4),
+   Старые archived no-hand настройки мигрирует `MigrateHumanHandDefaults()` (revision 5),
    поэтому обновление не оставляет прежнюю комбинацию «нет руки + blank».
    Ручной выбор arrow-only сохраняется и больше не перезаписывается.
 

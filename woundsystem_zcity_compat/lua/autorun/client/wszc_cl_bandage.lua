@@ -618,8 +618,8 @@ local function EnsureOverlay()
         local screenX = cx + (MG.handPos.x * baseScale)
         local screenY = cy - (MG.handPos.y * baseScale)
         
-        -- Human palm/fist on C:U's 512x1260 canvas.  Revision 4 uses the
-        -- shared compact scale while preserving native pivot/position/rotation.
+        -- Human palm/fist on C:U's 512x1260 canvas.  Revision 5 uses the
+        -- shared compact scale and anchors the rotated pivot, not its top-left.
         local handScale = CFG.HandCursorScale * ((WSZC and WSZC.HandCursorScale and WSZC.HandCursorScale()) or 1)
         local handDrawW, handDrawH, handPivotX, handPivotY
         if WSZC and WSZC.UnitmenuHandGeometry then
@@ -629,8 +629,8 @@ local function EnsureOverlay()
             handDrawW, handDrawH = SRC_HAND_W * baseScale * handScale, SRC_HAND_H * baseScale * handScale
             handPivotX, handPivotY = 0.4, 0.1
         end
-        local handX = screenX - (handDrawW * handPivotX) + ((DevMinigameCfg.bandageHandOffsetX or 0) * baseScale)
-        local handY = screenY - (handDrawH * handPivotY) + ((DevMinigameCfg.bandageHandOffsetY or 0) * baseScale)
+        local handTargetX = screenX + ((DevMinigameCfg.bandageHandOffsetX or 0) * baseScale)
+        local handTargetY = screenY + ((DevMinigameCfg.bandageHandOffsetY or 0) * baseScale)
 
         local handMat = (WSZC and WSZC.UnitmenuHandMat and WSZC.UnitmenuHandMat(MG.holdingBandage == true))
             or (MG.holdingBandage and matHandClick or matHandIdle)
@@ -648,11 +648,14 @@ local function EnsureOverlay()
         surface.SetDrawColor(255, gb, gb,
             (WSZC and WSZC.UnitmenuHandAlpha and WSZC.UnitmenuHandAlpha(153)) or 153)
         
-        local cx_hand = handX + (handDrawW * handPivotX)
-        local cy_hand = handY + (handDrawH * handPivotY)
+        local cx_hand, cy_hand = handTargetX, handTargetY
         local angle = HandPhysics.Rotation(MG, (MG.handPos and MG.handPos.x) and (MG.handPos.x * 0.02) or 0)
         if WSZC and WSZC.UnitmenuHandAngle then angle = WSZC.UnitmenuHandAngle(angle) end
-        -- Native C:U call shape: same centre, pivot and rotation; compact dimensions.
+        if WSZC and WSZC.HandRectAtPivot then
+            cx_hand, cy_hand = WSZC.HandRectAtPivot(
+                handTargetX, handTargetY, handDrawW, handDrawH, angle, handPivotX, handPivotY)
+        end
+        -- Anchor the visible fingertips, including developer offset and rotation.
         surface.DrawTexturedRectRotated(cx_hand, cy_hand, handDrawW, handDrawH, angle)
         if WoundSystem and WoundSystem.MinigameClip then
             WoundSystem.MinigameClip.End(clipActive)

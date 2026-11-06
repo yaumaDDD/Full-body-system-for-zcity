@@ -57,6 +57,7 @@ def src(rel):
 layout_s = LAYOUT.read_text(encoding='utf-8')
 organism_s = ORGANISM.read_text(encoding='utf-8')
 minigames_s = (CLIENT / 'cl_zcity_woundsystem_compat_minigames.lua').read_text(encoding='utf-8')
+bandage_client_s = (CLIENT / 'wszc_cl_bandage.lua').read_text(encoding='utf-8')
 generator_s = src('tools/build_unitmenu_materials.py')
 readme_s = src('README.md')
 install_ru_s = src('INSTALL_RU.md')
@@ -79,17 +80,18 @@ check('S04 death-screen suppression keeps top priority',
 check('S05 WSZC minigames stay full-screen; native C:U games keep authored geometry',
       'MinigameFullscreenNative' in layout_s and 'NativeFullscreenK' in layout_s
       and 'WSZC.WSZCMinigameActive()' in layout_s)
-check('S06 native geometry unchanged; C:U human hand is the default pointer',
+check('S06 native geometry uses a moderate 0.85 zoom; C:U human hand is the default',
       '"zc_woundsystem_compat_fullscreen_native", "0"' in layout_s
-      and '"zc_woundsystem_compat_native_minigame_zoom", "1"' in layout_s
+      and '"zc_woundsystem_compat_native_minigame_zoom", "0.85"' in layout_s
+      and '"zc_woundsystem_compat_minigame_zoom", "0.85"' in layout_s
       and '"zc_woundsystem_compat_hide_minigame_cursor", "1"' in layout_s
       and '"zc_woundsystem_compat_hide_minigame_hand", "0"' in layout_s
       and '"zc_woundsystem_compat_handanim", "1"' in layout_s)
 check('S07 hand pivot + native scale convars exist',
       all(x in layout_s for x in ('hand_pivot_x', 'hand_pivot_y', 'hand_max_screen')))
-check('S08 compact hand keeps native C:U centre, aspect and rotation',
+check('S08 compact hand anchors the rotated pivot, aspect and native rotation',
       'HandRectForCursor' in layout_s
-      and 'return cx, cy, nw, nh' in layout_s
+      and 'return WSZC.HandRectAtPivot(cx, cy, nw, nh, rot, px, py)' in layout_s
       and 'cvHandScale:GetFloat() * cvHandanimScale:GetFloat()' in layout_s
       and 'WSZC.HandRectForCursor(x, y, w, h, rot)' in layout_s
       and 'origRectRotated(nx, ny, nw, nh, rot, ...)' in layout_s
@@ -276,6 +278,20 @@ check('S53 cursor watchdog never reasserts the arrow over an active hand',
       'if WSZC.SyncMinigameCursor then WSZC.SyncMinigameCursor() end' in _enable_cursor_block
       and 'RestoreMinigameCursor' not in _enable_cursor_block
       and 'producing the visible arrow flicker' in _enable_cursor_block)
+check('S54 native and WSZC bandage hands use the same rotated pivot anchor',
+      'function WSZC.HandRectAtPivot(cx, cy, w, h, rot, px, py)' in layout_s
+      and 'return cx + lx * c - ly * s, cy + lx * s + ly * c, w, h' in layout_s
+      and 'return WSZC.HandRectAtPivot(cx, cy, nw, nh, rot, px, py)' in layout_s
+      and 'handTargetX, handTargetY, handDrawW, handDrawH, angle, handPivotX, handPivotY' in bandage_client_s
+      and 'local handTargetX = screenX +' in bandage_client_s
+      and 'local handTargetY = screenY +' in bandage_client_s
+      and 'HandRectAtPivot(\n                handX, handY' not in bandage_client_s
+      and 'handX + (handDrawW * handPivotX)' not in bandage_client_s)
+check('S55 moderate zoom scales both native clipping and native hitbox coordinates',
+      'return base * math.Clamp(cvNativeZoom:GetFloat(), 0.4, 1.2)' in layout_s
+      and 'WSZC.NativeMinigameActive() and not WSZC.MinigameFullscreenNative()' in layout_s
+      and '{ cvZoom, 0.85 }, { cvNativeZoom, 0.85 }' in layout_s
+      and 'cvHandModeRevision:GetFloat() >= 5' in layout_s)
 # One fracture / one dislocation point per arm or leg (owner 2026-11-05).
 # Parse the actual Lua anchor table so a future edit cannot silently smear
 # bone states back onto all three C:U limbs of an arm/leg.
@@ -335,7 +351,7 @@ check('S51 human C:U hand artwork, native rotation and one-time default migratio
       and '"zc_woundsystem_compat_hand_cursor_scale", "0.55"' in layout_s
       and '"zc_woundsystem_compat_handanim_scale", "1"' in layout_s
       and 'cvHandModeRevision:SetInt' not in layout_s
-      and 'cvHandModeRevision, 4' in layout_s
+      and 'cvHandModeRevision, 5' in layout_s
       and (CONN / 'materials/wszc/minigame/hand_idle.png').is_file()
       and (CONN / 'materials/wszc/minigame/hand_click.png').is_file())
 check('S48 silhouettes are NOT redrawn; only native limb boxes change',
@@ -763,7 +779,7 @@ end)()
 end)()
 ''')
 
-    rt('R06 native games keep C:U\'s own 760 px board at zoom 1 by default', '''
+    rt('R06 native game frame and hitbox scale stay together at default 0.85', '''
 (function()
     convars["zc_woundsystem_compat_fullscreen_native"]._v = "0"
     WoundSystemDislocationMinigame = { active = true }
@@ -771,11 +787,14 @@ end)()
     local s = WoundSystem.MinigameClip.Scale()
     WoundSystemDislocationMinigame = { active = false }
     convars["zc_woundsystem_compat_fullscreen_native"]._v = "0"
-    return w == 760 and h == 760 and r == 18 and math.abs(s - (1000 / 1080)) < 0.0001
+    return math.abs(w - 646) < 0.001 and math.abs(h - 646) < 0.001
+       and math.abs(x - 317) < 0.001 and math.abs(y - 97) < 0.001
+       and math.abs(r - 18 * 0.85) < 0.001
+       and math.abs(s - (1000 / 1080) * 0.85) < 0.0001
 end)()
 ''')
 
-    rt('R07 compact hand keeps the native centre at the cursor', '''
+    rt('R07 compact rotated hand puts its visible pivot exactly on the cursor', '''
 (function()
     EnableDrawnHandMode()
     WoundSystemShrapnelMinigame = { active = true }
@@ -785,7 +804,13 @@ end)()
     WoundSystemShrapnelMinigame = { active = false }
     local c = surfaceCalls[#surfaceCalls]
     if not c or c.kind ~= "rot" then return false end
-    return c.x == 500 and c.y == 400 and c.rot == 290
+    local a = math.rad(c.rot)
+    local co, si = math.cos(a), math.sin(a)
+    local ox, oy = (0.4 - 0.5) * c.w, (0.1 - 0.5) * c.h
+    local gripX = c.x + ox * co - oy * si
+    local gripY = c.y + ox * si + oy * co
+    return math.abs(gripX - 500) < 0.001 and math.abs(gripY - 400) < 0.001
+       and c.rot == 290
        and math.abs(c.w - 512 * 0.55) < 0.001
        and math.abs(c.h - 1260 * 0.55) < 0.001
 end)()
@@ -960,7 +985,10 @@ end)()
     local state = WoundSystemShrapnelMinigame
     WoundSystemShrapnelMinigame = { active = false }
     mouseX, mouseY = 500, 400
-    return c.kind == "rot" and c.x == 700 and c.y == 300
+    local gripX = c.x + (0.4 - 0.5) * c.w
+    local gripY = c.y + (0.1 - 0.5) * c.h
+    return c.kind == "rot" and math.abs(gripX - 700) < 0.001
+       and math.abs(gripY - 300) < 0.001
        and math.abs(c.w - 512 * 0.55) < 0.001
        and math.abs(c.h - 1260 * 0.55) < 0.001
        and state.handScreenX == 700 and state.handScreenY == 300
@@ -975,7 +1003,9 @@ end)()
     local x, y, w, h = WSZC.HandRectForCursor(200, 150, 512, 1260)
     convars["zc_woundsystem_compat_hand_pin_cursor"]._v = "1"
     mouseX, mouseY = 500, 400
-    return x == 200 and y == 150
+    local gripX = x + (0.4 - 0.5) * w
+    local gripY = y + (0.1 - 0.5) * h
+    return math.abs(gripX - 200) < 0.001 and math.abs(gripY - 150) < 0.001
        and math.abs(w - 512 * 0.55) < 0.001
        and math.abs(h - 1260 * 0.55) < 0.001
 end)()
@@ -993,7 +1023,8 @@ end)()
        and convars["zc_woundsystem_compat_hide_minigame_cursor"]._v == "1"
        and convars["zc_woundsystem_compat_hide_minigame_text"]._v == "1"
        and convars["zc_woundsystem_compat_fullscreen_native"]._v == "0"
-       and convars["zc_woundsystem_compat_native_minigame_zoom"]._v == "1"
+       and convars["zc_woundsystem_compat_native_minigame_zoom"]._v == "0.85"
+       and convars["zc_woundsystem_compat_minigame_zoom"]._v == "0.85"
        and convars["zc_woundsystem_compat_close_on_empty_click"]._v == "1"
 end)()
 ''')
@@ -1271,7 +1302,9 @@ end)()
     convars["zc_woundsystem_compat_handanim_scale"]._v = "0.55"
     convars["zc_woundsystem_compat_hand_pivot_x"]._v = "0.32"
     convars["zc_woundsystem_compat_hand_pivot_y"]._v = "0.11"
-    convars["zc_woundsystem_compat_hand_mode_revision"]._v = "3"
+    convars["zc_woundsystem_compat_minigame_zoom"]._v = "1"
+    convars["zc_woundsystem_compat_native_minigame_zoom"]._v = "1"
+    convars["zc_woundsystem_compat_hand_mode_revision"]._v = "4"
     local migrated = WSZC.MigrateHumanHandDefaults() == true
         and convars["zc_woundsystem_compat_handanim"]._v == "1"
         and convars["zc_woundsystem_compat_hand_cursor_scale"]._v == "0.55"
@@ -1280,7 +1313,9 @@ end)()
         and convars["zc_woundsystem_compat_hide_minigame_cursor"]._v == "1"
         and convars["zc_woundsystem_compat_hand_pivot_x"]._v == "0.4"
         and convars["zc_woundsystem_compat_hand_pivot_y"]._v == "0.1"
-        and convars["zc_woundsystem_compat_hand_mode_revision"]._v == "4"
+        and convars["zc_woundsystem_compat_minigame_zoom"]._v == "0.85"
+        and convars["zc_woundsystem_compat_native_minigame_zoom"]._v == "0.85"
+        and convars["zc_woundsystem_compat_hand_mode_revision"]._v == "5"
     convars["zc_woundsystem_compat_handanim_scale"]._v = "0.9"
     convars["zc_woundsystem_compat_hide_minigame_hand"]._v = "1"
     local preserved = WSZC.MigrateHumanHandDefaults() == false
@@ -1309,6 +1344,28 @@ end)()
     WoundSystemShrapnelMinigame = { active = false }
     WSZC.ForceReleaseMinigameCursor()
     return first and second and cursorValue == "arrow"
+end)()
+''')
+
+    rt('R37 hand pivot remains exact at zero and arbitrary native rotations', '''
+(function()
+    EnableDrawnHandMode()
+    convars["zc_woundsystem_compat_hand_pin_cursor"]._v = "0"
+    local good = true
+    for _, rot in ipairs({ 0, 37, 90, 290 }) do
+        local x, y, w, h = WSZC.HandRectForCursor(500, 400, 512, 1260, rot)
+        local a = math.rad(rot)
+        local co, si = math.cos(a), math.sin(a)
+        local ox, oy = (0.4 - 0.5) * w, (0.1 - 0.5) * h
+        local gripX = x + ox * co - oy * si
+        local gripY = y + ox * si + oy * co
+        if math.abs(gripX - 500) > 0.001 or math.abs(gripY - 400) > 0.001 then
+            good = false
+        end
+        if math.abs(w - 512 * 0.55) > 0.001
+            or math.abs(h - 1260 * 0.55) > 0.001 then good = false end
+    end
+    return good
 end)()
 ''')
 
