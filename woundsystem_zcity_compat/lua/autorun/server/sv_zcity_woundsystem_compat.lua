@@ -33,6 +33,7 @@ local TAG = "[ZCity/CU compat] "
 -- CTakeDamageInfo objects are transient and must not be retained.
 WSZC.RawDamage = WSZC.RawDamage or setmetatable({}, { __mode = "k" })
 local cvDebug = CreateConVar("zc_woundsystem_compat_debug", "0", { FCVAR_ARCHIVE, FCVAR_NOTIFY }, "Print diagnostics for the ZCity <-> WoundSystem compatibility addon")
+local cvResourceDownloads = CreateConVar("zc_woundsystem_compat_resource_downloads", "1", { FCVAR_ARCHIVE, FCVAR_NOTIFY }, "Register the connector's self-contained UI materials, C:U fonts and shaders for client download (map change/restart required)")
 
 function WSZC.Debug(fmt, ...)
     if not (cvDebug and cvDebug:GetBool()) then return end
@@ -47,6 +48,108 @@ end
 function WSZC.Warn(msg)
     ErrorNoHalt(TAG .. tostring(msg) .. "\n")
 end
+
+---------------------------------------------------------------------------
+-- Self-contained UI content / dedicated-server downloads
+---------------------------------------------------------------------------
+
+-- These are virtual GAME paths, not files inside another addon's private
+-- namespace.  Keeping them in this folder works with both the supplied C:U
+-- ZIP and a Workshop C:U installation.  The full-pack builder removes the
+-- duplicate fonts/shaders from C:U; materials intentionally also have a C:U
+-- mirror there for compatibility with the original package layout.
+local PORTABLE_RESOURCE_ROOTS = {
+    "materials/casunknown-images",
+    "materials/homigrad/bleedanim",
+    "materials/homigrad/handanim",
+    "materials/homigrad/limbs",
+    "materials/smiley",
+    "materials/traits",
+    "materials/woundsystem",
+    "materials/wszc",
+    "materials/zcity_delta/other",
+    "materials/zcity_delta/unitmenu",
+    "materials/zcity_delta_moodles",
+}
+-- Never recursively scan these GLOBAL roots: other addons put unrelated
+-- fonts/shaders there.  These six filenames come byte-for-byte from C:U.
+local PORTABLE_RESOURCE_FILES = {
+    "resource/fonts/i-pixel-u.ttf",
+    "resource/fonts/perfectdosvga437.ttf",
+    "resource/fonts/retro gaming.ttf",
+    "shaders/fxc/woundsystem_aberration_ps20b.vcs",
+    "shaders/fxc/woundsystem_condition_ps20b.vcs",
+    "shaders/fxc/woundsystem_pain_ps20b.vcs",
+}
+local PORTABLE_RESOURCE_EXTENSIONS = {
+    [".png"] = true, [".jpg"] = true, [".jpeg"] = true,
+    [".vmt"] = true, [".vtf"] = true,
+    [".ttf"] = true, [".otf"] = true, [".vcs"] = true,
+}
+
+--- Register every UI payload shipped by the connector.  file.Find(..., GAME)
+--- sees legacy-addon and mounted-content paths alike.  Native C:U's resource
+--- registry is honoured in BOTH load orders, so enabling both resource
+--- convars cannot enqueue the same path twice.
+function WSZC.InstallPortableResources()
+    if WSZC._PortableResourcesInstalled then return 0 end
+    if not cvResourceDownloads:GetBool() then return false end
+    if type(resource) ~= "table" or type(resource.AddFile) ~= "function" then return false end
+    if type(file) ~= "table" or type(file.Find) ~= "function" then return false end
+
+    local added, seen = 0, {}
+    -- C:U preserves an existing Resources/Added table in sv_resources.lua.
+    -- Creating just that small registry also covers connector-before-C:U load
+    -- order; it does not fabricate Health/API readiness.
+    if WoundSystem == nil then WoundSystem = {} end
+    if type(WoundSystem) == "table" then
+        WoundSystem.Resources = WoundSystem.Resources or {}
+        WoundSystem.Resources.Added = WoundSystem.Resources.Added or {}
+    end
+    local nativeAdded = type(WoundSystem) == "table" and WoundSystem.Resources
+        and WoundSystem.Resources.Added or nil
+
+    local function AddPath(path)
+        if seen[path] then return end
+        local lower = string.lower(path)
+        local supported = false
+        for extension in pairs(PORTABLE_RESOURCE_EXTENSIONS) do
+            if string.sub(lower, -#extension) == extension then
+                supported = true
+                break
+            end
+        end
+        if not supported then return end
+        if type(file.Exists) == "function" and not file.Exists(path, "GAME") then return end
+        seen[path] = true
+        if type(nativeAdded) == "table" and nativeAdded[path] == true then return end
+        resource.AddFile(path)
+        if type(nativeAdded) == "table" then nativeAdded[path] = true end
+        added = added + 1
+    end
+
+    local function AddTree(root, depth)
+        if depth > 32 then return end
+        local files, dirs = file.Find(root .. "/*", "GAME")
+        table.sort(files or {})
+        table.sort(dirs or {})
+        for _, name in ipairs(files or {}) do AddPath(root .. "/" .. name) end
+        for _, name in ipairs(dirs or {}) do
+            if name ~= "." and name ~= ".." then
+                AddTree(root .. "/" .. name, depth + 1)
+            end
+        end
+    end
+
+    for _, path in ipairs(PORTABLE_RESOURCE_FILES) do AddPath(path) end
+    for _, root in ipairs(PORTABLE_RESOURCE_ROOTS) do AddTree(root, 0) end
+    WSZC._PortableResourcesInstalled = true
+    WSZC._PortableResourceCount = added
+    WSZC.Debug("portable UI resources registered: %d files", added)
+    return added
+end
+
+WSZC.InstallPortableResources()
 
 local function BridgeEnabled()
     local WB = hg and hg.WoundBridge

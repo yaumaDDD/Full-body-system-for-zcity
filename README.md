@@ -521,6 +521,14 @@ aftercare и отсутствие двойного Consume проверены ч
   фона в папки `dislocationminigame`, `shrapnelminigame`, `syringeminigame`
   плюс `hemothoraxfill_red`. Итог проверяется assert'ом: ни одного
   неразрешённого материала. Полный список с хэшами — `MATERIALS.sha256`.
+  Дополнительно 3 C:U-шрифта и 3 собственных compiled `.vcs` перенесены из
+  исходного C:U ZIP непосредственно в `woundsystem_zcity_compat/resource/` и
+  `.../shaders/`; в full pack старые копии из папки C:U удалены. Коннектор сам
+  регистрирует все 659 material/font/shader paths для клиентов при
+  `zc_woundsystem_compat_resource_downloads 1` (по умолчанию), поэтому для
+  переноса UI на другую сборку достаточно одной папки коннектора. Звуков в
+  исходных архивах C:U нет; внешний Simple Custom Shaders относится только к
+  дополнительным Merc-эффектам и не заменяет перенесённые `.vcs`.
 
 ### По live-скриншотам №5: человеческие пропорции (анатомия сохранена)
 

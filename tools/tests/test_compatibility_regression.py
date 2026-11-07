@@ -6,6 +6,7 @@ implementation, then simulates legacy, native, partial and missing APIs.
 No check in this suite is evidence of a live two-client GMod acceptance test.
 """
 from pathlib import Path
+from zipfile import ZipFile
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +19,7 @@ REMOTE = CONN / "lua/autorun/client/cl_zcity_woundsystem_compat_remote.lua"
 ORGANISM = CONN / "lua/autorun/server/sv_zcity_woundsystem_compat_organism.lua"
 BANDAGE = CONN / "lua/autorun/client/wszc_cl_bandage.lua"
 SYRINGE = CONN / "lua/autorun/client/wszc_cl_syringe.lua"
+BUILD = ROOT / "tools/build_packs.py"
 
 results = []
 
@@ -76,6 +78,61 @@ check("S07 early organism damage/ragdoll hooks stay inert before supported readi
       "local function OrganismHooksActive()" in organism_s
       and "if WSZC.Ready ~= true then return false end" in organism_s
       and organism_s.count("OrganismHooksActive()") >= 5)
+
+# The standalone connector must own every non-code payload required by its UI.
+resource_prefix = "casualties_unknown_health_system_beta/"
+with ZipFile(ROOT / "casualites unknown.zip") as original_cu:
+    relocated = sorted(
+        name[len(resource_prefix):] for name in original_cu.namelist()
+        if name.startswith(resource_prefix + "resource/fonts/")
+        or name.startswith(resource_prefix + "shaders/fxc/")
+    )
+    relocated_bytes_ok = len(relocated) == 6 and all(
+        (CONN / rel).is_file()
+        and (CONN / rel).read_bytes() == original_cu.read(resource_prefix + rel)
+        for rel in relocated
+    )
+required_resource_roots = [
+    "materials/casunknown-images",
+    "materials/homigrad/bleedanim", "materials/homigrad/handanim",
+    "materials/homigrad/limbs", "materials/smiley", "materials/traits",
+    "materials/woundsystem", "materials/wszc", "materials/zcity_delta/other",
+    "materials/zcity_delta/unitmenu", "materials/zcity_delta_moodles",
+]
+source_resources = [
+    path.relative_to(CONN).as_posix()
+    for path in (CONN / "materials").rglob("*") if path.is_file()
+] + relocated
+resources_covered = all(
+    rel in relocated or any(rel.startswith(root + "/") for root in required_resource_roots)
+    for rel in source_resources
+)
+build_s = BUILD.read_text(encoding="utf-8")
+check("S08 connector owns byte-identical C:U fonts/shaders and scans every material root",
+      relocated_bytes_ok and resources_covered and len(source_resources) == 659
+      and all(('"' + root + '"') in server_s for root in required_resource_roots)
+      and all(('"' + rel + '"') in server_s for rel in relocated)
+      and "CU_RELOCATED" in build_s
+      and "len(fonts) == 3" in build_s and "len(shaders) == 3" in build_s)
+
+connector_zip = ROOT / "woundsystem_zcity_compat.zip"
+full_zip = ROOT / "zcity_full_pack.zip"
+with ZipFile(connector_zip) as packed, ZipFile(full_zip) as full:
+    connector_names = {info.filename for info in packed.infolist()}
+    full_names = {info.filename for info in full.infolist()}
+    full_prefix = "garrysmod/addons/woundsystem_zcity_compat/"
+    old_cu_prefix = "garrysmod/addons/casualties_unknown_health_system_beta/"
+    packaged_relocated_ok = all(
+        "woundsystem_zcity_compat/" + rel in connector_names
+        and packed.read("woundsystem_zcity_compat/" + rel) == (CONN / rel).read_bytes()
+        and full.read(full_prefix + rel) == (CONN / rel).read_bytes()
+        and not any(name.startswith(old_cu_prefix + rel) for name in full_names)
+        for rel in relocated
+    )
+    source_count = sum(1 for path in CONN.rglob("*") if path.is_file() and "__pycache__" not in path.parts)
+    check("S09 rebuilt ZIPs contain one physical copy of relocated C:U resources",
+          packaged_relocated_ok and len(connector_names) == source_count == 676
+          and len(full_names) == 2779)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -387,6 +444,71 @@ WSZC.SetupFailed = nil
 local ok, ready = pcall(WSZC.Setup)
 return ok and ready == false and WSZC.Ready ~= true and WSZC.SetupDone ~= true
     and WSZC.Compatibility.profile == "unavailable" and not WSZC.Supports("core")
+'''))
+
+    runtime_check("R20 portable resources recurse, filter extensions and never register twice", lambda: lua.execute(r'''
+ResetEnvironment()
+WSZC._PortableResourcesInstalled = nil
+CVARS.zc_woundsystem_compat_resource_downloads.value = "1"
+local added = {}
+resource = { AddFile = function(path) added[#added + 1] = path end }
+local tree = {
+    ["materials/wszc"] = { { "root.PNG", "ignore.txt" }, { "limbs" } },
+    ["materials/wszc/limbs"] = { { "fill.vmt", "mesh.mdl" }, {} },
+    -- Global font/shader directories must never be scanned.  Only the six
+    -- explicit C:U filenames below may arrive from those roots.
+    ["resource/fonts"] = { { "unrelated-font.ttf" }, {} },
+    ["shaders/fxc"] = { { "unrelated-shader.vcs" }, {} },
+}
+file.Find = function(path, searchPath)
+    if searchPath ~= "GAME" then return {}, {} end
+    local node = tree[string.sub(path, 1, #path - 2)]
+    if node then return node[1], node[2] end
+    return {}, {}
+end
+local count = WSZC.InstallPortableResources()
+local again = WSZC.InstallPortableResources()
+local expected = {
+    ["materials/wszc/root.PNG"] = true,
+    ["materials/wszc/limbs/fill.vmt"] = true,
+    ["resource/fonts/i-pixel-u.ttf"] = true,
+    ["resource/fonts/perfectdosvga437.ttf"] = true,
+    ["resource/fonts/retro gaming.ttf"] = true,
+    ["shaders/fxc/woundsystem_aberration_ps20b.vcs"] = true,
+    ["shaders/fxc/woundsystem_condition_ps20b.vcs"] = true,
+    ["shaders/fxc/woundsystem_pain_ps20b.vcs"] = true,
+}
+local exact = count == 8 and again == 0 and #added == 8
+for _, path in ipairs(added) do
+    if not expected[path] or WoundSystem.Resources.Added[path] ~= true then exact = false end
+end
+for path in pairs(expected) do
+    if WoundSystem.Resources.Added[path] ~= true then exact = false end
+end
+WSZC._PortableResourcesInstalled = nil
+CVARS.zc_woundsystem_compat_resource_downloads.value = "0"
+local disabled = WSZC.InstallPortableResources() == false and #added == 8
+resource, file.Find = nil, nil
+return exact and disabled
+'''))
+
+    runtime_check("R21 an existing native C:U resource entry is reused, not duplicated", lambda: lua.execute(r'''
+ResetEnvironment()
+WoundSystem = { Resources = { Added = { ["materials/wszc/already.png"] = true } } }
+WSZC._PortableResourcesInstalled = nil
+CVARS.zc_woundsystem_compat_resource_downloads.value = "1"
+local added = {}
+resource = { AddFile = function(path) added[#added + 1] = path end }
+file.Find = function(path)
+    if path == "materials/wszc/*" then return { "already.png", "new.png" }, {} end
+    return {}, {}
+end
+file.Exists = function(path) return string.sub(path, 1, 10) == "materials/" end
+local count = WSZC.InstallPortableResources()
+local ok = count == 1 and #added == 1 and added[1] == "materials/wszc/new.png"
+    and WoundSystem.Resources.Added["materials/wszc/new.png"] == true
+resource, file.Find = nil, nil
+return ok
 '''))
 
 failed = [name for name, ok in results if not ok]

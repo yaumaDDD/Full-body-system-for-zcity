@@ -139,8 +139,12 @@ partial bandage, shrapnel aftercare и защита исходных/посто�
 ## Запуск на другой сборке ZCity
 
 Используйте отдельный `woundsystem_zcity_compat.zip`, а не заменяйте файлы самой
-сборки из `zcity_full_pack.zip`. Установленные ZCity и C:U всё равно обязательны:
-connector адаптирует их API, но не содержит самостоятельную систему здоровья.
+сборки из `zcity_full_pack.zip`. Распакуйте одну папку
+`woundsystem_zcity_compat/` в `garrysmod/addons/`: все 653 UI-материала, 3
+шрифта и 3 собственных C:U `.vcs` уже внутри неё, отдельно копировать
+`resource/`, `shaders/` или `materials/` из C:U не нужно. Установленные ZCity и
+C:U всё равно обязательны: connector адаптирует их API, но не содержит
+самостоятельную систему здоровья.
 
 По умолчанию включён `zc_woundsystem_compat_adaptive 1`. Он выбирает native API
 новой C:U либо legacy adapter приложенной версии, а неподдерживаемые необязательные
@@ -188,21 +192,31 @@ ZCity сам вызывает `resource.AddWorkshop` при `hg_loadcontent 1`:
 `+host_workshop_collection <ID>` вместе с `-authkey`, либо в `workshop.vdf`.
 Без них клиенты увидят ERROR-модели и `missing material`.
 
-**Про C:U — важное исключение.** В исходном ZIP репозитория лежат только Lua,
-3 шрифта и 3 шейдера — `materials/` и `sound/` там нет. Сборка **уже добавила**
-все UI-материалы (653 файла) и в `woundsystem_zcity_compat/materials/`, и в
-`casualties_unknown_health_system_beta/materials/`: WoundView, лимбы, иконки,
-экраны и мини-игры больше не показывают ERROR, вручную ничего перекидывать не
-надо, `woundsys_resource_downloads 1` для них не требуется. Остаются только
-звуки C:U (в архивах их нет) и шейдеры `3440271589`; за ними — один из двух
-вариантов:
+**Про C:U — важное исключение.** В исходном ZIP репозитория лежат Lua, 3
+шрифта и 3 шейдера, но нет `materials/` и `sound/`. Теперь коннектор сам
+содержит **653 UI-материала + 3 шрифта + 3 собственных C:U `.vcs`**. В full
+pack материалы дополнительно зеркалируются в папку C:U, а шрифты/шейдеры
+физически перенесены только в коннектор. Пути остаются прежними
+(`materials/...`, `resource/fonts/...`, `shaders/fxc/...`), поэтому C:U находит
+их через обычный `GAME` search path.
 
-* **Вариант А (рекомендуется, точная версия):** оставить папку из пакета и
-  отдельно докачать контент C:U на сервер, включив
-  `woundsys_resource_downloads 1` (файлы должны физически лежать в
-  `garrysmod/`). Подписку на C:U в Мастерской при этом **не добавлять**.
-* **Вариант Б (проще):** подписаться на C:U `3728573930` и обязательный
-  `Simple Custom Shaders` `3440271589`, а папку
+На выделенном сервере коннектор сам регистрирует эти 659 resource paths для
+клиентов: `zc_woundsystem_compat_resource_downloads 1` (по умолчанию, после
+изменения нужна смена карты/restart). Если контент уже раздаётся вашей
+Workshop-коллекцией или отдельным resource-сервером, поставьте `0`. Включать
+`woundsys_resource_downloads` ради UI больше не требуется; при включённых обоих
+конварах общий `Resources.Added` исключает дубли.
+
+В исходных архивах **нет звуков C:U** — они не подменялись и не выдумывались.
+Также `Simple Custom Shaders 3440271589` относится к дополнительным внешним
+C:U-эффектам, а не к трём собственным `.vcs`, которые уже перенесены. Выберите
+один экземпляр C:U:
+
+* **Вариант А (рекомендуется, точная версия):** оставить папку C:U из пакета и
+  коннектор. Для звуков можно добавить **только `sound/`** из отдельного
+  контент-пака C:U; вторую копию Lua/GMA при этом не добавлять.
+* **Вариант Б:** подписаться на C:U `3728573930` и при необходимости внешних
+  эффектов на `Simple Custom Shaders 3440271589`, а папку
   `casualties_unknown_health_system_beta` из пакета **удалить**. Иначе C:U
   загрузится дважды: двойные хуки, таймеры, net-сообщения и HUD.
 
@@ -224,6 +238,7 @@ zc_woundsystem_compat_bandaged_shrapnel_infection 1  инфекция под п�
 zc_woundsystem_compat_shrapnel_infection_death_delay 600  секунды до fatal brain infection
 zc_woundsystem_compat_inspect_button 1  кнопка «Проверить травмы» в радиал-меню
 zc_woundsystem_compat_remote_inspect_button 1  кнопка «Лечить игрока» при наведении
+zc_woundsystem_compat_resource_downloads 1  отдача UI/materials/fonts/shaders клиентам
 zc_woundsystem_compat_debug 1           диагностика коннектора
 ```
 

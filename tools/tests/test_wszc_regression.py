@@ -853,7 +853,7 @@ def validate_zips():
         assert z.testzip() is None
         full = {i.filename: z.read(i.filename) for i in z.infolist()}
     conn_files = {p.relative_to(CONN).as_posix(): p.read_bytes() for p in CONN.rglob('*') if p.is_file()}
-    assert len(conn_files) == len(compat) == 670
+    assert len(conn_files) == len(compat) == 676
     assert all(compat['woundsystem_zcity_compat/' + r] == d for r, d in conn_files.items())
     mirror = {n[len('garrysmod/addons/casualties_unknown_health_system_beta/materials/'):]: d
               for n, d in full.items()
@@ -883,6 +883,7 @@ def validate_zips():
     assert 'wszc/unitmenu/limbs/pelvis_edge.png' in mirror
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
     # +4 neck/pelvis PNGs in the connector and +4 in the C:U material mirror.
+    # Six fonts/shaders moved C:U -> connector, so the full total is unchanged.
     assert len(full) == 2779
     declared_total = re.search(r'Всего файлов в архиве:\s*(\d+)', manifest)
     assert declared_total and int(declared_total.group(1)) == len(full)

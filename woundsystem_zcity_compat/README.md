@@ -415,24 +415,28 @@ FakeUp `PlayerSpawn` сервер видит `OverrideSpawn == true` и сохр
   Casualties: Unknown Health System»). Это живой обновляемый билд (49 правок,
   ver 0.2.22Bt Patch 1, 41 МБ), он может отличаться от приложенного ZIP: тогда
   `WSZC.Setup()` не найдёт ожидаемый `WoundSystem.Health.*` API и `WSZC_Ready`
-  останется `false`. У подписки есть обязательный предмет **Simple Custom
-  Shaders** (`3440271589`) — без него шейдеры `shaders/fxc/*.vcs` не приедут.
-  Если выбрана Мастерская, папку из ZIP нужно удалить.
+  останется `false`. Три собственных C:U-шейдера `shaders/fxc/*.vcs` уже
+  находятся в коннекторе; **Simple Custom Shaders** (`3440271589`) нужен только
+  для дополнительных внешних C:U-эффектов. Если выбрана Мастерская, папку из
+  ZIP нужно удалить.
 
 Контент ZCity подтягивается сам через `resource.AddWorkshop` при
 `hg_loadcontent 1`: `3657897364` (main content), `3257937532` (distac content),
 `3389728250` (Glide), `3389795738` (GTAV helicopters). На выделенном сервере эти
 ID должны быть в `workshop.vdf` / `+host_workshop_collection`, иначе клиенты
-увидят ERROR-модели и `missing material` в консоли. В исходном ZIP C:U лежат только Lua, 3 шрифта и 3 скомпилированных шейдера —
-звуков и материалов там нет. **В этой сборке это исправлено**: 653 UI-материал
+увидят ERROR-модели и `missing material` в консоли. В исходном ZIP C:U лежат Lua, 3 шрифта и 3 скомпилированных шейдера —
+звуков и материалов там нет. **В этой сборке UI самодостаточен**: 653 UI-материала
 (`casunknown-images/*`, `woundsystem/*`, родные лимбы `middle/`+`outlines/`,
-кадры руки, .vtf/.vmt) упакованы в `woundsystem_zcity_compat/materials/` и
-зеркально в `casualties_unknown_health_system_beta/materials/` full pack.
+кадры руки, .vtf/.vmt), все 3 шрифта и все 3 собственных `.vcs` упакованы в
+`woundsystem_zcity_compat/`. Материалы также зеркалируются в C:U full pack;
+шрифты/шейдеры физически перенесены только в коннектор.
 `tools/pack_ui_materials.py` разрешает все 125 ссылок на материалы из C:U/WSZC
 Lua (36 алиасов: регистр, перенос спрайтов мини-игр, `_red`-вариант) и
-assert'ом запрещает пропуски. Звуки C:U по-прежнему отсутствуют; подписка
-`3728573930` нужна только ради звуков/шейдеров, и её нельзя ставить одновременно
-с папкой C:U.
+assert'ом запрещает пропуски. Коннектор сам вызывает `resource.AddFile` для
+всех 659 UI paths при `zc_woundsystem_compat_resource_downloads 1` и делит
+`WoundSystem.Resources.Added` с C:U без дублей. Звуков в исходниках нет;
+подписка `3728573930` может дать их и внешние Merc-шейдеры, но её нельзя
+ставить одновременно с папкой C:U.
 
 `zcity organs +`, `project hemogen blood`, `simple eye gore`, `zcitygore` для
 системы **не обязательны**: компат к ним не обращается. При установке
@@ -1002,7 +1006,7 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  предыдущие headless-тесты не доказывали скрытие в реальном клиенте;
  исправления выше сделаны по ним, но собственной live-проверки не было.
 
-## Самодостаточные материалы UI
+## Самодостаточный UI-контент
 
 Исходный `casualites unknown.zip` (71 Lua, 3 шрифта, 3 шейдера) не содержит
 `materials/` — именно поэтому интерфейс показывал ERROR и приходилось вручную
@@ -1023,7 +1027,17 @@ camelCase-копий (архив в lowercase, Linux-клиент регистр
 14 PNG-дублей `(1)`, `(2)`, `(3)` из корня второго архива побайтово проверены и
 пропущены. Скрипт сборки `zcity_full_pack.zip` зеркалирует те же 653 файл в
 `garrysmod/addons/casualties_unknown_health_system_beta/materials/`, поэтому
-аддон C:U тоже полный. Lua исходных аддонов не меняется.
+аддон C:U тоже полный. Три `resource/fonts/*.ttf` и три `shaders/fxc/*.vcs`
+перенесены из исходного C:U ZIP в коннектор побайтово; full pack удаляет их
+старые копии из папки C:U. Итого standalone ZIP содержит **676 файлов**: 653
+материала, 6 C:U resource payloads и прежний код/manifest. Lua исходных
+аддонов не меняется.
+
+Для dedicated server `WSZC.InstallPortableResources()` регистрирует все 659
+material/font/shader paths через `resource.AddFile`. По умолчанию включено
+`zc_woundsystem_compat_resource_downloads 1`; `0` отключает регистрацию, если
+сервер использует собственную раздачу. Повторный вызов и одновременный C:U
+resource scanner не создают дублей благодаря общему `Resources.Added`.
 
 Проверить в игре: откройте WoundView (`T`) — кукла, фон, иконки предметов и
 статусов должны быть без розовых ERROR-квадратов; в консоли не должно быть
