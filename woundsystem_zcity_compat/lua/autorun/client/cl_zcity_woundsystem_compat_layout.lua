@@ -414,16 +414,6 @@ local cvHideUnitPanel = CreateClientConVar("zc_woundsystem_compat_hide_unit_pane
 local cvHideWoundBackdrop = CreateClientConVar("zc_woundsystem_compat_hide_woundview_backdrop", "1", true, false,
     "1 = remove C:U's dark full-screen WoundView backdrop; 0 = keep it")
 
--- Self-inspection keeps the owner's hidden C:U inventory. Remote treatment is
--- the one functional exception: native buttons need the medic's real slots to
--- select medicine/AED. This changes no anatomy, materials or WoundView layout;
--- server-side remote protocol still validates and consumes every item.
-local function InventoryAllowed()
-    return not cvHideInventory:GetBool()
-        or (WSZC.RemoteMedical and WSZC.RemoteMedical.active == true) or false
-end
-WSZC.CUInventoryAllowed = InventoryAllowed
-
 WSZC.CUHudFiltered = false
 -- Set by WrapCUDeathScreen() only while C:U's death-screen HUDPaint hook runs:
 -- every wrapped draw primitive becomes a no-op for that one call, while the
@@ -537,7 +527,7 @@ local function HiddenRegionRaw(x, y, w, h)
     if cvHideUnitPanel:GetBool() and Overlap(0, 0, 560 * s, 900 * s) then
         return true
     end
-    if InventoryAllowed() then return false end
+    if not cvHideInventory:GetBool() then return false end
 
     -- The three lower slots, then the two upper (slot 4 = ZCity weapon) slots.
     local cx = sw / 2
@@ -802,7 +792,7 @@ local function InstallDrawWrappers()
     if not directWrapped and type(WoundSystemQueueDirectTooltip) == "function" then
         local origDirect = WoundSystemQueueDirectTooltip
         WoundSystemQueueDirectTooltip = function(key, ...)
-            if not InventoryAllowed() and type(key) == "string"
+            if cvHideInventory:GetBool() and type(key) == "string"
                 and string.sub(key, 1, 5) == "slot_" then return end
             return origDirect(key, ...)
         end
@@ -991,7 +981,6 @@ local function InstallInventoryProxy()
     local real = WoundSystemInventorySlots
     local proxy = setmetatable({}, {
         __index = function(_, key)
-            if InventoryAllowed() then return rawget(real, key) end
             if key == 6 then return rawget(real, 6) end
             if type(key) == "number" and key >= 1 and key <= 5 then
                 -- A fresh table per lookup: C:U must never mutate a shared
@@ -1001,7 +990,7 @@ local function InstallInventoryProxy()
             return rawget(real, key)
         end,
         __newindex = function(_, key, value)
-            if not InventoryAllowed() and type(key) == "number" and key >= 1 and key <= 5 then return end
+            if type(key) == "number" and key >= 1 and key <= 5 then return end
             rawset(real, key, value)
         end,
     })
@@ -1019,28 +1008,16 @@ local REMOVED_INVENTORY_HOOKS = {
     { "Think", "WoundSystem_BodyUseHeldItemInput" },
 }
 
-local inventoryMoveOriginal, inventoryMoveWrapper
 local function DisableCUInventoryInput()
-    if WoundSystem and WoundSystem.Client then
-        local current = WoundSystem.Client.RequestInventoryMove
-        if type(current) == "function" and current ~= inventoryMoveWrapper then
-            inventoryMoveOriginal = current
-        end
-        if inventoryMoveOriginal then
-            inventoryMoveWrapper = inventoryMoveWrapper or function(...)
-                if InventoryAllowed() then return inventoryMoveOriginal(...) end
-            end
-            WoundSystem.Client.RequestInventoryMove = inventoryMoveWrapper
-        end
-    end
     if not cvHideInventory:GetBool() then return end
+    if WoundSystem and WoundSystem.Client then
+        WoundSystem.Client.RequestInventoryMove = function() end
+    end
     for _, entry in ipairs(REMOVED_INVENTORY_HOOKS) do
         hook.Remove(entry[1], entry[2])
     end
-    if not InventoryAllowed() then
-        if WoundSystemDragState then WoundSystemDragState.active = false end
-        if WoundSystemWorldDrag then WoundSystemWorldDrag.active = false end
-    end
+    if WoundSystemDragState then WoundSystemDragState.active = false end
+    if WoundSystemWorldDrag then WoundSystemWorldDrag.active = false end
 end
 WSZC.DisableCUInventoryInput = DisableCUInventoryInput
 

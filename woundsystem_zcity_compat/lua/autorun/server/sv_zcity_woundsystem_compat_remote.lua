@@ -72,12 +72,24 @@ local function HealthReady()
         and type(h.GetLimbs) == "function" and type(h.GetBody) == "function"
 end
 
+local function PatientEntity(ply)
+    if not IsValid(ply) then return nil end
+    if IsValid(ply.FakeRagdoll) then return ply.FakeRagdoll end
+    if ply.GetNWEntity then
+        local ok, ragdoll = pcall(ply.GetNWEntity, ply, "FakeRagdoll", NULL)
+        if ok and IsValid(ragdoll) then return ragdoll end
+    end
+    return ply
+end
+
 local function Position(ply)
-    if ply.WorldSpaceCenter then
-        local ok, pos = pcall(ply.WorldSpaceCenter, ply)
+    local subject = PatientEntity(ply)
+    if not IsValid(subject) then return ply:GetPos() end
+    if subject.WorldSpaceCenter then
+        local ok, pos = pcall(subject.WorldSpaceCenter, subject)
         if ok and pos then return pos end
     end
-    return ply:GetPos()
+    return subject:GetPos()
 end
 
 local function ValidPair(operator, target)

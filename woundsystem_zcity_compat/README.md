@@ -36,6 +36,11 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 `zc_woundsystem_compat_remote_inspect_button 1`, команда для бинда —
 `wszc_treat_player`.
 
+Для ragdoll client resolver последовательно проверяет `hg.RagdollOwner`,
+`organism.owner`, `ragdoll.ply`, NW `ply/Owner/RagdollOwner` и обратную связь
+`player:GetNWEntity("FakeRagdoll")`. Client и server измеряют дистанцию до
+актуального ragdoll, а не до устаревшей позиции скрытого player entity.
+
 Remote-модуль **не рисует второй UI и не добавляет patient banner**. Используются
 те же 17 native limb id и 17 traced частей custom doll, включая `neck/pelvis`,
 материалы, hitboxes, hover, actions и minigames, что у
@@ -43,18 +48,22 @@ self-player. Сохраняются и восстанавливаются self `
 `PlayerStats`; self-updates не затирают открытый snapshot пациента, а после
 закрытия сервер присылает свежий self-snapshot.
 
-Расходуются предметы и durability **лекаря**, лечение получает **пациент**.
-Поэтому пять обычно скрытых C:U-слотов только во время remote treatment
-показывают настоящий инвентарь лекаря; анатомическая структура и расположение
-WoundView при этом не меняются. Поддержаны:
+Пять C:U-слотов остаются скрытыми и при remote treatment: чужой WoundView
+визуально и структурно совпадает с самоосмотром без единственного бывшего
+inventory-исключения. Расходуемые медицинские предметы применяются штатными
+ZCity SWEP непосредственно на player/ragdoll через canonical `WB.SwepHeal`:
+предмет и durability расходует **лекарь**, лечение получает **пациент**.
 
-- обычные medical items и снятие statuses через native receivers;
-- native shrapnel/dislocation/AED Start/Input/Close, включая отложенные AED timers;
-- bandage/syringe через тот же advanced `StartExternalMinigame`, где `owner` —
-  медик, `target` — пациент. Remote передаёт `target/spec/maxDur/live/oneDose`
-  явно, поэтому не подменяет canonical ZCity closure/upvalue path;
-- возврат `weapon_tourniquet` медику при remote removal и пациенту при
+- В WoundView остаются native shrapnel/dislocation и снятие statuses руками.
+- Bandage/syringe из ZCity SWEP используют тот же advanced
+  `StartExternalMinigame`, где `owner` — медик, `target` — пациент; explicit
+  `target/spec/maxDur/live/oneDose` не подменяет canonical closure/upvalue path.
+- `weapon_tourniquet` возвращается медику при remote removal и пациенту при
   self-removal, с сохранением 180-секундного цикла, downstream cleanup и ран.
+- Namespaced native C:U items/AED и их Start/Input/Close сохранены для
+  совместимости с намеренно включённым инвентарём
+  (`zc_woundsystem_compat_hide_cu_inventory 0`), но по умолчанию слоты не
+  отображаются ни у себя, ни у пациента.
 
 Каждый namespaced `WSZC_RemoteMedicalAction` содержит явного пациента и typed
 payload. Сервер проверяет двух разных живых игроков, дистанцию, активную пару,
@@ -909,10 +918,11 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  `Org Think "Main"` не обновлялись и в vanilla-ветке тоже могут не
  обновляться. Чистый vanilla без C:U достигается `zc_woundsystem_bridge 0`
  + `woundsys_enabled 0`, но тогда исчезают панель и мини-игры.
-- При самоосмотре C:U-инвентарь скрыт: ZCity мини-игры используют виртуальный
- слот `6`. Во время лечения другого игрока пять native слотов временно открывают
- только реальный инвентарь лекаря; пациент не отдаёт свои предметы. Переломы
- отображаются иконкой, но целиком считаются/лечатся ванильной ZCity.
+- C:U-инвентарь скрыт и при самоосмотре, и в чужом WoundView: ZCity мини-игры
+ используют виртуальный слот `6`, а расходуемые предметы применяются на пациента
+ штатными ZCity SWEP. Пять native слотов появляются только при явном
+ `zc_woundsystem_compat_hide_cu_inventory 0`. Переломы отображаются иконкой,
+ но целиком считаются/лечатся ванильной ZCity.
 - Remote treatment переиспользует WoundView, а не добавляет в C:U отдельный
  renderer. Его engine/net/ragdoll поведение нужно проверить на двух живых
  клиентах: offline fixtures не являются таким тестом.
@@ -935,11 +945,11 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  не переопределяются.
 - Проверено синтаксически (`luaparser`, 13 файлов), статически, на заглушечном
  Lua-рантайме и через canonical ZCity WoundBridge из исходного ZIP. Актуальные
- suites: `tools/tests/test_wszc_regression.py` (**152/152**, включая Lua 13/13,
- CRC/зеркало/манифест, pixel checks и 29 remote behavior tests),
+ suites: `tools/tests/test_wszc_regression.py` (**154/154**, включая Lua 13/13,
+ CRC/зеркало/манифест, pixel checks и 31 remote behavior tests),
  `test_gameplay_regression.py` (**93/93**), `test_bandage_regression.py`
- (**35/35**) и `test_medical_regression.py` (**42/42**) — всего **322/322**.
- Remote M16 дополнительно прогоняет настоящий advanced minigame-server:
+ (**35/35**) и `test_medical_regression.py` (**42/42**) — всего **324/324**.
+ Remote M16 проверяет ragdoll range/watchdog; M17 прогоняет настоящий advanced minigame-server:
  `operator→patient`, один расход слота медика и запрет input вне дистанции.
  Medical-suite отдельно проверяет canonical
  instant/async medicine, timed effects, кровь, грудной дренаж, naloxone, кости,

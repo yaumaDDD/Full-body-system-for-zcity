@@ -19,7 +19,7 @@ if MODE == "server" then
     util = { AddNetworkString = function() end }
     hook = { Add = function() end }
     IsValid = function(v)
-        return v ~= nil and v ~= false and (type(v) ~= "table" or v.valid ~= false)
+        return v ~= nil and v ~= false and v ~= NULL and (type(v) ~= "table" or v.valid ~= false)
     end
 
     local simpleTimers, namedTimers = {}, {}
@@ -286,6 +286,7 @@ if MODE == "server" then
         bodies = { [op] = { bloodVolume = 100 }, [patient] = { bloodVolume = 42 }, [other] = {} }
         op.x, op.alive, op.valid = 0, true, true
         patient.x, patient.alive, patient.valid = 20, true, true
+        patient.GetNWEntity = nil
         other.x, other.alive, other.valid = 30, true, true
         sent, applied, statuses, inputs, externalApplied, stopped = {}, {}, {}, {}, {}, {}
         simpleTimers, externalStarts, aedCallbacks, aedSawBorrowed = {}, 0, 0, false
@@ -491,7 +492,29 @@ if MODE == "server" then
         Assert(WSZC.CUSessions.Shrapnel[patient] == nil)
     end)
 
-    Test("M16 real main minigame accepts remote data and treats patient with medic item", function()
+    Test("M16 server validates and keeps a remote session against the ragdoll position", function()
+        Reset()
+        local body = { valid = true, x = 20 }
+        function body:GetPos() return Vec(self.x) end
+        function body:WorldSpaceCenter() return Vec(self.x) end
+        patient.x = 1000 -- stale hidden player origin
+        patient.GetNWEntity = function(_, key) return key == "FakeRagdoll" and body or NULL end
+        Assert(WSZC.RemoteMedicalValidPair(op, patient))
+        Open(patient)
+        Action(patient, "WoundSystem_ShrapnelStart", { "hand_R", 0 })
+        Assert(WSZC.CUSessions.Shrapnel[patient] ~= nil)
+        namedTimers.WSZC_RemoteMedicalWatchdog()
+        Assert(WSZC.RemoteMedicalSessions[op] ~= nil)
+        Assert(WSZC.CUSessions.Shrapnel[patient] ~= nil)
+        body.x = 500
+        namedTimers.WSZC_RemoteMedicalWatchdog()
+        Assert(WSZC.RemoteMedicalSessions[op] == nil)
+        Assert(WSZC.CUSessions.Shrapnel[patient] == nil)
+        patient.GetNWEntity = nil
+        patient.x = 20
+    end)
+
+    Test("M17 real main minigame accepts remote data and treats patient with medic item", function()
         Reset()
         WSZC._MinigameServerLoaded = nil
         Assert(MINIGAME_SOURCE and load(MINIGAME_SOURCE))
@@ -539,7 +562,7 @@ else
     ErrorNoHalt = function() end
     NULL = {}
     IsValid = function(v)
-        return v ~= nil and v ~= false and (type(v) ~= "table" or v.valid ~= false)
+        return v ~= nil and v ~= false and v ~= NULL and (type(v) ~= "table" or v.valid ~= false)
     end
     math.Clamp = function(v, lo, hi) return math.max(lo, math.min(hi, v)) end
     table.Copy = function(value)
@@ -565,6 +588,7 @@ else
     end
     op, patient, patient2 = Player("medic", 0), Player("patient", 20), Player("patient2", 30)
     LocalPlayer = function() return op end
+    player = { GetAll = function() return { op, patient, patient2 } end }
     local ragdoll = { valid = true, IsPlayer = function() return false end }
     hg = { radialOptions = {}, RagdollOwner = function(ent) return ent == ragdoll and patient or nil end }
 
@@ -631,6 +655,9 @@ else
         if WSZC.RemoteMedical.active or WSZC.RemoteMedical.pending then WSZC.RemoteMedical.Finish("test_reset") end
         op.x, op.alive, op.valid, op.traceEntity = 0, true, true, patient
         patient.x, patient.alive, patient.valid = 20, true, true
+        patient.FakeRagdoll = nil
+        patient.GetNWEntity = function() return NULL end
+        hg.RagdollOwner = function(ent) return ent == ragdoll and patient or nil end
         patient2.x, patient2.alive, patient2.valid = 30, true, true
         local function ResetContents(destination, source)
             for key in pairs(destination) do destination[key] = nil end
@@ -774,6 +801,29 @@ else
         net.WriteUInt(1, 8) net.WriteString("MORPHINE") net.WriteString("thorax")
         net.SendToServer()
         Equal(#outgoing, 0)
+    end)
+
+    Test("C14 reverse FakeRagdoll lookup and body range expose treatment on a live ragdoll", function()
+        Reset()
+        local body = { valid = true, x = 35, IsPlayer = function() return false end,
+            GetNWEntity = function() return NULL end }
+        function body:GetPos() return Vec(self.x) end
+        function body:WorldSpaceCenter() return Vec(self.x) end
+        hg.RagdollOwner = function() return nil end -- server set only ragdoll.ply, not NW ply
+        patient.x = 1000 -- hidden player entity remains at its stale pre-ragdoll position
+        patient.GetNWEntity = function(_, key) return key == "FakeRagdoll" and body or NULL end
+        op.traceEntity = body
+
+        Equal(WSZC.RemoteMedical.FindPatient(), patient)
+        Equal(WSZC.RemoteMedical.PatientEntity(patient), body)
+        Assert(WSZC.RemoteMedical.ValidPatient(op, patient))
+        hg.radialOptions = {}
+        hooks.radialOptionsZCity_WoundBridge_RemoteInspect_WSZC()
+        Equal(#hg.radialOptions, 1, "treatment button must be present on the ragdoll")
+
+        outgoing = {}
+        Assert(WSZC.OpenRemotePatient(patient)); RunSimple()
+        Equal(outgoing[1].name, "WSZC_RemoteMedicalOpen")
     end)
 end
 

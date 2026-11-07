@@ -35,14 +35,16 @@ Remote treatment не имеет собственного doll, HUD или patie
 те же 17 native limb id, включая `neck` и `pelvis`, та же анатомия, материалы,
 hitbox/hover и мини-игры, что при самоосмотре. Меняется только авторитетный
 snapshot `PlayerLimbs/Cardio/PlayerStats`; self-state сохраняется и восстанавливается.
-Пять слотов C:U временно показывают реальные предметы **лекаря** — это единственное
-функциональное исключение из скрытия инвентаря. Эффекты применяются пациенту,
-предметы/заряд расходует лекарь. Поддержаны native shrapnel/dislocation/AED,
-ordinary items/status removal и bandage/syringe через общие advanced
-`StartExternalMinigame` sessions. Сервер проверяет operator→patient, Alive,
-дистанцию, активную inspection и схему каждого пакета; смерть, disconnect,
-закрытие панели и выход из дистанции завершают лечение. Вторая симуляция
-здоровья не создаётся. Конвар `zc_woundsystem_compat_remote_inspect_button 0`
+Пять слотов C:U остаются скрытыми и у пациента: визуально remote WoundView
+полностью совпадает с самоосмотром, исключения для инвентаря больше нет. Бинты,
+шприцы и жгуты применяются штатными ZCity SWEP непосредственно на игрока или его
+ragdoll; эффект получает пациент, предмет/заряд расходует лекарь. В WoundView
+остаются native shrapnel/dislocation, снятие statuses и другие действия руками.
+Namespaced C:U item protocol сохранён только для совместимости с конфигурацией
+`zc_woundsystem_compat_hide_cu_inventory 0`. Сервер проверяет operator→patient,
+Alive, дистанцию до актуального player/ragdoll, активную inspection и схему
+каждого пакета; смерть, disconnect, закрытие панели и выход из дистанции
+завершают лечение. Вторая симуляция здоровья не создаётся. Конвар `zc_woundsystem_compat_remote_inspect_button 0`
 отключает remote treatment и его кнопку, команда для бинда — `wszc_treat_player`.
 
 Настоящие bandage/syringe мини-игры C:U поднимаются только для бинтов и

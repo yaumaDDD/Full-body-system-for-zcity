@@ -52,7 +52,7 @@
 | Рука/курсор работают в мини-игре шприца | включается вместе с `zc_woundsystem_compat_minigames 1` |
 | Вывихи вправляются вручную (`FIX DISLOCATION` в WoundView), состояние в `ply.organism` | включается вместе с `zc_woundsystem_compat_shadow 1` |
 | Переломы видны в WoundView, но считаются/лечатся ZCity (`sv_bone.lua`) | включается вместе с `zc_woundsystem_compat_shadow 1` |
-| Инвентарь C:U скрыт при самоосмотре, слот `6` для ZCity SWEP'ов остаётся | `zc_woundsystem_compat_hide_cu_inventory 1`; во время лечения другого игрока пять слотов временно показывают только предметы медика |
+| Инвентарь C:U скрыт и при самоосмотре, и в чужом WoundView; виртуальный слот `6` для ZCity SWEP'ов остаётся | `zc_woundsystem_compat_hide_cu_inventory 1`; remote treatment не делает исключения. Расходуемые предметы применяются штатными ZCity SWEP на пациента |
 | Лечение другого игрока в том же WoundView | Отдельная «Лечить игрока» при наведении на пациента; те же 17 зон/neck/pelvis, без отдельного HUD. Самоосмотр не изменён. `zc_woundsystem_compat_remote_inspect_button 1` |
 | Панель `UNI-HEALTH` / unit внутри WoundView скрыта | `zc_woundsystem_compat_hide_unit_panel 1` |
 | Рамки слотов и `UNI-HEALTH` скрыты и при нестандартном масштабе UI | `zc_woundsystem_compat_hide_cu_inventory 1`, `zc_woundsystem_compat_hide_unit_panel 1` (фильтр через `hook.Add`; `PreDrawHUD` — запасной контур) |
@@ -117,9 +117,13 @@ WIP-аддон больше не обязателен), а весь `casunknown-
 3. Откроется **тот же WoundView, что при самоосмотре**: те же 17 анатомических
    зон, отдельные `neck/pelvis`, материалы, hitboxes, hover и мини-игры. Нет
    отдельного remote doll, HUD или patient banner.
-4. Выберите предмет в пяти временно открытых C:U-слотах. Это предметы **медика**;
-   эффект и изменения ран получает **пациент**. Поддержаны native
-   shrapnel/dislocation/AED, statuses, bandage/syringe и возврат жгута.
+4. Пять C:U-слотов здесь также скрыты, интерфейс полностью совпадает с
+   самоосмотром. Для бинта/шприца/жгута возьмите медицинский ZCity SWEP и
+   примените его на пациента или его ragdoll (обычно ПКМ — лечение другого):
+   заряд расходует **медик**, эффект получает **пациент**. В WoundView доступны
+   native shrapnel/dislocation, снятие statuses и возврат жгута. C:U-предметы
+   доступны только если инвентарь намеренно включён конваром
+   `zc_woundsystem_compat_hide_cu_inventory 0`.
 
 При remote-снятии `TOURNIQUET` `weapon_tourniquet` возвращается медику, при
 self-removal — пациенту. Сохранены advanced 180-секундный lifecycle жгута,

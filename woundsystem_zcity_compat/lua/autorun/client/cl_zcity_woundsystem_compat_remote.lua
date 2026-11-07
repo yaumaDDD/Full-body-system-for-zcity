@@ -53,25 +53,74 @@ local function Ready()
         and WoundSystem.OpenHealthHUD ~= nil
 end
 
+local function AsPlayer(owner)
+    return owner ~= NULL and IsValid(owner) and owner:IsPlayer() and owner or nil
+end
+
 local function PlayerFromEntity(ent)
     if not IsValid(ent) then return nil end
     if ent:IsPlayer() then return ent end
+
+    -- ZCity's client resolver accepts only one exact representation:
+    -- ragdoll:GetNWEntity("ply") AND player:GetNWEntity("FakeRagdoll").
+    -- Some server builds set ragdoll.ply only in Lua, so that resolver returns
+    -- nil even though every player can see the ragdoll. Try all native links,
+    -- then the reverse player -> ragdoll relation before giving up.
     if hg and hg.RagdollOwner then
         local ok, owner = pcall(hg.RagdollOwner, ent)
-        if ok and IsValid(owner) and owner:IsPlayer() then return owner end
+        if ok and AsPlayer(owner) then return owner end
     end
+    local entOrg = ent.organism
+    local owner = type(entOrg) == "table" and AsPlayer(entOrg.owner) or nil
+    if owner then return owner end
+    owner = AsPlayer(ent.ply)
+    if owner then return owner end
+
     if ent.GetNWEntity then
-        local owner = ent:GetNWEntity("WoundSystemPlayer", NULL)
-        if IsValid(owner) and owner:IsPlayer() then return owner end
+        for _, key in ipairs({ "ply", "Owner", "RagdollOwner", "WoundSystemOwner", "WoundSystemPlayer" }) do
+            local ok, candidate = pcall(ent.GetNWEntity, ent, key, NULL)
+            if ok and AsPlayer(candidate) then return candidate end
+        end
+    end
+    if ent.GetOwner then
+        local ok, candidate = pcall(ent.GetOwner, ent)
+        if ok and AsPlayer(candidate) then return candidate end
+    end
+
+    if player and player.GetAll then
+        for _, candidate in ipairs(player.GetAll()) do
+            if candidate.FakeRagdoll == ent or candidate.DeathRagdoll == ent or candidate.Ragdoll == ent then
+                return candidate
+            end
+            if candidate.GetNWEntity then
+                local ok, ragdoll = pcall(candidate.GetNWEntity, candidate, "FakeRagdoll", NULL)
+                if ok and ragdoll == ent then return candidate end
+            end
+        end
     end
     return nil
 end
 
+-- A living ZCity player entity can remain at its pre-ragdoll position. Range
+-- must be measured to the body actually under the medic's crosshair.
+local function PatientEntity(target)
+    if not IsValid(target) then return nil end
+    if IsValid(target.FakeRagdoll) then return target.FakeRagdoll end
+    if target.GetNWEntity then
+        local ok, ragdoll = pcall(target.GetNWEntity, target, "FakeRagdoll", NULL)
+        if ok and IsValid(ragdoll) then return ragdoll end
+    end
+    return target
+end
+Remote.PatientEntity = PatientEntity
+
 local function ValidPatient(ply, target)
     if not (IsValid(ply) and IsValid(target) and target ~= ply) then return false end
     if not ply:Alive() or not target:Alive() then return false end
+    local subject = PatientEntity(target)
+    if not IsValid(subject) then return false end
     local from = ply.EyePos and ply:EyePos() or ply:GetPos()
-    local to = target.WorldSpaceCenter and target:WorldSpaceCenter() or target:GetPos()
+    local to = subject.WorldSpaceCenter and subject:WorldSpaceCenter() or subject:GetPos()
     return from:Distance(to) <= RANGE
 end
 

@@ -470,6 +470,8 @@ check('S51 separate remote radial option; self inspection remains intact',
       and '_WSZCRemoteInspect = true' in remote_client_s
       and 'target ~= ply' in remote_client_s
       and 'hg.RagdollOwner' in remote_client_s
+      and 'candidate.GetNWEntity, candidate, "FakeRagdoll", NULL' in remote_client_s
+      and 'local function PatientEntity(target)' in remote_client_s
       and 'WSZC.OpenCUWoundMenu = function(...)' in remote_client_s
       and 'ZCity_WoundBridge_RemoteInspect_WSZC'
           not in src('woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_inspect.lua'))
@@ -481,6 +483,8 @@ check('S52 namespaced protocol carries an explicit patient and exact schemas',
       and 'inspection.target ~= target or not ValidPair(operator, target)' in remote_server_s
       and 'operator == target' in remote_server_s
       and 'not operator:Alive() or not target:Alive()' in remote_server_s
+      and 'local function PatientEntity(ply)' in remote_server_s
+      and 'from:Distance(Position(target))' in remote_server_s
       and 'distance <= RANGE' in remote_server_s)
 check('S53 native sessions belong to patient; traffic and slots belong to operator',
       'receiver(0, target)' in remote_server_s
@@ -522,12 +526,12 @@ check('S58 remote client/server modules are registered for download and include'
       'AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_remote.lua")' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat.lua')
       and 'include("autorun/server/sv_zcity_woundsystem_compat_remote.lua")' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat.lua'))
 
-check('S59 hidden self inventory is reopened only for the remote medic',
-      'WSZC.CUInventoryAllowed = InventoryAllowed' in layout_s
-      and 'WSZC.RemoteMedical and WSZC.RemoteMedical.active == true' in layout_s
-      and 'if InventoryAllowed() then return rawget(real, key) end' in layout_s
-      and 'if InventoryAllowed() then return inventoryMoveOriginal(...) end' in layout_s
-      and 'if InventoryAllowed() then return false end' in layout_s)
+check('S59 C:U inventory stays hidden identically for self and remote; only virtual slot 6 remains',
+      'InventoryAllowed' not in layout_s
+      and 'WSZC.RemoteMedical' not in layout_s
+      and 'if key == 6 then return rawget(real, 6) end' in layout_s
+      and 'if type(key) == "number" and key >= 1 and key <= 5 then' in layout_s
+      and 'WSZC.CUHudHiddenRegion' in layout_s)
 
 check('S60 remote treatment usage, controls and limitations are documented',
       'Лечить игрока' in all_docs
@@ -1981,7 +1985,7 @@ end)()
 end)()
 ''')
 
-    rt('R43 remote treatment alone exposes the medic inventory; self stays hidden', '''
+    rt('R43 self and remote both hide C:U inventory; virtual slot 6 remains writable', '''
 (function()
     WSZC.InstallCUInventoryProxy()
     local real = WSZC._CURealInventory
@@ -1993,14 +1997,17 @@ end)()
     WoundSystemInventorySlots[1] = { type = "tool", toolName = "BAD" }
     local selfWriteBlocked = real[1].toolName == "MORPHINE"
     WSZC.RemoteMedical = { active = true }
-    local remoteSlotVisible = WoundSystemInventorySlots[1] == real[1]
-        and WSZC.CUInventoryAllowed() == true
-        and WSZC.CUHudHiddenRegionRaw(760, 240, 50, 50) == false
+    local remoteSlotHidden = WoundSystemInventorySlots[1].type == "empty"
+        and WSZC.CUHudHiddenRegionRaw(760, 240, 50, 50) == true
     WoundSystemInventorySlots[1] = { type = "tool", toolName = "AED", durability = 5 }
-    local remoteWriteAllowed = real[1].toolName == "AED"
+    local remoteWriteBlocked = real[1].toolName == "MORPHINE"
+    WoundSystemInventorySlots[6] = { type = "tool", toolName = "GAUZE", durability = 20 }
+    local virtualSlotWritable = real[6] == WoundSystemInventorySlots[6]
+        and real[6].toolName == "GAUZE"
     WSZC.RemoteMedical = nil
     WSZC.CUHudFiltered = false
-    return selfSlotHidden and selfWriteBlocked and remoteSlotVisible and remoteWriteAllowed
+    return selfSlotHidden and selfWriteBlocked and remoteSlotHidden
+        and remoteWriteBlocked and virtualSlotWritable
 end)()
 ''')
 
