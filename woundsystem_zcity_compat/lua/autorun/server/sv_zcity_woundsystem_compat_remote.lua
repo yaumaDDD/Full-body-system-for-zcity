@@ -364,6 +364,8 @@ local function StartExternal(operator, target, kind, payload)
     if not h.StartExternalMinigame then return false end
     local started = h.StartExternalMinigame(operator, {
         kind = kind, itemId = itemId, limbId = limbId, amount = amount,
+        target = target, spec = spec, idx = idx, maxDur = maxDur,
+        live = live, oneDose = oneDose,
         onProgress = onProgress, onClose = onClose,
     })
     if started and WSZC.MinigameSessions and WSZC.MinigameSessions[operator] then

@@ -490,6 +490,43 @@ if MODE == "server" then
         net.Receivers.WoundSystem_ShrapnelClose(0, patient)
         Assert(WSZC.CUSessions.Shrapnel[patient] == nil)
     end)
+
+    Test("M16 real main minigame accepts remote data and treats patient with medic item", function()
+        Reset()
+        WSZC._MinigameServerLoaded = nil
+        Assert(MINIGAME_SOURCE and load(MINIGAME_SOURCE))
+        assert(load(MINIGAME_SOURCE))()
+        WSZC.BridgeEnabled = function() return true end
+        WSZC.Bridged = function() return true end
+        WSZC.OrganismAuthority = function() return true end
+        WoundSystem.Health = { Constants = {} }
+        limbs[patient].arm_R = { bleed = 6, pain = 0, shrapnel = 0 }
+        H.GetLimbState = function(p, limbId)
+            return limbs[p] and limbs[p][limbId] or nil
+        end
+        Assert(WSZC.InstallMinigameAPI(H))
+        Open(patient)
+        Action(patient, "WoundSystem_BandageStart", { "arm_R", 3 })
+        local session = WSZC.MinigameSessions[op]
+        Assert(session and session.remote and session.owner == op)
+        Equal(session.target, patient)
+        Equal(session.spec.item, "BANDAGE")
+        Equal(session.nativeBandage, nil)
+        incoming, incomingIndex = { session.id, 360, 1 }, 0
+        net.Receivers.WSZC_BandageInput(0, op)
+        Equal(#externalApplied, 1)
+        Equal(externalApplied[1].p, patient)
+        Equal(externalApplied[1].cost, 2)
+        Equal(inventories[op][3].durability, 18)
+        Equal(inventories[patient][1].durability, 77)
+        Assert(WSZC.MinigameSessions[op] == session)
+        patient.x = 1000
+        incoming, incomingIndex = { session.id, 360, 2 }, 0
+        net.Receivers.WSZC_BandageInput(0, op)
+        Equal(#externalApplied, 1, "out-of-range input must not apply another dose")
+        Equal(inventories[op][3].durability, 18)
+        Assert(WSZC.MinigameSessions[op] == nil)
+    end)
 else
     CLIENT, SERVER = true, false
     local now = 100

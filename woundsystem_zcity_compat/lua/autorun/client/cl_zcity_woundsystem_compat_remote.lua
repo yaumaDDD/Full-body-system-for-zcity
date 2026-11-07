@@ -382,14 +382,6 @@ hook.Add("Think", "WSZC_RemoteMedicalWatchdog", function()
     end
 end)
 
-hook.Add("HUDPaint", "WSZC_RemoteMedicalPatientBanner", function()
-    if not Remote.active or not IsValid(Remote.target) then return end
-    local text = "Пациент: " .. Remote.patientName
-        .. string.format("  |  Кровь: %.0f%%", Remote.blood)
-    draw.SimpleText(text, "DermaDefaultBold", ScrW() * 0.5, ScrH() * 0.035,
-        Color(120, 235, 170), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-end)
-
 concommand.Add("wszc_treat_player", function()
     WSZC.OpenRemotePatient()
 end)

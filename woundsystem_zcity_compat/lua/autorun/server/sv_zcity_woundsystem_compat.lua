@@ -142,20 +142,21 @@ local FALLBACK_HITGROUP = {
     [HITGROUP_RIGHTARM] = "forearm_R",
     [HITGROUP_LEFTLEG] = "crus_L",
     [HITGROUP_RIGHTLEG] = "crus_R",
-    [HITGROUP_GEAR] = "abdomen",
+    [HITGROUP_GEAR] = "pelvis",
     [HITGROUP_GENERIC] = "thorax",
 }
 
 local FALLBACK_PARENT_LIMB = {
     hand_R = "forearm_R", forearm_R = "arm_R", arm_R = "thorax",
     hand_L = "forearm_L", forearm_L = "arm_L", arm_L = "thorax",
-    foot_R = "crus_R", crus_R = "thigh_R", thigh_R = "abdomen",
-    foot_L = "crus_L", crus_L = "thigh_L", thigh_L = "abdomen",
-    head = "thorax", abdomen = "thorax",
+    foot_R = "crus_R", crus_R = "thigh_R", thigh_R = "pelvis",
+    foot_L = "crus_L", crus_L = "thigh_L", thigh_L = "pelvis",
+    neck = "head", head = "thorax", abdomen = "thorax", pelvis = "abdomen",
 }
 
 local FALLBACK_RAGDOLL_BONES = {
-    { limb = "head", patterns = { "head", "neck", "jaw", "face" } },
+    { limb = "neck", patterns = { "neck" } },
+    { limb = "head", patterns = { "head", "jaw", "face" } },
     { limb = "hand_L", patterns = { "l_hand", "l hand", "left hand", "bip01_l_finger", "leftfinger" } },
     { limb = "hand_R", patterns = { "r_hand", "r hand", "right hand", "bip01_r_finger", "rightfinger" } },
     { limb = "forearm_L", patterns = { "l_forearm", "l forearm", "left forearm", "l_lowerarm", "left lowerarm" } },
@@ -169,7 +170,8 @@ local FALLBACK_RAGDOLL_BONES = {
     { limb = "thigh_L", patterns = { "l_thigh", "l thigh", "left thigh", "l_upperleg", "left upperleg" } },
     { limb = "thigh_R", patterns = { "r_thigh", "r thigh", "right thigh", "r_upperleg", "right upperleg" } },
     { limb = "thorax", patterns = { "spine2", "spine3", "spine4", "chest", "rib", "sternum" } },
-    { limb = "abdomen", patterns = { "pelvis", "spine", "hips", "hip", "spine1" } },
+    { limb = "abdomen", patterns = { "spine1", "stomach", "abdomen" } },
+    { limb = "pelvis", patterns = { "pelvis", "spine", "hips", "hip" } },
 }
 
 local FALLBACK_LIMB_CLAMPS = {
@@ -214,6 +216,7 @@ end
 local function FallbackRagdollBoneNameToLimb(boneName)
     boneName = string.lower(tostring(boneName or ""))
     if boneName == "" then return nil end
+    if string.find(boneName, "neck", 1, true) then return "neck" end
     local const = WSZC.Const or {}
     local patterns = const.RagdollDamageBones or FALLBACK_RAGDOLL_BONES
     for _, candidate in ipairs(patterns) do
@@ -538,6 +541,17 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
     if not (IsValid(ply) and ply:IsPlayer() and ply:Alive() and H and Items) then return false, 0 end
 
     itemId = NormalizeItemId(itemId)
+    -- InstallMedicalBridge resolves the PhysicsBone under the owner's crosshair
+    -- before native WB.SwepHeal/BestLimb runs.  Native self-use suppresses its
+    -- own AimedLimb, so it may pass the worst-bleeding ARM here instead.  This
+    -- scoped override changes only a tourniquet call for the same patient; the
+    -- corrected limbId then drives BuildMedicalItemContext, authoritative
+    -- artery treatment, C:U status and the native visual marker together.
+    local tourniquetRoute = WSZC.TourniquetLimbOverride
+    if itemId == "TOURNIQUET" and type(tourniquetRoute) == "table"
+        and tourniquetRoute.ply == ply and type(tourniquetRoute.limbId) == "string" then
+        limbId = tourniquetRoute.limbId
+    end
     local item = Items.Get and Items.Get(itemId)
     if not item then return false, 0 end
     local maxDurability = (Items.GetMax and Items.GetMax(itemId)) or item.max or 100
@@ -571,6 +585,7 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
     end
     local ok = false
     local bandageEffectFraction = 0
+    local directTourniquetTreated, directTourniquetAfter = 0, nil
 
     if minigame == "bandage" then
         local profile = BandageProfile(itemId, item)
@@ -604,16 +619,58 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         -- with a virtual inventory slot.
         if Items.LimbAllowed and not Items.LimbAllowed(use, limbId) then return false, 0 end
         local useItem = WoundSystem.UseMedicalItem
-        if useItem then
-            local callOk, result = pcall(useItem, ply, itemId, limbId, nil, slot)
-            ok = callOk and result ~= false
-        elseif type(use.apply) == "function" then
-            local callOk, result = pcall(use.apply, ctx)
-            ok = callOk and result ~= false
+
+        -- A PHYSICAL ZCity tourniquet must not become a no-op merely because
+        -- C:U rejects its shadow state, a status helper is missing, or its
+        -- virtual inventory apply errors.  Close the authoritative artery
+        -- first; C:U presentation is then best-effort and cannot veto it.
+        local authoritativeTourniquet = itemId == "TOURNIQUET"
+            and WSZC.ApplyTourniquetToOrganism
+            and WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+        if authoritativeTourniquet then
+            local treatOk, treated, _, afterBleed = pcall(WSZC.ApplyTourniquetToOrganism, ctx)
+            if not treatOk then
+                if WSZC.Warn then WSZC.Warn("tourniquet organism treatment failed: " .. tostring(treated)) end
+            elseif (tonumber(treated) or 0) > 0 then
+                directTourniquetTreated = tonumber(treated) or 0
+                directTourniquetAfter = afterBleed
+                ok = true
+                if useItem then pcall(useItem, ply, itemId, limbId, nil, slot)
+                elseif type(use.apply) == "function" then pcall(use.apply, ctx) end
+                if type(ctx.limb) == "table" then
+                    ctx.limb.tourniqueted, ctx.limb.blockedBleeding = true, true
+                    if ctx.setStatus then pcall(ctx.setStatus, "TOURNIQUET", 0.01) end
+                end
+            end
+            -- Native success on a shadow limb is not a reason to consume the
+            -- physical SWEP item when no real ZCity wound was treated.
+            if not ok then return false, 0 end
+        end
+
+        if not ok then
+            if useItem then
+                local callOk, result = pcall(useItem, ply, itemId, limbId, nil, slot)
+                ok = callOk and result ~= false
+            elseif type(use.apply) == "function" then
+                local callOk, result = pcall(use.apply, ctx)
+                ok = callOk and result ~= false
+            end
         end
     end
 
     if not ok then return false, 0 end
+
+    -- C:U's chest drain reduces its own hemothorax scalar.  ZCity's canonical
+    -- equivalent is the needle state: sv_lungs then stops pneumothorax growth
+    -- and drains it over time.  Apply it only AFTER native validation/success,
+    -- never in bridge mode and never when the item was rejected.
+    if itemId == "INJECTION" and WSZC.OrganismAuthority and WSZC.OrganismAuthority() then
+        local org = ply.organism
+        if type(org) == "table" then
+            org.needle = 1
+            ply.fullsend = true
+        end
+    end
 
     if minigame == "bandage" and WSZC.ApplyBandageToOrganism then
         local treatOk, treated, _, afterBleed = pcall(
@@ -621,10 +678,26 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         if not treatOk then
             if WSZC.Warn then WSZC.Warn("bandage organism treatment failed: " .. tostring(treated)) end
         elseif (tonumber(treated) or 0) > 0 and medicalBefore then
-            -- The authoritative wounds and immediate org.bleed were updated by
-            -- ApplyBandageToOrganism.  Zero ONLY this snapshot's bleed delta so
-            -- the generic C:U -> organism mirror cannot treat the same dose twice.
+            -- ApplyBandageToOrganism already changed the real wounds and the
+            -- immediate org.bleed value, and wrote the resulting value into
+            -- ctx.limb.bleed.  Zero this ONE snapshot delta so the generic
+            -- C:U -> organism mirror cannot subtract the same treatment twice.
             medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
+        end
+    elseif itemId == "TOURNIQUET" and WSZC.ApplyTourniquetToOrganism then
+        if directTourniquetTreated > 0 then
+            if medicalBefore then
+                medicalBefore.limbBleed = tonumber(directTourniquetAfter) or medicalBefore.limbBleed
+            end
+        else
+            local treatOk, treated, _, afterBleed = pcall(WSZC.ApplyTourniquetToOrganism, ctx)
+            if not treatOk then
+                if WSZC.Warn then WSZC.Warn("tourniquet organism treatment failed: " .. tostring(treated)) end
+            elseif (tonumber(treated) or 0) > 0 and medicalBefore then
+                -- The real arterial/ordinary wounds and org.bleed were updated by
+                -- the tourniquet itself; do not mirror the same bleed delta twice.
+                medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
+            end
         end
     end
 
@@ -668,6 +741,7 @@ function WSZC.Setup()
     end
 
     WSZC.H = H
+    if WSZC.InstallNeckState then WSZC.InstallNeckState(H) end
 
     -- A future C:U build may already provide the full bridge API.  Even then,
     -- install our external-minigame implementation: the supplied C:U build has
@@ -711,6 +785,9 @@ function WSZC.Setup()
     refs.CUSessions = FindUpvalue("Sessions")
     refs.CUCloseBandageSession = FindUpvalue("CloseBandageSession")
     refs.CUCloseSyringeSession = FindUpvalue("CloseSyringeSession")
+    refs.CUCloseShrapnelSession = FindUpvalue("CloseShrapnelSession")
+    refs.CUCloseDislocationSession = FindUpvalue("CloseDislocationSession")
+    refs.CUCloseAedSession = FindUpvalue("CloseAedSession")
 
     WSZC.H = H
     WSZC.OriginalFn = WSZC.OriginalFn or refs.Fn
@@ -725,6 +802,9 @@ function WSZC.Setup()
     WSZC.CUSessions = refs.CUSessions
     WSZC.CUCloseBandageSession = refs.CUCloseBandageSession
     WSZC.CUCloseSyringeSession = refs.CUCloseSyringeSession
+    WSZC.CUCloseShrapnelSession = refs.CUCloseShrapnelSession
+    WSZC.CUCloseDislocationSession = refs.CUCloseDislocationSession
+    WSZC.CUCloseAedSession = refs.CUCloseAedSession
 
     WSZC.Debug("refs: Fn=%s Const=%s Bandage=%s Syringe=%s Ctx=%s TryRagdoll=%s Sessions=%s",
         tostring(refs.Fn ~= nil), tostring(refs.Const ~= nil),
@@ -771,6 +851,7 @@ function WSZC.Setup()
     H.Const.LimbEffectClamps = H.Const.LimbEffectClamps or FALLBACK_LIMB_CLAMPS
     H.Const.BodyEffectClamps = H.Const.BodyEffectClamps or FALLBACK_BODY_CLAMPS
     H.Const.DrugEffectAliases = H.Const.DrugEffectAliases or FALLBACK_DRUG_ALIASES
+    if WSZC.InstallNeckState then WSZC.InstallNeckState(H) end
 
     -- External-minigame API for ZCity's non-instant medical SWEPs.  The
     -- implementation lives in sv_zcity_woundsystem_compat_minigames.lua and

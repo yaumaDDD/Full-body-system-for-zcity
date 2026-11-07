@@ -103,6 +103,7 @@ local BleedIcons = {
     extreme = Material(iconPath .. "bleeding.png"),
     extremeBandaged = Material(iconPath .. "bleedingbandaged.png")
 }
+local matInfection = Material(iconPath .. "infection.png")
 
 WSZCBandageMinigame = WSZCBandageMinigame or {}
 local MG = WSZCBandageMinigame
@@ -165,6 +166,12 @@ MG.lastSampleAt = MG.lastSampleAt or 0
 MG.lastSentAt = MG.lastSentAt or 0
 MG.inputSeq = MG.inputSeq or 0
 MG.ackSeq = MG.ackSeq or 0
+MG.bleedInitial = MG.bleedInitial or 0
+MG.bleedCurrent = MG.bleedCurrent or 0
+MG.arterialBleed = MG.arterialBleed or 0
+MG.bleedProgress = MG.bleedProgress or 0
+MG.bleedDisplayProgress = MG.bleedDisplayProgress or 0
+MG.bleedStateReceived = MG.bleedStateReceived or false
 
 local function GetVectorFromAngle(angle)
     local rad = angle * (math.pi / 180)
@@ -213,9 +220,12 @@ local function LocalReset()
     MG.bandageAngle = 0
     MG.lastActionAngle = 0
     MG.totalDegreesWrapped = 0
+    MG.totalDegreesUnwrapped = 0
+    MG.lastUnwrapActionAngle = 0
     MG.completedWraps = 0
     MG.unsentDegrees = 0
     MG.didWrap = false
+    MG.didUnwrap = false
     MG.sizeMultiplier = 0.9
     MG.holdingBandage = false
     MG.condition = 1.0
@@ -234,6 +244,12 @@ local function LocalReset()
     MG.lastSentAt = 0
     MG.inputSeq = 0
     MG.ackSeq = 0
+    MG.bleedInitial = 0
+    MG.bleedCurrent = 0
+    MG.arterialBleed = 0
+    MG.bleedProgress = 0
+    MG.bleedDisplayProgress = 0
+    MG.bleedStateReceived = false
     
     DestroyOverlay()
 end
@@ -342,6 +358,9 @@ local function LerpColor(t, c1, c2)
 end
 
 local function GetBleedIcon(state)
+    if MG.mode == "unwrap" then
+        return matInfection, Color(205, 55, 55, 255)
+    end
     if not state then return nil end
 
     local rate = (tonumber(state.bleed) or 0) * 0.075
@@ -392,6 +411,86 @@ local function DrawPie(x, y, radius, startAngle, endAngle, step)
     end
 end
 
+local PROGRESS_FONTS = {}
+local function ProgressFont()
+    local size = math.max(12, math.Round(18 * GetScale()))
+    local name = "WSZCBandageProgress" .. tostring(size)
+    if not PROGRESS_FONTS[name] then
+        surface.CreateFont(name, {
+            font = "Retro Gaming", size = size, weight = 600,
+            antialias = false, extended = true,
+        })
+        PROGRESS_FONTS[name] = true
+    end
+    return name
+end
+
+local function DrawProgressRing(x, y, radius, thickness, progress)
+    local function arc(startAngle, endAngle, color)
+        if endAngle <= startAngle then return end
+        surface.SetDrawColor(color.r, color.g, color.b, color.a or 255)
+        for angle = startAngle, endAngle - 0.0001, 5 do
+            local nextAngle = math.min(angle + 5, endAngle)
+            local a, b = math.rad(angle), math.rad(nextAngle)
+            local inner = radius - thickness
+            surface.DrawPoly({
+                { x = x + math.sin(a) * radius, y = y - math.cos(a) * radius },
+                { x = x + math.sin(b) * radius, y = y - math.cos(b) * radius },
+                { x = x + math.sin(b) * inner, y = y - math.cos(b) * inner },
+                { x = x + math.sin(a) * inner, y = y - math.cos(a) * inner },
+            })
+        end
+    end
+
+    draw.NoTexture()
+    arc(0, 360, Color(48, 48, 48, 220))
+    arc(0, math.Clamp(progress, 0, 1) * 360,
+        LerpColor(progress, Color(230, 230, 230, 255), Color(75, 225, 125, 255)))
+end
+
+local function DrawBleedProgress(cx, cy, innerSize)
+    local target = math.Clamp(tonumber(MG.bleedProgress) or 0, 0, 1)
+    MG.bleedDisplayProgress = Lerp(0.25, tonumber(MG.bleedDisplayProgress) or 0, target)
+    if math.abs(MG.bleedDisplayProgress - target) < 0.001 then
+        MG.bleedDisplayProgress = target
+    end
+    local progress = math.Clamp(MG.bleedDisplayProgress, 0, 1)
+    local radius = innerSize * 0.13
+    DrawProgressRing(cx, cy, radius, math.max(3, innerSize * 0.012), progress)
+
+    local percent = math.Round(progress * 100)
+    local arterial = math.max(tonumber(MG.arterialBleed) or 0, 0)
+    local normalStopped = (tonumber(MG.bleedInitial) or 0) <= 0.0001
+        or (tonumber(MG.bleedCurrent) or 0) <= 0.0001
+    local text = MG.mode == "unwrap" and ("UNWRAP " .. tostring(percent) .. "%")
+        or ("STOP " .. tostring(percent) .. "%")
+    local textColor = progress >= 0.999 and Color(12, 80, 34, 255) or Color(24, 24, 24, 255)
+    if MG.mode ~= "unwrap" and arterial > 0.0001 and normalStopped then
+        text = "TOURNIQUET"
+        textColor = Color(155, 22, 22, 255)
+    end
+    draw.SimpleText(text, ProgressFont(), cx, cy, textColor,
+        TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+end
+
+function MG.ApplyBleedState(payload)
+    if not MG.active or type(payload) ~= "table" or payload.sessionId ~= MG.sessionId then
+        return false
+    end
+    MG.bleedInitial = math.max(tonumber(payload.initialBleed) or 0, 0)
+    MG.bleedCurrent = math.max(tonumber(payload.currentBleed) or 0, 0)
+    MG.arterialBleed = math.max(tonumber(payload.arterialBleed) or 0, 0)
+    local progress = tonumber(payload.progress)
+    if progress == nil then
+        progress = MG.bleedInitial > 0.0001
+            and (MG.bleedInitial - MG.bleedCurrent) / MG.bleedInitial or 0
+    end
+    MG.bleedProgress = math.Clamp(progress, 0, 1)
+    if not MG.bleedStateReceived then MG.bleedDisplayProgress = MG.bleedProgress end
+    MG.bleedStateReceived = true
+    return true
+end
+
 local function EnsureOverlay()
     DestroyOverlay()
     if WSZC and WSZC.ApplyFullscreenClip then WSZC.ApplyFullscreenClip() end
@@ -432,7 +531,9 @@ local function EnsureOverlay()
         end
 
         -- Display angle for pie: full circle when wrapped, otherwise current bandage angle (updates every frame smoothly)
-        local displayAngleForPie = (MG.didWrap and 360) or MG.bandageAngle
+        local displayAngleForPie = MG.mode == "unwrap"
+            and math.Clamp(MG.totalDegreesWrapped or 0, 0, 360)
+            or ((MG.didWrap and 360) or MG.bandageAngle)
         
         if displayAngleForPie > 0 then
             local radius = math.Round(outerCurrentSize)
@@ -467,7 +568,22 @@ local function EnsureOverlay()
         surface.DrawTexturedRectRotated(rollX, rollY, rollScaleSize, rollScaleSize, MG.bandageAngle * -3)
 
         local state = WoundSystemClientState and WoundSystemClientState.PlayerLimbs and WoundSystemClientState.PlayerLimbs[MG.limbId]
-        local bleedMat, bleedColor = GetBleedIcon(state)
+        local bleedState = state
+        if MG.bleedStateReceived then
+            -- The server packet refers to session.target, not necessarily to
+            -- LocalPlayer().  This also makes healing another player show the
+            -- target's real remaining bleed instead of the medic's own limb.
+            local artery = math.max(tonumber(MG.arterialBleed) or 0, 0)
+            bleedState = {
+                -- The percentage is normal-wound-only, but the blood-drop icon
+                -- represents the target's TOTAL remaining bleeding.  Never
+                -- hide an untreated artery behind a green bandaged icon.
+                bleed = MG.bleedCurrent + artery,
+                isBandaged = artery <= 0.0001
+                    and (MG.bleedProgress >= 0.999 or (state and state.isBandaged) or false),
+            }
+        end
+        local bleedMat, bleedColor = GetBleedIcon(bleedState)
         if bleedMat then
             local iconScale = 4.5 * GetScale()
             local iconW = bleedMat:Width() * iconScale
@@ -482,6 +598,10 @@ local function EnsureOverlay()
         surface.SetMaterial(matStick)
         surface.SetDrawColor(255, 255, 255, 153)
         surface.DrawTexturedRectRotated(cx, cy, stickSize, stickSize, -MG.bandageAngle)
+
+        -- A server-authoritative percentage, not totalDegreesWrapped: turns
+        -- spent on an already-closed wound must never fake further progress.
+        DrawBleedProgress(cx, cy, innerSize)
 
         if WoundSystem and WoundSystem.MinigameClip then
             WoundSystem.MinigameClip.End(clipActive)
@@ -498,10 +618,8 @@ local function EnsureOverlay()
         local screenX = cx + (MG.handPos.x * baseScale)
         local screenY = cy - (MG.handPos.y * baseScale)
         
-        -- 512x1260 source images at baseScale 2.04 were taller than the
-        -- screen.  The repository handanim frames are horizontal 960x540, so
-        -- WSZC.UnitmenuHandGeometry returns their own size and fingertip pivot.
-        -- If the WIP addon is absent, fall back to the original C:U sprites.
+        -- Human palm/fist on C:U's 512x1260 canvas.  Revision 5 uses the
+        -- shared compact scale and anchors the rotated pivot, not its top-left.
         local handScale = CFG.HandCursorScale * ((WSZC and WSZC.HandCursorScale and WSZC.HandCursorScale()) or 1)
         local handDrawW, handDrawH, handPivotX, handPivotY
         if WSZC and WSZC.UnitmenuHandGeometry then
@@ -511,8 +629,14 @@ local function EnsureOverlay()
             handDrawW, handDrawH = SRC_HAND_W * baseScale * handScale, SRC_HAND_H * baseScale * handScale
             handPivotX, handPivotY = 0.4, 0.1
         end
-        local handX = screenX - (handDrawW * handPivotX) + ((DevMinigameCfg.bandageHandOffsetX or 0) * baseScale)
-        local handY = screenY - (handDrawH * handPivotY) + ((DevMinigameCfg.bandageHandOffsetY or 0) * baseScale)
+        -- In the default cursor mode the grip IS the mouse.  C:U's developer
+        -- offsets (100/400) belong only to its optional spring-hand mode;
+        -- applying them here put the palm hundreds of pixels below the cursor.
+        local handTargetX, handTargetY = screenX, screenY
+        if not (WSZC and WSZC.MinigameHandPinned and WSZC.MinigameHandPinned()) then
+            handTargetX = handTargetX + ((DevMinigameCfg.bandageHandOffsetX or 0) * baseScale)
+            handTargetY = handTargetY + ((DevMinigameCfg.bandageHandOffsetY or 0) * baseScale)
+        end
 
         local handMat = (WSZC and WSZC.UnitmenuHandMat and WSZC.UnitmenuHandMat(MG.holdingBandage == true))
             or (MG.holdingBandage and matHandClick or matHandIdle)
@@ -530,10 +654,14 @@ local function EnsureOverlay()
         surface.SetDrawColor(255, gb, gb,
             (WSZC and WSZC.UnitmenuHandAlpha and WSZC.UnitmenuHandAlpha(153)) or 153)
         
-        local cx_hand = handX + (handDrawW * handPivotX)
-        local cy_hand = handY + (handDrawH * handPivotY)
+        local cx_hand, cy_hand = handTargetX, handTargetY
         local angle = HandPhysics.Rotation(MG, (MG.handPos and MG.handPos.x) and (MG.handPos.x * 0.02) or 0)
         if WSZC and WSZC.UnitmenuHandAngle then angle = WSZC.UnitmenuHandAngle(angle) end
+        if WSZC and WSZC.HandRectAtPivot then
+            cx_hand, cy_hand = WSZC.HandRectAtPivot(
+                handTargetX, handTargetY, handDrawW, handDrawH, angle, handPivotX, handPivotY)
+        end
+        -- Anchor the visible fingertips, including developer offset and rotation.
         surface.DrawTexturedRectRotated(cx_hand, cy_hand, handDrawW, handDrawH, angle)
         if WoundSystem and WoundSystem.MinigameClip then
             WoundSystem.MinigameClip.End(clipActive)
@@ -576,6 +704,12 @@ function MG.OpenFromServer(payload)
     MG.limbId = incomingLimb
     MG.slotIdx = incomingSlotIdx
     MG.mode = incomingMode ~= "" and incomingMode or "gauze"
+    if MG.mode == "unwrap" then
+        MG.totalDegreesWrapped = 360
+        MG.totalDegreesUnwrapped = 0
+        MG.lastUnwrapActionAngle = 0
+        MG.didUnwrap = false
+    end
     
     local cx, cy = ScrW() / 2, ScrH() / 2
     local mx, my = gui.MousePos()
@@ -624,14 +758,19 @@ hook.Add("Think", "WSZC_BandageInput", function()
     end
 
     local slot = MG.slotIdx and WoundSystemInventorySlots and WoundSystemInventorySlots[MG.slotIdx]
-    if not slot or slot.type ~= "tool" or slot.durability <= 0.01 then
-        MG.RequestClose("empty")
-        return
+    if MG.mode == "unwrap" then
+        -- The server supplies a virtual roll.  Unwrapping neither requires nor
+        -- consumes a real inventory bandage.
+        MG.condition = 1 - math.Clamp((MG.totalDegreesUnwrapped or 0) / 360, 0, 1)
+    else
+        if not slot or slot.type ~= "tool" or slot.durability <= 0.01 then
+            MG.RequestClose("empty")
+            return
+        end
+        local slotTool = slot.toolName or "GAUZE"
+        local maxDur = WoundSystemMedToolConfig and WoundSystemMedToolConfig[slotTool] and WoundSystemMedToolConfig[slotTool].max or 20
+        MG.condition = math.Clamp(slot.durability / maxDur, 0, 1)
     end
-
-    local slotTool = slot.toolName or "GAUZE"
-    local maxDur = WoundSystemMedToolConfig and WoundSystemMedToolConfig[slotTool] and WoundSystemMedToolConfig[slotTool].max or 20
-    MG.condition = math.Clamp(slot.durability / maxDur, 0, 1)
 
     local now = CurTime()
     local dt = math.Clamp(now - (MG.lastSampleAt or now), 0.001, CFG.MaxFrameTime)
@@ -662,16 +801,22 @@ hook.Add("Think", "WSZC_BandageInput", function()
     local targetScreenX = mx + offsetX
     local targetScreenY = my + offsetY
 
-    -- Use shared hand physics (same as other minigames, matching CAS3)
-    HandPhysics.Step(MG, dt, {
-        pain = painFactor,
-        str = 0,
-        conc = 100,
-        shakeX = 120,
-        shakeY = 40,
-        positionScale = 120,
-        bounds = { 0, ScrW(), 0, ScrH() }
-    })
+    -- Default: the actual cursor drives BOTH the orbit hitbox and the drawn
+    -- grip.  Legacy C:U physics remains available with hand_pin_cursor 0.
+    local pinX = WSZC and WSZC.PinMinigameHandToCursor
+        and WSZC.PinMinigameHandToCursor(MG) or nil
+    local cursorPinned = pinX ~= nil
+    if not cursorPinned then
+        HandPhysics.Step(MG, dt, {
+            pain = painFactor,
+            str = 0,
+            conc = 100,
+            shakeX = 120,
+            shakeY = 40,
+            positionScale = 120,
+            bounds = { 0, ScrW(), 0, ScrH() }
+        })
+    end
 
     -- Convert screen-space to sim-space (centered, y-up)
     MG.handPos.x = (MG.handScreenX - cx) / baseScale
@@ -717,35 +862,67 @@ hook.Add("Think", "WSZC_BandageInput", function()
         MG.handScreenVelX = Lerp(dt * 34 * speedMult, MG.handScreenVelX or 0, 0)
         MG.handScreenVelY = Lerp(dt * 34 * speedMult, MG.handScreenVelY or 0, 0)
 
-        local angleFromVector = GetAngleFromVector(normX, normY)
-        local num = angleFromVector - MG.bandageAngle
-        local num2 = angleFromVector - (MG.lastActionAngle or 0)
-
-        if num < 20 then
-            -- wrap detection (C# compares >350 then <90)
-            if MG.bandageAngle > 350 and (angleFromVector < 90 or angleFromVector == 360) then
-                MG.bandageAngle = MG.bandageAngle - 360
-                MG.lastActionAngle = (MG.lastActionAngle or 0) - 360
-                MG.didWrap = true
-                surface.PlaySound("bandage.ogg")
-                if WoundSystem.BroadcastMinigameSound then
-                    WoundSystem.BroadcastMinigameSound("bandage.ogg", 0.5)
+        if MG.mode == "unwrap" then
+            -- Mirror the angular coordinate: only COUNTER-winding produces
+            -- positive server input in this mode.  Forward wrapping still
+            -- uses the untouched C:U-derived branch below.
+            local physicalAngle = GetAngleFromVector(normX, normY)
+            local reverseAngle = (360 - physicalAngle) % 360
+            local currentReverse = (360 - (MG.bandageAngle or 0)) % 360
+            local num = reverseAngle - currentReverse
+            local num2 = reverseAngle - (MG.lastUnwrapActionAngle or 0)
+            if num < 20 then
+                local step = false
+                if currentReverse > 350 and (reverseAngle < 90 or reverseAngle == 360) then
+                    MG.lastUnwrapActionAngle = (MG.lastUnwrapActionAngle or 0) - 360
+                    MG.didUnwrap = true
+                    step = true
+                    surface.PlaySound("bandage.ogg")
+                    if WoundSystem.BroadcastMinigameSound then
+                        WoundSystem.BroadcastMinigameSound("bandage.ogg", 0.5)
+                    end
+                elseif num2 > 20 then
+                    step = true
                 end
-                -- perform bandage action (20° step)
-                MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
-                MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
-                MG.unsentDegrees = MG.unsentDegrees + 20
-                if MG.didWrap then
-                    MG.sizeMultiplier = (MG.sizeMultiplier or 0.9) + 0.0015
+                if step then
+                    MG.lastUnwrapActionAngle = (MG.lastUnwrapActionAngle or 0) + 20
+                    MG.totalDegreesUnwrapped = (MG.totalDegreesUnwrapped or 0) + 20
+                    MG.totalDegreesWrapped = math.max(0, 360 - MG.totalDegreesUnwrapped)
+                    MG.unsentDegrees = MG.unsentDegrees + 20
                 end
-            elseif num2 > 20 then
-                -- normal step action every 20 degrees
-                MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
-                MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
-                MG.unsentDegrees = MG.unsentDegrees + 20
+                MG.bandageAngle = (360 - reverseAngle) % 360
             end
+        else
+            local angleFromVector = GetAngleFromVector(normX, normY)
+            local num = angleFromVector - MG.bandageAngle
+            local num2 = angleFromVector - (MG.lastActionAngle or 0)
 
-            MG.bandageAngle = angleFromVector
+            if num < 20 then
+                -- wrap detection (C# compares >350 then <90)
+                if MG.bandageAngle > 350 and (angleFromVector < 90 or angleFromVector == 360) then
+                    MG.bandageAngle = MG.bandageAngle - 360
+                    MG.lastActionAngle = (MG.lastActionAngle or 0) - 360
+                    MG.didWrap = true
+                    surface.PlaySound("bandage.ogg")
+                    if WoundSystem.BroadcastMinigameSound then
+                        WoundSystem.BroadcastMinigameSound("bandage.ogg", 0.5)
+                    end
+                    -- perform bandage action (20° step)
+                    MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
+                    MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
+                    MG.unsentDegrees = MG.unsentDegrees + 20
+                    if MG.didWrap then
+                        MG.sizeMultiplier = (MG.sizeMultiplier or 0.9) + 0.0015
+                    end
+                elseif num2 > 20 then
+                    -- normal step action every 20 degrees
+                    MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
+                    MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
+                    MG.unsentDegrees = MG.unsentDegrees + 20
+                end
+
+                MG.bandageAngle = angleFromVector
+            end
         end
     end
 
@@ -756,11 +933,10 @@ hook.Add("Think", "WSZC_BandageInput", function()
             net.WriteFloat(MG.unsentDegrees)
             net.WriteUInt(WoundSystem and WSZC.MinigameNextInputSeq and WSZC.MinigameNextInputSeq(MG) or 0, 24)
             net.SendToServer()
-            local slot = MG.slotIdx and WoundSystemInventorySlots and WoundSystemInventorySlots[MG.slotIdx]
-            if slot and slot.type == "tool" then
-                local predictedCost = (MG.unsentDegrees / 360) * GetDurabilityPerWrap()
-                slot.durability = math.max(0, (slot.durability or 0) - predictedCost)
-            end
+            -- Do not predict the old fixed 100/12 C:U cost here.  Native
+            -- ZCity consumption equals the severity actually removed; the
+            -- server's WSZC_MinigameSlot packet is the only correct remainder
+            -- for partial wounds, big bandages and the last physical unit.
             MG.unsentDegrees = 0
             MG.lastSentAt = now
         end
@@ -778,14 +954,20 @@ hook.Add("Think", "WSZC_BandageInput", function()
                 MG.handVelocity.x = MG.handVelocity.x + (normX * (dt * 25))
                 MG.handVelocity.y = MG.handVelocity.y + (normY * (dt * 25))
             end
-            MG.handPos.x = normX * collRadius
-            MG.handPos.y = normY * collRadius
             if not MG.holdingBandage then
                 MG.handVelocity.x = MG.handVelocity.x * 0.9
                 MG.handVelocity.y = MG.handVelocity.y * 0.9
             end
-            MG.handScreenX = cx + (MG.handPos.x * baseScale)
-            MG.handScreenY = cy - (MG.handPos.y * baseScale)
+            -- The old collision clamp moved the rendered hand away from the
+            -- real mouse near the centre.  In cursor mode keep the grip and
+            -- gameplay point exact; angular grabbing does not depend on this
+            -- purely visual/spring collision correction.
+            if not cursorPinned then
+                MG.handPos.x = normX * collRadius
+                MG.handPos.y = normY * collRadius
+                MG.handScreenX = cx + (MG.handPos.x * baseScale)
+                MG.handScreenY = cy - (MG.handPos.y * baseScale)
+            end
         end
     end
 

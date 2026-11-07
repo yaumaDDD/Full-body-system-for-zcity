@@ -32,89 +32,102 @@
 
 | Что | Конвар по умолчанию |
 |---|---|
-| Мини-игры бинта/шприца на весь экран | `zc_woundsystem_compat_fullscreen_minigame 1`, размер — `zc_woundsystem_compat_minigame_zoom 1.0` |
+| Мини-игры бинта/шприца на весь экран | `zc_woundsystem_compat_fullscreen_minigame 1`, размер — `zc_woundsystem_compat_minigame_zoom 0.85` |
 | Нет надписи «Not completed - nothing was applied» | `zc_woundsystem_compat_hide_empty_notice 1` |
 | Нет «адреналинового» FOV-взрыва и радиальных полос | `zc_woundsystem_compat_clamp_adrenaline 1` |
 | Кровотечение только на раненых лимбах | `zc_woundsystem_compat_limb_bleed 1` |
+| Бинт лечит обычные раны и показывает прогресс | Вместе с `zc_woundsystem_compat_minigames 1`: уменьшается severity только `org.wounds`; `STOP N%` и кольцо показывают фактически остановленную долю обычного кровотечения, повторная перевязка разрешена до 100% |
+| Артерия останавливается только жгутом | Бинт не трогает `org.arterialwounds` / artery-флаг и не тратится при artery-only ране. Жгут через `WB.SwepHeal → H.ApplyItemToBody` использует прицельную конечность также при self-use, реально удаляет её артериальную рану и ставит `Tourniquets` на ту же кость; synthetic wounds содержат валидные `Vector`/`Angle` для native renderer |
+| Ампутация оставляет видимую культю и отдельный статус | Native `forearm + hand` / `crus + foot` скрыты, proximal `arm/thigh` остаются. `WSZC_AMPUTATION` не удаляет arterial wound и рисуется раньше bleed/tourniquet; кровоточащая культя имеет приоритет для жгута, distal aim перенаправляется на неё |
 | Шрапнель от дробовика/взрыва | `zc_woundsystem_compat_shrapnel 1`, `zc_woundsystem_compat_shrapnel_on_blocked 1` |
 | Только эффекты ZCity: все эффекты C:U выключены | `zc_woundsystem_compat_disable_cu_fx 1` |
 | Кровь C:U убрана, ванильная кровь ZCity/Hemogen возвращена | `zc_woundsystem_compat_disable_cu_blood 1` |
 | В мини-игре персонаж не ходит, не крутит камерой и виден курсор | включается вместе с `zc_woundsystem_compat_minigames 1` (без отдельного конвара) |
 | Шрапнель только от дробовика и взрыва, не от пистолетов | `zc_woundsystem_compat_shrapnel_only_shotgun_blast 1` |
-| Осколок ложится в раненую конечность (`org.dmgstack` / `HitBones`) | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
-| `reset organism` не поднимает персонажа, структура ZCity сохранена | `zc_woundsystem_compat_preserve_reset_structure 1` |
+| Дробовик/взрыв оставляют осколки в фактически раненой части (`org.dmgstack` / `HitBones`), не только в кистях/стопах; стекло отдельно сохраняет правило `hand_L/R` / `foot_L/R` | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
+| `reset organism` не поднимает персонажа, сохраняет down-структуру и полностью очищает раны/шрапнель/инфекцию/повязки/жгуты/C:U residue и красный перелом рёбер | `zc_woundsystem_compat_preserve_reset_structure 1`; дополнительно очищается забытое native-кодом поле `org.brokenribs`. Внутренний FakeUp (`OverrideSpawn`) сохраняет весь organism, включая wounds/arteries/ампутации/переломы/third-party поля, а настоящий respawn очищает его |
 | Шрапнель сохраняется при падении/подъёме из ragdoll | включается вместе с `zc_woundsystem_compat_shrapnel 1` |
 | Стекло в ragdoll (руки/ноги) даёт осколки | `zc_woundsystem_compat_glass_shrapnel 1` |
 | Ошибки в shrapnel-мини-игре → боль и нарастающее кровотечение | включается вместе с `zc_woundsystem_compat_shadow 1` |
 | Рука/курсор работают в мини-игре шприца | включается вместе с `zc_woundsystem_compat_minigames 1` |
 | Вывихи вправляются вручную (`FIX DISLOCATION` в WoundView), состояние в `ply.organism` | включается вместе с `zc_woundsystem_compat_shadow 1` |
 | Переломы видны в WoundView, но считаются/лечатся ZCity (`sv_bone.lua`) | включается вместе с `zc_woundsystem_compat_shadow 1` |
-| Инвентарь C:U скрыт, слот `6` для ZCity SWEP'ов остаётся | `zc_woundsystem_compat_hide_cu_inventory 1` |
+| Инвентарь C:U скрыт при самоосмотре, слот `6` для ZCity SWEP'ов остаётся | `zc_woundsystem_compat_hide_cu_inventory 1`; во время лечения другого игрока пять слотов временно показывают только предметы медика |
+| Лечение другого игрока в том же WoundView | Отдельная «Лечить игрока» при наведении на пациента; те же 17 зон/neck/pelvis, без отдельного HUD. Самоосмотр не изменён. `zc_woundsystem_compat_remote_inspect_button 1` |
 | Панель `UNI-HEALTH` / unit внутри WoundView скрыта | `zc_woundsystem_compat_hide_unit_panel 1` |
 | Рамки слотов и `UNI-HEALTH` скрыты и при нестандартном масштабе UI | `zc_woundsystem_compat_hide_cu_inventory 1`, `zc_woundsystem_compat_hide_unit_panel 1` (фильтр через `hook.Add`; `PreDrawHUD` — запасной контур) |
 | Предмет / viewmodel в руках скрыт в мини-игре | включается вместе с `zc_woundsystem_compat_minigames 1` |
 | WoundView не наслаивается поверх мини-игры | включается вместе с `zc_woundsystem_compat_minigames 1` |
-| Нативная мини-игра вправления меньше исходного квадрата C:U | `zc_woundsystem_compat_native_minigame_zoom 0.75` (диапазон `0.4..1.2`) |
+| Нативная мини-игра вправления меньше исходного квадрата C:U | `zc_woundsystem_compat_native_minigame_zoom 0.85` (диапазон `0.4..1.2`) |
 | Кость вправления рядом с суставом и на экране | `zc_woundsystem_compat_dislocation_start 35` (диапазон `10..100`) |
-| Рука не трясётся и уменьшена | `zc_woundsystem_compat_hand_cursor_scale 0.45` (диапазон `0.2..1`) |
-| Кукла WoundView собрана из 15 слоёв `unitmenu/limbs` архива + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, размер `zc_woundsystem_compat_unitmenu_scale 0.24` (диапазон `0.1..0.8`) |
-| Все 647 UI-материалов внутри сборки (без ERROR и ручного копирования) | `woundsystem_zcity_compat/materials/` + зеркало в `casualties_unknown_health_system_beta/materials/`, генератор `tools/pack_ui_materials.py` |
-| Рука в мини-играх — кадры `homigrad/handanim` из архива (ладонь/кулак) | `zc_woundsystem_compat_handanim 0` (см. №12), размер `zc_woundsystem_compat_handanim_scale 0.55` (диапазон `0.2..1.5`) |
+| Компактная рука одного размера во всех мини-играх | `zc_woundsystem_compat_hand_cursor_scale 0.55`, `..._handanim_scale 1`; единый множитель в C:U/WSZC, миграция revision 6, hitbox/центр/rotation не меняются |
+| Кукла WoundView собрана из 17 пиксельно трассированных интерактивных частей чистого `1435.png` + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, `zc_woundsystem_compat_unitmenu_scale 0.25`; полный black/white POT round-trip = 0 различий, native `woundsys_ui_scale` компенсируется (диапазон `0.1..0.8`) |
+| Отдельная шея: hitbox/hover, `Broken neck`, подсказка Skin/Muscle и синхронизация на первой жизни | `org.skull`, `Bip01_Neck1` и `neckartery` относятся к `PlayerLimbs.neck`; head не дублирует перелом. Подсказка: `Neck / Skin: N% / Muscle: N%`; ZCity HUD, таймер и нижние слоты сохранены |
+| Живот и таз — отдельные native части | `abdomen` выше шва `y=520`, `pelvis` ниже; у каждого свой sprite/hitbox/hover/action/net state. `Spine1/Stomach` → abdomen, `Pelvis/Hips` → pelvis. Бинт лечит только выбранную рану; общий `org.pelvis` не дублируется |
+| Все 653 UI-материала внутри сборки (без ERROR и ручного копирования) | `woundsystem_zcity_compat/materials/` + зеркало в `casualties_unknown_health_system_beta/materials/`, генератор `tools/pack_ui_materials.py` |
+| Человеческая рука C:U в мини-играх — ладонь/кулак 512×1260 | `zc_woundsystem_compat_handanim 1`, `..._hide_minigame_hand 0`, общий размер `..._hand_cursor_scale 0.55`; спрайты `wszc/minigame/hand_idle.png` / `hand_click.png` |
 | Зелёные полосы/лёгкие/ЭКГ сканера слева скрыты | `zc_woundsystem_compat_hide_unit_panel 1` (глушатся `DrawTexturedRectUV`, `DrawLine`, `DrawPoly`) |
 | Экран смерти C:U не рисуется, но ЛКМ респавнит | включается вместе с `zc_woundsystem_compat_disable_cu_fx 1`; хук обёрнут, а не удалён |
-| Кукла не обрезается слева/снизу, видны `REMOVE SHRAPNEL` и `FIX DISLOCATION` | `WSZC.InstallMaterialTracker()` + `WSZC.IsDollDrawMaterial()`; размер `zc_woundsystem_compat_unitmenu_scale 0.24` |
+| Кукла не обрезается слева/снизу, видны `REMOVE SHRAPNEL` и `FIX DISLOCATION` | `WSZC.InstallMaterialTracker()` + `WSZC.IsDollDrawMaterial()`; размер `zc_woundsystem_compat_unitmenu_scale 0.25` |
 | Осколки от ударов кулаками по стеклу | `zc_woundsystem_compat_shrapnel 1`, `zc_woundsystem_compat_glass_shrapnel 1`, резервный хук `WSZC_GlassStrikePre` на `EntityTakeDamage`; диагностика `zc_woundsystem_compat_organism_debug 1` |
 | Кровь `project hemogen blood` не изменена | compat не обращается к `advancedblood/*`; ERROR-квадраты — отсутствующие материалы самого аддона |
-| WSZC мини-игры на весь экран; нативные C:U — в авторском размере | `zc_woundsystem_compat_fullscreen_minigame 1`, `zc_woundsystem_compat_fullscreen_native 0`, `zc_woundsystem_compat_native_minigame_zoom 1`. Растяжение нативных игр давало огромный обрезанный осколок и уводило нижнюю часть раны за экран |
+| WSZC мини-игры на весь экран; нативные C:U — умеренно отдалены | `zc_woundsystem_compat_fullscreen_minigame 1`, `zc_woundsystem_compat_fullscreen_native 0`, `zc_woundsystem_compat_native_minigame_zoom 0.85`. Растяжение нативных игр давало огромный обрезанный осколок и уводило нижнюю часть раны за экран |
 | Нет белых пустых слотов и чёрной подложки поверх куклы | `HiddenRegionRaw()` для `DrawOutlinedRect`/`DrawRect`/`RoundedBox`/`DrawLine`/`DrawPoly`; whitelist только для текстур и текста |
 | После «Reset organism» снова можно быстро бегать | `RESET_KEEP` больше не несёт `canmove/stun/consciousness/brain`; `WSZC.ClearMovementPenalties()` снимает штрафы движения во всех трёх путях ресета |
-| Кукла с человеческими пропорциями, как на эталонном фото | `tools/build_unitmenu_materials.py`: явный `HUMAN_LAYOUT` (маленькая голова, узкий короткий торс, тонкие руки T-pose, длинные узкие ноги, компактные целые стопы; вертикальные швы сняты с нативной куклы `Screenshot_2-10.png`), **стандартный чёрный `(0,0,0)`** `_fill` с эрозией 1 px (`JOINT_ERODE = 3`) + тонкая белая обводка **по форме каждого лимба** (`EDGE_PAD_MIN=6`, ноль белых пикселей на границах спрайтов). Анатомия наша, не родная C:U. `zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` **только** для `*_fill.png`; `*_edge.png` остаётся под `finalOutline` C:U, поэтому реакция на наведение (белый → чёрный) штатная |
+| Кукла повторяет чистый зелёный эталон `1435.png`, включая обводку и расстановку | `tools/build_unitmenu_materials.py`: SHA-pinned clean reference, 17 независимых анатомических масок, **стандартный чёрный `(0,0,0)`** и фактические белые контуры, включая пальцы/подмышки/швы/стопы. Каждый POT sprite проверяется обратным C:U downsample: **0 различающихся black/white пикселей во всех полных cells**, 0 на границах POT, 9 scanlines точно равны 1435. Старый archive-fit — только fallback. `zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` **только** для `*_fill.png`; `*_edge.png` остаётся под `finalOutline` C:U, hover/hitboxes/dismemberment не изменены |
+| Нет ложного `disinfected/processing`, настоящие статусы сохранены | Native `AddHudIcon` пропускает только `Icons.disinfected`; infection/bleed/fracture рисуются штатно, а gameplay `disinfectTime` не обнуляется |
+| Повторный бинт не залипает на частичной/закрытой ране | `BestBandageLimb` читает реальные `organism.wounds`/aftercare и игнорирует stale `isBandaged` и shadow-only bleed. После последнего treatment сервер вызывает `completed`, обычный `onClose/AfterUse`, удаляет slot и overlay |
 | Лишний текст убран, затемнение фона сохранено во всех мини-играх | `zc_woundsystem_compat_hide_minigame_text 1`: `WSZC.InstallMinigameTextFilter()` обнуляет `title/value/guide/panelAlpha` в `Clip.DrawHeader` (иконка остаётся), глушит `Clip.DrawExitGuide` и **сохраняет `Clip.DrawBackdrop`** (затемнение фона), точечно фильтрует chrome-шрифты (`RetroTooltipTitle*`, `RetroTooltipDesc*`, `RetroMinigameGuide*`) **и AED `WoundSystemAEDStatus`** (только пока мини-игра активна). `minigameshrapnel.png` — передний слой раны, **не удаляется**; все игровые спрайты защищены `WSZC.IsMinigameGameplaySprite()`. Уведомления ZCity, статусные надписи C:U (кроме AED), красный death-текст, капли, `Icons.*`, осколки и рука не трогаются; `0` — вернуть как было |
-| Рука мини-игры без инерции | `zc_woundsystem_compat_hand_pin_cursor 1` → реальный `gui.MousePos()` и синхронизация `MG.handScreenX/Y`; поворот `0`, курсор скрыт |
+| Рука мини-игры действительно совпадает с курсором | `zc_woundsystem_compat_hand_pin_cursor 1` (по умолчанию): каждый Think `gui.MousePos()`, `handScreenX/Y`, grab/orbit и видимый pivot синхронизируются; C:U offset `100/400`, spring и collision clamp не сдвигают руку. `0` — прежние HandPhysics, инерция, боль и developer offsets |
 | Светлый фон WoundView | `zc_woundsystem_compat_hide_woundview_backdrop 1` гасит полноэкранный `woundbg`/blackout только пока `WoundSystemHealthHUDOpen == true` |
-| Рука в мини-игре ровно на курсоре | `zc_woundsystem_compat_hand_pivot_x 0.16`, `zc_woundsystem_compat_hand_pivot_y 0.45`, поворот `0`, лимит `zc_woundsystem_compat_hand_max_screen 0.34` |
-| Системный курсор в мини-игре не виден | `zc_woundsystem_compat_hide_minigame_cursor 0` (см. №12) → VGUI-курсор `"blank"`, мышь работает; `0` — вернуть стрелку |
+| Положение и захват сохраняют C:U | Canvas `512×1260`, pivot `0.4 / 0.1` и прежний `rot`; визуальные `w/h` умножаются на `0.55`, а центр пересчитывается так, чтобы повёрнутые пальцы оставались на `handScreenX/Y` (или реальном курсоре в pin-режиме). Native hitbox не изменяется отдельно |
+| В мини-игре видна рука, системный курсор не мигает | `zc_woundsystem_compat_hide_minigame_cursor 1`; hand draw и watchdog удерживают `blank` без периодического `arrow`, стрелка возвращается на выходе. `..._hide_minigame_hand 1` — arrow-only режим |
 | После смерти не «залипают» мини-игры/курсор/лок движения | включается вместе с `zc_woundsystem_compat_minigames 1` |
+| Потеря сознания закрывает WSZC и нативные мини-игры, overlay, WoundView, cursor/view/input; conscious ragdoll не закрывает | серверный force-close `WSZC_MinigameForceClose`; проверяется владелец сессии, а не пациент медика. `FakeRagdoll/fake` — posture; death/otrub/NW unconscious/`consciousness < 0.4` — incapacity. FakeUp сохраняет игру, настоящий respawn закрывает её принудительно |
+| Любой неизвлечённый fragment наращивает реальную боль и кровотечение | `zc_woundsystem_compat_shrapnel_lodged_effects 1`; последний extracted fragment удаляет tagged-рану/source/irritation |
+| Дополнительные WoundView-карточки/polish удалены | Конвара `woundview_polish` больше нет; сохранены прежние откалиброванные позиции/размеры doll и hitboxes, чёрная анатомия, shaped outlines и hover |
+| Бинт можно наложить на шрапнель: внешняя кровь останавливается, но закрытый фрагмент заражает рану | Стандартная иконка infection; конечность → торс (240 с) → мозг (420 с) → смерть (600 с). `zc_woundsystem_compat_bandaged_shrapnel_infection 1`, таймер `zc_woundsystem_compat_shrapnel_infection_death_delay 600` |
+| Обязательный цикл лечения шрапнели | `REMOVE SHRAPNEL` запускает обратное разматывание на 360° (без click-unwrap и расхода предмета) → нативное извлечение → повторный полный бинт. Только финальный бинт очищает инфекцию. Любое извлечение добавляет отдельную растущую aftercare-рану и медленно растущую боль |
+| Физического бинта хватает, обычное кровотечение снижено | `zc_woundsystem_compat_bandage_strength 3`, `zc_woundsystem_compat_bleeding_multiplier 0.55`, tagged shrapnel-рана ограничена severity 8; артерия не ослаблена и требует жгута |
+| Расход бинта соответствует ZCity | Namespaced bandage input измеряет реально удалённую `org.wounds` severity и вычитает её из `swep.modeValues[idx]`: severity 4 = 4 заряда для обоих бинтов (40/150). Последняя единица не даёт overheal; пустые/artery-only круги и нулевой aftercare бесплатны. Виртуальный slot получает только авторитетный остаток (старое client-predict `100/12` удалено), а оригинальный `onClose/AfterUse` удаляет исчерпанный предмет без второго `onProgress/Consume` |
+| Физический жгут работает даже при отказе/ошибке C:U apply | `weapon_tourniquet → WB.SwepHeal → H.ApplyItemToBody`: сначала лечатся реальные ZCity-раны, затем native status best-effort; расход только по фактически обработанной ране, двойного mirror нет |
+| Дробовик определяется у настоящего ZCity PhysBullet | Проверяются attacker active weapon, known/family class, `Primary.Ammo`, ammo name и pellets; `inflictor=attacker`, `DMG_BULLET` и ammo `-1` больше не мешают. Пистолет и bare `DMG_BUCKSHOT` осколков не создают |
 | Если респавн не сработал | подождите 1 с после смерти и нажмите ЛКМ; откат визуала C:U — `zc_woundsystem_compat_disable_cu_fx 0` |
 
 Ассеты для куклы и руки берутся из архива `для переделывания интерфейса.zip`
 (`origin/main`). Нарезанные PNG лежат в `woundsystem_zcity_compat/materials/wszc/unitmenu/`,
-кадры руки — в `.../materials/homigrad/handanim/` (оба набора внутри коннектора,
+кадры руки — в `.../materials/wszc/minigame/` (исходники `homigrad/handanim` тоже внутри коннектора,
 WIP-аддон больше не обязателен), а весь `casunknown-images/*` — рядом с ними и
 дублируется в папку C:U. Скрипты пересборки —
-`tools/build_unitmenu_materials.py` и `tools/pack_ui_materials.py`, список с
+`tools/build_unitmenu_materials.py`, `tools/build_minigame_hand.py` и `tools/pack_ui_materials.py`, список с
 хэшами — `woundsystem_zcity_compat/MATERIALS.sha256`. Ни один Lua-файл внутри
 исходных ZIP-аддонов не изменён.
 
 Панель травм, HUD и протокол шрапнели C:U при этом остаются — отключаются только
 визуальные эффекты, декоративная кровь, инвентарь C:U и левый сканер
-`UNI-HEALTH`, а не сам WoundView. **Исключение:** во время «Лечить игрока»
-пять слотов C:U временно открываются, чтобы лекарь мог выбрать свой предмет;
-при возврате к самоосмотру они снова скрыты конваром.
+`UNI-HEALTH`, а не сам WoundView.
 
 ## Лечение другого игрока
 
-1. Подойдите к живому игроку на расстояние до 256 units и наведитесь на него
-   или на его ragdoll.
-2. Откройте радиальное меню `Q` и выберите «Лечить игрока». Для необязательного
-   бинда есть команда `wszc_treat_player`.
-3. В знакомой C:U-панели отобразятся травмы, cardio и навыки пациента. Выберите
-   свой медпредмет либо используйте native shrapnel/dislocation/AED.
-4. Предмет/заряд списывается у вас, лечение применяется к пациенту. Бинт и
-   непрерывный шприц работают через те же WSZC external-мини-игры.
+1. Подойдите к живому игроку или его ragdoll на расстояние до 256 units и
+   наведитесь на него.
+2. Выберите отдельную **«Лечить игрока»** в радиальном меню. Обычная
+   «Проверить травмы» по-прежнему открывает самоосмотр. Для бинда доступна
+   команда `wszc_treat_player`.
+3. Откроется **тот же WoundView, что при самоосмотре**: те же 17 анатомических
+   зон, отдельные `neck/pelvis`, материалы, hitboxes, hover и мини-игры. Нет
+   отдельного remote doll, HUD или patient banner.
+4. Выберите предмет в пяти временно открытых C:U-слотах. Это предметы **медика**;
+   эффект и изменения ран получает **пациент**. Поддержаны native
+   shrapnel/dislocation/AED, statuses, bandage/syringe и возврат жгута.
 
-При снятии жгута native C:U очищает именно выбранный limb, а вам в weapon
-selector возвращается `weapon_tourniquet` (при самолечении — пациенту). После
-полного извлечения осколков исходную рану можно сразу продолжить бинтовать:
-удаляется только дополнительная рана-осложнение от неудачного рывка, не вся
-`org.wounds`. Обычные раны лечатся частичными дозами бинта; артериальное
-кровотечение по-прежнему требует жгут.
-
-Кнопка управляется `zc_woundsystem_compat_remote_inspect_button 1`. Смерть,
-disconnect, удаление друг от друга и закрытие WoundView прерывают сессию.
-Сервер не доверяет клиентски выбранной цели без активной inspection session и
-повторно проверяет тип пакета, обоих игроков и дистанцию. Самолечение и кнопка
-«Проверить травмы» не изменены.
+При remote-снятии `TOURNIQUET` `weapon_tourniquet` возвращается медику, при
+self-removal — пациенту. Сохранены advanced 180-секундный lifecycle жгута,
+partial bandage, shrapnel aftercare и защита исходных/посторонних/arterial wounds.
+Сервер проверяет двух игроков, дистанцию, активную сессию, typed payload и слот
+на каждом действии. Смерть, disconnect, выход из дистанции и закрытие панели
+прерывают лечение. Remote treatment и его кнопка отключаются конваром
+`zc_woundsystem_compat_remote_inspect_button 0`.
 
 ## Установка
 
@@ -145,7 +158,7 @@ ZCity сам вызывает `resource.AddWorkshop` при `hg_loadcontent 1`:
 
 **Про C:U — важное исключение.** В исходном ZIP репозитория лежат только Lua,
 3 шрифта и 3 шейдера — `materials/` и `sound/` там нет. Сборка **уже добавила**
-все UI-материалы (647 файлов) и в `woundsystem_zcity_compat/materials/`, и в
+все UI-материалы (653 файла) и в `woundsystem_zcity_compat/materials/`, и в
 `casualties_unknown_health_system_beta/materials/`: WoundView, лимбы, иконки,
 экраны и мини-игры больше не показывают ERROR, вручную ничего перекидывать не
 надо, `woundsys_resource_downloads 1` для них не требуется. Остаются только
@@ -171,9 +184,12 @@ ZCity сам вызывает `resource.AddWorkshop` при `hg_loadcontent 1`:
 woundsys_enabled 1                      HUD/мини-игры/shrapnel C:U (не выключать)
 zc_woundsystem_bridge 1                 сам мост ZCity
 zc_woundsystem_compat_authority 1       ply.organism авторитетен (0 = старый мост)
-zc_woundsystem_compat_bandage_strength 3  сила лечения реальных org.wounds бинтом
 zc_woundsystem_compat_shrapnel 1        единый state.shrapnel
 zc_woundsystem_compat_glass_shrapnel 1  стекло как источник шрапнели
+zc_woundsystem_compat_bandage_strength 3  усиление реального treatment budget бинта
+zc_woundsystem_compat_bleeding_multiplier 0.55  верхний cap обычного bleedingmul
+zc_woundsystem_compat_bandaged_shrapnel_infection 1  инфекция под повязкой
+zc_woundsystem_compat_shrapnel_infection_death_delay 600  секунды до fatal brain infection
 zc_woundsystem_compat_inspect_button 1  кнопка «Проверить травмы» в радиал-меню
 zc_woundsystem_compat_remote_inspect_button 1  кнопка «Лечить игрока» при наведении
 zc_woundsystem_compat_debug 1           диагностика коннектора
@@ -191,11 +207,9 @@ body-use + Glide), `E` (`+use` + C:U grab + Coop RTS), `R`, `F4`, `F6`, `1`,
 
 ## Ограничения
 
-Все Lua коннектора прошли `luaparser`, `addon.json` — JSON-проверку, ZIP —
-CRC/source-equality. Remote treatment дополнительно прошёл offline Lua behavior
-tests с mock native C:U receivers (инвентарь, схемы, мини-игры, AED, lifecycle).
-Живой GMod-сервер не запускался, поэтому сетевую игру всё равно нужно проверить
-на двух реальных клиентах. Полная 1:1 совместимость с «чистым»
+Сборка и валидация сделаны статически: все Lua коннектора прошли `luaparser`,
+`addon.json` прошёл JSON-проверку, все ZIP-источники проверены на целостность.
+Живой GMod-сервер не запускался. Полная 1:1 совместимость с «чистым»
 ZCity + Organs+ не обещается: у `hg.send_organism` фиксированный sendtable, а
 синхронизация Organs+ идёт только владельцу.
 
@@ -215,7 +229,7 @@ ragdoll→standing, `RestoreBones`, `ReconcileSpawnShrapnel`, мини-игры 
 попиксельно: спрайты степеней двойки (C:U мерит `mat:Width()`, а GMod
 округляет PNG до POT), калибровка `S=0.4155`, центр `(682.5,558.2)` по
 `Screenshot_1-10.png`. Равномерное ×1.15 и «~2%» отменены live.
-Изменены только размеры/положение 15 лимбов и hitbox'ы.
+Размеры/положение 17 лимбов и hitbox'ы заданы по 1435; шея и таз добавлены в native C:U состояние.
 
 ## №10 (по `Screenshot_3-7.png` / `Screenshot_4-6.png`): доводка куклы, курсор и затемнение
 
@@ -324,16 +338,22 @@ GMod не запускался — принятие по свежему live-с�
    сбрасывает `WoundSystemActionButtonPos`, чтобы поправка применилась сразу,
    а не за секунду Lerp'а.
 
-3. **Рука убрана, курсор стандартный.** `hand=archive` ОТМЕНЕНО по запросу
-   «убери руку из мини игр замени на стандартный курсор». Конвары по
-   умолчанию: `zc_woundsystem_compat_hide_minigame_cursor 0` (видна обычная
-   стрелка, никакого `blank`), `zc_woundsystem_compat_hide_minigame_hand 1`,
-   `zc_woundsystem_compat_handanim 0`, `zc_woundsystem_compat_hand_pin_cursor 0`.
-   `WSZC.UnitmenuHandAlpha()` возвращает `0`, поэтому наши копии бинта/шприца
-   сохраняют ВСЕ хитбоксы и вызовы отрисовки, но руку не видно;
-   `WSZC.InstallNativeHandOverride()` теперь ставится и в этом режиме и
-   подавляет нативные `handgrasp*` спрайты через флаг `handHide`. Пин к курсору
-   и inertia-подмена отключены — стрелка всегда там, где реальная мышь.
+3. **Возвращена человеческая рука в режиме C:U.** Прежний режим «только
+   стрелка» отменён. `tools/build_minigame_hand.py` поворачивает реальные кадры
+   `homigrad/handanim/hand.png` / `3_3.png` в вертикальную CU-позу и создаёт
+   `wszc/minigame/hand_idle.png` / `hand_click.png` (512×1260). По умолчанию:
+   `zc_woundsystem_compat_handanim 1`, `..._hide_minigame_hand 0`,
+   `..._hide_minigame_cursor 1`, `..._hand_pin_cursor 1`. Реальный курсор,
+   игровые `handScreenX/Y` и видимый pivot совпадают каждый Think; C:U offset
+   `100/400` и spring/collision отставание в этом режиме отключены. Значение `0`
+   возвращает HandPhysics, инерцию, наклон и developer offsets;
+   системная стрелка скрыта только во время активной мини-игры и возвращается
+   на выходе. Для прежнего arrow-only режима: `..._hide_minigame_hand 1`.
+   Актуальная миграция `..._hand_mode_revision 6` заменяет слишком большой
+   scale `1.0` общим `0.55` во всех мини-играх, оставляя pivot/центр/rotation
+   и hitbox'ы C:U. Обычная стрелка подавляется при каждой отрисовке руки и
+   при каждом cursor watchdog; прежний безусловный `RestoreMinigameCursor()`
+   из watchdog удалён. После миграции ручные настройки не перезаписываются.
 
 4. **Курсор не пропадал после мини-игры.** `DisableMinigameClicker()` раньше
    делал `return` при `WoundSystemHealthHUDOpen == true`, поэтому
@@ -375,23 +395,19 @@ GMod не запускался — принятие по свежему live-с�
    `cx/cy`, длины, POT-ширины, габарит `377..988 × 217..864`, симметрия
    `cx_R+cx_L=1500`, чёрный цвет и обводка по форме не изменились.
 
-2. **Курсор в мини-играх.** Главная причина, по которой стрелку не было видно:
-   `CreateClientConVar` создан с `shouldsave = true`, и у игрока в
-   `config.vdf` осталось **`zc_woundsystem_compat_hide_minigame_cursor 1`** из
-   старой сборки. Смена дефолта на `0` НЕ перезаписывает сохранённое значение,
-   поэтому `SyncMinigameCursor()` продолжал ставить `SetCursor("blank")`.
-   Исправлено жёстко, без доверия конвару:
-   * при загрузке `cvHideCursor:SetInt(0)`;
-   * `BlankMinigameCursor()` теперь инертен (`return false`), пустой курсор
-     **никогда** не ставится;
-   * `RestoreMinigameCursor()` всегда форсит `"arrow"` (а не `savedCursor`,
-     который сам мог быть `"blank"`);
-   * `SyncMinigameCursor()` всегда восстанавливает стрелку;
-   * `WSZC_MinigameCursor` (Think) проверяет `vgui.CursorVisible()` и, если
-     C:U watchdog / радиальное меню ZCity выключили кликер посреди игры,
-     сразу делает `gui.EnableScreenClicker(true)` + `arrow`;
-   * `EnableMinigameClicker()` и wrapper `gui.EnableScreenClicker` тоже форсят
-     `arrow`.
+2. **Курсор в мини-играх.** Прежняя ошибка была не в самом `blank`, а в том,
+   что стрелку скрывали при уже отключённой руке: игрок оставался вообще без
+   указателя. Теперь `SyncMinigameCursor()` разрешает `blank` только при
+   активной мини-игре и `ShowMinigameHand() == true`; при
+   `hide_minigame_hand 1`, после закрытия и для мёртвого игрока всегда
+   восстанавливается `arrow`. `WSZC_MinigameCursor` (Think) проверяет
+   `vgui.CursorVisible()` и перезапускает clicker после C:U watchdog /
+   радиального меню ZCity, не выключая mouse input. `UnitmenuHandMat()`
+   дополнительно вызывает `SyncMinigameCursor()` на КАЖДОЙ отрисовке руки,
+   поэтому стрелка не возвращается между периодическими Think-проверками.
+   Старые archived no-hand настройки мигрирует `MigrateHumanHandDefaults()` (revision 6),
+   поэтому обновление не оставляет прежнюю комбинацию «нет руки + blank».
+   Ручной выбор arrow-only сохраняется и больше не перезаписывается.
 
 3. **Морфин / фентанил / обезболивающие.** Настоящая причина найдена в
    `z_city/lua/homigrad/woundbridge/sv_woundbridge.lua` и
@@ -457,7 +473,7 @@ GMod не запускался — принятие по свежему live-с�
 **Что НЕ менялось:** 15 силуэтов архива, `SquareToe()` только для стоп,
 `JOINT_ERODE=3`, `EDGE_PAD_MIN=6`, `EDGE_WIDTH=9`, чёрный цвет, обводка по
 форме, T-pose, симметрия `cx_R+cx_L=1500`, `0.0%` белого на границах спрайтов,
-затемнение мини-игр, видимый стандартный курсор, `analgesiaAdd` для опиоидов,
+затемнение мини-игр, человеческая C:U-рука вместо системного курсора, `analgesiaAdd` для опиоидов,
 перелом/вывих на один лимб, шрапнель на 4 лимба.
 
 Проверить локально:
