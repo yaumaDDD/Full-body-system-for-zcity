@@ -47,6 +47,7 @@ local function Ready()
     if cvButton and cvButton.GetBool and not cvButton:GetBool() then return false end
     if not ConVarAllows("zc_woundsystem_bridge") or not ConVarAllows("woundsys_enabled") then return false end
     if GetGlobalBool and GetGlobalBool("WSZC_Ready", false) ~= true then return false end
+    if WSZC.Supports and not WSZC.Supports("remote") then return false end
     return WoundSystem and WoundSystemClientState
         and type(WoundSystemClientState.PlayerLimbs) == "table"
         and type(WoundSystemClientState.Cardio) == "table"

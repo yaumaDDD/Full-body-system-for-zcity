@@ -684,7 +684,9 @@ include = function(path)
     end
     return {}
 end
-file = { Exists = function() return false end }
+file = { Exists = function(path)
+    return string.find(path, "sh_handphysics", 1, true) ~= nil
+end }
 Material = function(path)
     return { _path = path,
         Width = function() return 25 end, Height = function() return 40 end }

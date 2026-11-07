@@ -2,11 +2,45 @@
 -- ZCity SWEP sessions never mix with the native C:U inventory sessions.
 if WSZCSyringeMinigame and WSZCSyringeMinigame._Loaded then return end
 
-if not (WoundSystem and WoundSystem.MinigameClip) and file.Exists("woundsystem/client/minigames/cl_clip.lua", "LUA") then
-    include("woundsystem/client/minigames/cl_clip.lua")
-    include("woundsystem/client/minigames/sh_handphysics.lua")
+local function OptionalInclude(path)
+    if WSZC and WSZC.OptionalInclude then return WSZC.OptionalInclude(path) end
+    if file and file.Exists and not file.Exists(path, "LUA") then return nil end
+    local ok, result = pcall(include, path)
+    return ok and result or nil
 end
-local HandPhysics = include("woundsystem/client/minigames/sh_handphysics.lua")
+
+if not (WoundSystem and WoundSystem.MinigameClip) then
+    OptionalInclude("woundsystem/client/minigames/cl_clip.lua")
+end
+local HandPhysics = OptionalInclude("woundsystem/client/minigames/sh_handphysics.lua")
+if not istable(HandPhysics) then
+    -- Some C:U builds renamed or removed this private module.  Keep the
+    -- optional WSZC syringe usable with a small cursor-following fallback;
+    -- native C:U minigames remain untouched.
+    HandPhysics = {
+        Init = function(mg)
+            mg.handScreenX = mg.handScreenX or (ScrW() * 0.5)
+            mg.handScreenY = mg.handScreenY or (ScrH() * 0.5)
+            mg.handScreenVelX = mg.handScreenVelX or 0
+            mg.handScreenVelY = mg.handScreenVelY or 0
+        end,
+        Step = function(mg, dt, opts)
+            opts = opts or {}
+            HandPhysics.Init(mg)
+            local mx, my = gui.MousePos()
+            if mx <= 0 and my <= 0 then mx, my = ScrW() * 0.5, ScrH() * 0.5 end
+            local follow = tonumber(opts.followScale) or 0.25
+            local rate = math.Clamp((tonumber(dt) or 0) * (tonumber(opts.responsiveness) or 6), 0, 1)
+            mg.handScreenX = Lerp(rate, mg.handScreenX, mx)
+            mg.handScreenY = Lerp(rate, mg.handScreenY, my)
+            mg.handScreenVelX = (mx - mg.handScreenX) * follow
+            mg.handScreenVelY = (my - mg.handScreenY) * follow
+        end,
+        Rotation = function(mg, rotOffset)
+            return (mg.handScreenVelX or 0) * 0.5 + (rotOffset or 0)
+        end,
+    }
+end
 -- Same pain-shake suppression as the bandage minigame (see layout file).
 if WSZC and WSZC.StabilizeHandPhysics then WSZC.StabilizeHandPhysics(HandPhysics) end
 

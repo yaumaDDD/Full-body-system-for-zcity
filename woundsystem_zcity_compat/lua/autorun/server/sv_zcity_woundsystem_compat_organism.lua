@@ -118,6 +118,18 @@ local function Authority()
     return not cv or cv:GetBool() ~= false
 end
 
+-- Autorun hooks are registered before deferred Setup finishes.  In adaptive
+-- mode they must be inert until both readiness and the optional organism
+-- contract are proven; otherwise installing the connector on an unknown
+-- gamemode could still inject shrapnel or rewrite ragdoll state.
+local function OrganismHooksActive()
+    if WSZC.AdaptiveCompatibility and WSZC.AdaptiveCompatibility() then
+        if WSZC.Ready ~= true then return false end
+        if WSZC.Supports and not WSZC.Supports("organism_extensions") then return false end
+    end
+    return Authority()
+end
+
 local function H()
     return WoundSystem and WoundSystem.Health
 end
@@ -2800,7 +2812,7 @@ end
 -- up from the unconscious ragdoll.  Re-assert the fragments immediately and
 -- once more after every ragdoll hook has run (C:U may reset limbs there).
 local function RestoreShrapnelSoon(ply)
-    if not (Authority() and IsValid(ply) and ply.IsPlayer and ply:IsPlayer()) then return end
+    if not (OrganismHooksActive() and IsValid(ply) and ply.IsPlayer and ply:IsPlayer()) then return end
     -- Tell WSZC_OrganismSpawn that this PlayerSpawn is a ragdoll -> standing
     -- transition, NOT a respawn.  Without the marker GMod's undefined hook
     -- order could clear the organism shadow before we re-attach it.
@@ -3191,7 +3203,7 @@ end
 -- in the fake ragdoll.  Registered as its own hook (not as a WrapHook `pre`)
 -- so it also fires when ZCity's "organism" hook is missing or re-registered.
 local function RagdollGlassShrapnel(ragdoll, data)
-    if not (Authority() and cvGlass and cvGlass:GetBool()) then return end
+    if not (OrganismHooksActive() and cvGlass and cvGlass:GetBool()) then return end
     if not (IsValid(ragdoll) and type(data) == "table") then return end
     if ragdoll == data.HitEntity then return end
     -- ZCity's own velocityDamage() uses DeltaTime >= 0.25 and speed >= 350,
@@ -3241,7 +3253,7 @@ hook.Add("Ragdoll Collide", "WSZC_GlassRagdoll", RagdollGlassShrapnel)
 -- ply.FakeRagdoll, so GMod reports the damage as blocked even though the wound
 -- was applied.  ShrapnelHandled de-duplicates repeated post hooks.
 hook.Add("PostEntityTakeDamage", "WSZC_AuthorityDamagePost", function(ent, dmginfo, took)
-    if not (Authority() and IsValid(ent) and dmginfo) then return end
+    if not (OrganismHooksActive() and IsValid(ent) and dmginfo) then return end
     local raw = WSZC.RawDamage[dmginfo]
     if took == false and not (cvOnBlocked and cvOnBlocked:GetBool()) then return end
     WSZC.InjectDamageShrapnel(ent, dmginfo, nil, raw)
@@ -3256,7 +3268,7 @@ end)
 --- not, which is why "punch glass -> no fragments" kept coming back.
 --- glassCooldown in InjectGlass de-duplicates the two paths.
 local function TryGlassStrike(ent, dmginfo)
-    if not (Authority() and cvGlass and cvGlass:GetBool()) then return false end
+    if not (OrganismHooksActive() and cvGlass and cvGlass:GetBool()) then return false end
     if not (IsValid(ent) and dmginfo) then return false end
     -- A player hit (already handled above) is never a glass brush entity.
     if ent.organism then return false end
@@ -4645,6 +4657,7 @@ end
 function WSZC.InstallOrganismMode()
     if installed then return true end
     if not (WSZC.Ready and WSZC.H and WB()) then return false end
+    if WSZC.Supports and not WSZC.Supports("organism_extensions") then return false end
     installed = true
 
     -- Stubs make ZCity's vanilla paths authoritative even outside the wrapped

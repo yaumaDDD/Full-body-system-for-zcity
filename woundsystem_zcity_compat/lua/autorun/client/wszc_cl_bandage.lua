@@ -2,8 +2,15 @@
 -- ZCity SWEP sessions never mix with the native C:U inventory sessions.
 if WSZCBandageMinigame and WSZCBandageMinigame._Loaded then return end
 
-if not (WoundSystem and WoundSystem.MinigameClip) and file.Exists("woundsystem/client/minigames/cl_clip.lua", "LUA") then
-    include("woundsystem/client/minigames/cl_clip.lua")
+local function OptionalInclude(path)
+    if WSZC and WSZC.OptionalInclude then return WSZC.OptionalInclude(path) end
+    if file and file.Exists and not file.Exists(path, "LUA") then return nil end
+    local ok, result = pcall(include, path)
+    return ok and result or nil
+end
+
+if not (WoundSystem and WoundSystem.MinigameClip) then
+    OptionalInclude("woundsystem/client/minigames/cl_clip.lua")
 end
 
 local function DrawRectInt(x, y, w, h)
@@ -58,7 +65,7 @@ local matStick = Material(path .. "bandageStick.png")
 local matRoll = Material(path .. "bandageRoll.png")
 local matHandIdle = Material(path .. "handGraspIdle1.png")
 local matHandClick = Material(path .. "handGraspClick.png")
-local HandPhysics = include("woundsystem/client/minigames/sh_handphysics.lua")
+local HandPhysics = OptionalInclude("woundsystem/client/minigames/sh_handphysics.lua")
 if not istable(HandPhysics) then
     ErrorNoHalt("[WoundSystem] Bandage minigame could not load sh_handphysics.lua; using emergency fallback.\n")
     HandPhysics = {
@@ -88,7 +95,7 @@ end
 -- Kill the pain-driven mouse shake: with ZCity's pain values the hand used to
 -- oscillate so hard that the bandage roll could not be grabbed.
 if WSZC and WSZC.StabilizeHandPhysics then WSZC.StabilizeHandPhysics(HandPhysics) end
-local DevMinigameCfg = include("woundsystem/client/minigames/minigame_dev_config.lua") or {}
+local DevMinigameCfg = OptionalInclude("woundsystem/client/minigames/minigame_dev_config.lua") or {}
 
 -- bandage uses its own hand physics (restore original logic)
 

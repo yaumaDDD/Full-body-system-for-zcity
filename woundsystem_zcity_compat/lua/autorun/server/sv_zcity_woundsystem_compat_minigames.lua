@@ -97,6 +97,8 @@ end
 
 local function OwnMinigamesEnabled()
     if cvOwnMinigames and not cvOwnMinigames:GetBool() then return false end
+    if WSZC.ExternalMinigameMode == "wszc" and WSZC.Supports
+        and not WSZC.Supports("external_minigames") then return false end
     local cv = GetConVar and GetConVar("zc_woundsystem_minigames") or nil
     if cv and not cv:GetBool() then return false end
     return true
@@ -706,9 +708,22 @@ end
 function WSZC.InstallMinigameAPI(H)
     if type(H) ~= "table" then return false end
 
+    local caps = WSZC.RefreshCapabilities and WSZC.RefreshCapabilities() or nil
+    if (not WSZC.PreferNativeAPI or WSZC.PreferNativeAPI())
+        and caps and caps.cu_native_api and WSZC.HasNativeExternalMinigameAPI(H) then
+        -- Modern C:U already owns the external protocol and its client UI.
+        -- Replacing it with the legacy WSZC copies would break that build.
+        WSZC.ExternalMinigameMode = "native"
+        WSZC.H = H
+        return true
+    end
+    if WSZC.Supports and not WSZC.Supports("external_minigames") then return false end
+
     H.HasExternalMinigame = HasMinigame
     H.StopExternalMinigame = StopExternal
     H.StartExternalMinigame = StartMinigame
+    H._WSZCOwnsExternalMinigameAPI = true
+    WSZC.ExternalMinigameMode = "wszc"
     WSZC.H = H
     return true
 end

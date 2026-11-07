@@ -16,6 +16,242 @@ WSZC._SharedLoaded = true
 local TAG = "[ZCity/CU compat] "
 
 ---------------------------------------------------------------------------
+-- Adaptive compatibility / capability detection
+---------------------------------------------------------------------------
+-- There is no stable public API shared by every ZCity or C:U build.  Never
+-- infer full compatibility from one globally named table: probe the complete
+-- core contract, prefer a native modern API when it exists, and use the
+-- legacy upvalue adapter only for a recognisable legacy damage/medical path.
+-- Individual features can then fail closed without breaking the whole gamemode.
+---------------------------------------------------------------------------
+if SERVER and CreateConVar then
+    if not ConVarExists or not ConVarExists("zc_woundsystem_compat_adaptive") then
+        CreateConVar("zc_woundsystem_compat_adaptive", "1",
+            { FCVAR_ARCHIVE, FCVAR_REPLICATED, FCVAR_NOTIFY },
+            "Probe ZCity/C:U capabilities and disable unsupported connector features instead of patching blindly", 0, 1)
+    end
+    if not ConVarExists or not ConVarExists("zc_woundsystem_compat_prefer_native_api") then
+        CreateConVar("zc_woundsystem_compat_prefer_native_api", "1",
+            { FCVAR_ARCHIVE, FCVAR_REPLICATED, FCVAR_NOTIFY },
+            "Use a native C:U external-minigame API when available instead of replacing it", 0, 1)
+    end
+end
+
+WSZC.Compatibility = WSZC.Compatibility or {
+    capabilities = {}, failures = {}, notes = {}, profile = "waiting",
+}
+local Compatibility = WSZC.Compatibility
+Compatibility.capabilities = Compatibility.capabilities or {}
+Compatibility.failures = Compatibility.failures or {}
+Compatibility.notes = Compatibility.notes or {}
+
+local FEATURES = { "core", "inspection", "medicine", "external_minigames", "remote", "organism_extensions" }
+
+local function ConVarFlag(name, fallback)
+    local cv = GetConVar and GetConVar(name) or nil
+    if cv and cv.GetBool then
+        local ok, value = pcall(cv.GetBool, cv)
+        if ok then return value ~= false end
+    end
+    return fallback ~= false
+end
+
+function WSZC.AdaptiveCompatibility()
+    return ConVarFlag("zc_woundsystem_compat_adaptive", true)
+end
+
+function WSZC.PreferNativeAPI()
+    return ConVarFlag("zc_woundsystem_compat_prefer_native_api", true)
+end
+
+function WSZC.HasNativeExternalMinigameAPI(H)
+    if type(H) ~= "table" or type(H.StartExternalMinigame) ~= "function" then return false end
+    -- Once our legacy adapter is installed its exported function must not be
+    -- mistaken for a native API on the next probe or hot reload.
+    if WSZC.StartExternalMinigameImpl
+        and H.StartExternalMinigame == WSZC.StartExternalMinigameImpl then return false end
+    return H._WSZCOwnsExternalMinigameAPI ~= true
+end
+
+local function LegacyDamageEntrypoint(H)
+    if type(WoundSystem and WoundSystem.UseMedicalItem) == "function" then return true end
+    if type(H and H.HandleDamage) == "function" then return true end
+    if not (hook and hook.GetTable) then return false end
+    local ok, hooks = pcall(hook.GetTable)
+    local damage = ok and type(hooks) == "table" and hooks.EntityTakeDamage or nil
+    return type(damage) == "table" and type(damage.WoundSystem_Damage) == "function"
+end
+
+function WSZC.RefreshCapabilities()
+    local WB = hg and hg.WoundBridge or nil
+    local H = WoundSystem and WoundSystem.Health or nil
+    local Items = WoundSystem and WoundSystem.Items or nil
+    local hasDebug = type(debug) == "table"
+        and type(debug.getupvalue) == "function" and type(debug.setupvalue) == "function"
+    local nativeState = type(H) == "table" and type(H.GetBody) == "function"
+        and type(H.GetLimbs) == "function"
+    local nativeAPI = nativeState and type(H.HandleDamage) == "function"
+        and type(H.ApplyItemToBody) == "function"
+    local legacyAPI = type(H) == "table" and hasDebug and LegacyDamageEntrypoint(H)
+    local nativeExternal = WSZC.HasNativeExternalMinigameAPI(H)
+
+    local minigameFiles = false
+    if file and file.Exists then
+        minigameFiles = file.Exists("woundsystem/client/minigames/sh_handphysics.lua", "LUA")
+            and file.Exists("woundsystem/client/minigames/cl_clip.lua", "LUA")
+    else
+        -- GMod always exposes file.Exists.  Headless/limited hosts can still
+        -- use the legacy adapter; OptionalInclude remains the final guard.
+        minigameFiles = legacyAPI
+    end
+
+    local caps = {
+        zcity_bridge = type(WB) == "table" and type(WB.IsEnabled) == "function"
+            and type(WB.IsBridged) == "function" and type(WB.ApplyDamage) == "function",
+        cu_health = type(H) == "table",
+        cu_items = type(Items) == "table" and type(Items.Get) == "function",
+        cu_ui = type(WoundSystem and WoundSystem.OpenHealthHUD) == "function"
+            or type(WoundSystem and WoundSystem.ToggleHealthHUD) == "function",
+        cu_native_api = nativeAPI == true,
+        cu_legacy_api = legacyAPI == true,
+        cu_native_state = nativeState == true,
+        cu_native_external = nativeExternal == true,
+        cu_minigame_files = minigameFiles == true,
+        debug_introspection = hasDebug,
+        zcity_medicine = type(WB) == "table" and type(WB.SwepHeal) == "function"
+            and type(WB.GetPlayer) == "function",
+        zcity_minigames = type(WB) == "table" and type(WB.StartMinigame) == "function",
+        zcity_organism = type(WB) == "table" and type(WB.Sync) == "function"
+            and type(WB.Think) == "function" and type(hg and hg.organism) == "table"
+            and type(hg.organism.Clear) == "function",
+    }
+    caps.core = caps.zcity_bridge and caps.cu_health and caps.cu_items
+        and (caps.cu_native_api or caps.cu_legacy_api)
+    caps.inspection = caps.core and caps.cu_ui
+    caps.medicine = caps.core and (caps.cu_native_api or caps.zcity_medicine)
+    caps.external_minigames = caps.core and (caps.cu_native_external
+        or (caps.zcity_minigames and caps.cu_minigame_files))
+    caps.remote = caps.inspection and (caps.cu_native_state or caps.cu_legacy_api)
+    caps.organism_extensions = caps.core and caps.zcity_organism
+
+    Compatibility.capabilities = caps
+    Compatibility.nativeAPI = nativeAPI == true
+    Compatibility.legacyAPI = legacyAPI == true
+    Compatibility.nativeExternal = nativeExternal == true
+    Compatibility.lastProbe = CurTime and CurTime() or 0
+    if caps.core then
+        Compatibility.profile = nativeAPI and "native-api" or "legacy-adapter"
+    elseif caps.zcity_bridge or caps.cu_health or caps.cu_items then
+        Compatibility.profile = "partial"
+    else
+        Compatibility.profile = "unavailable"
+    end
+    return caps
+end
+
+function WSZC.Capability(name)
+    return WSZC.RefreshCapabilities()[name] == true
+end
+
+function WSZC.Supports(feature)
+    if not WSZC.AdaptiveCompatibility() then return true end
+    local caps = WSZC.RefreshCapabilities()
+    if Compatibility.failures.core or Compatibility.failures[feature] then return false end
+    if feature ~= "core" and not caps.core then return false end
+    return caps[feature] == true
+end
+
+function WSZC.MarkFeatureFailed(feature, reason)
+    reason = tostring(reason or "unsupported API")
+    Compatibility.failures[feature] = reason
+    Compatibility.lastError = reason
+    local noteKey = tostring(feature) .. ":" .. reason
+    if Compatibility.notes[noteKey] then return end
+    Compatibility.notes[noteKey] = true
+    local msg = "feature '" .. tostring(feature) .. "' disabled: " .. reason
+    if WSZC.Warn then WSZC.Warn(msg) else print(TAG .. msg) end
+end
+
+function WSZC.ClearCompatibilityFailures()
+    Compatibility.failures = {}
+    Compatibility.lastError = nil
+    Compatibility.notes = {}
+    WSZC._CompatibilityStatusReported = nil
+    if not WSZC.Ready then Compatibility.activeAdapter = nil end
+    return WSZC.RefreshCapabilities()
+end
+
+local function YesNo(value) return value and "yes" or "no" end
+
+function WSZC.CompatibilityStatusLines()
+    local caps = WSZC.RefreshCapabilities()
+    local lines = {
+        TAG .. "adaptive compatibility: " .. tostring(Compatibility.profile),
+        "  ready=" .. YesNo(WSZC.Ready == true)
+            .. " active_adapter=" .. tostring(Compatibility.activeAdapter or "none")
+            .. " adaptive=" .. YesNo(WSZC.AdaptiveCompatibility()),
+        "  contracts: zcity_bridge=" .. YesNo(caps.zcity_bridge)
+            .. " cu_health=" .. YesNo(caps.cu_health)
+            .. " cu_items=" .. YesNo(caps.cu_items)
+            .. " native_api=" .. YesNo(caps.cu_native_api)
+            .. " legacy_api=" .. YesNo(caps.cu_legacy_api)
+            .. " native_external=" .. YesNo(caps.cu_native_external),
+        "  optional contracts: zcity_medicine=" .. YesNo(caps.zcity_medicine)
+            .. " zcity_minigames=" .. YesNo(caps.zcity_minigames)
+            .. " zcity_organism=" .. YesNo(caps.zcity_organism)
+            .. " cu_minigame_files=" .. YesNo(caps.cu_minigame_files),
+    }
+    for _, feature in ipairs(FEATURES) do
+        local failed = Compatibility.failures[feature]
+        local supported = caps[feature] == true and not Compatibility.failures.core and not failed
+        lines[#lines + 1] = "  " .. feature .. "=" .. YesNo(supported)
+            .. (failed and (" reason=" .. tostring(failed)) or "")
+    end
+    return lines
+end
+
+function WSZC.PrintCompatibilityStatus(ply)
+    local lines = WSZC.CompatibilityStatusLines()
+    for _, line in ipairs(lines) do
+        if SERVER and IsValid and IsValid(ply) and ply.PrintMessage then
+            ply:PrintMessage(HUD_PRINTCONSOLE or 4, line .. "\n")
+        else
+            print(line)
+        end
+    end
+end
+
+-- Optional C:U source files differ between builds.  Missing optional artwork
+-- or hand physics must degrade locally, never abort the whole autorun file.
+function WSZC.OptionalInclude(path)
+    if file and file.Exists and not file.Exists(path, "LUA") then return nil, false end
+    if not include then return nil, false end
+    local ok, result = pcall(include, path)
+    if ok then return result, true end
+    if not Compatibility.notes["include:" .. path] then
+        Compatibility.notes["include:" .. path] = true
+        print(TAG .. "optional module disabled: " .. tostring(path) .. " (" .. tostring(result) .. ")")
+    end
+    return nil, false
+end
+
+if concommand and concommand.Add then
+    concommand.Add("wszc_compat_status", function(ply)
+        WSZC.PrintCompatibilityStatus(ply)
+    end)
+    concommand.Add("wszc_compat_reprobe", function(ply)
+        if SERVER and IsValid and IsValid(ply) and ply.IsAdmin and not ply:IsAdmin() then return end
+        WSZC.ClearCompatibilityFailures()
+        WSZC.SetupFailed = nil
+        if SERVER and not WSZC.Ready and type(WSZC.Attempt) == "function" then
+            local ok, err = pcall(WSZC.Attempt)
+            if not ok then WSZC.MarkFeatureFailed("core", err) end
+        end
+        WSZC.PrintCompatibilityStatus(ply)
+    end)
+end
+
+---------------------------------------------------------------------------
 -- Health authority switch
 --
 --   1 (default) = standard ZCity: `ply.organism` is the ONLY health
@@ -119,6 +355,7 @@ local function CUHealthEnabledOnServer()
 end
 
 local function PatchIsEnabled()
+    if WSZC.Supports and not WSZC.Supports("core") then return false end
     local WB = hg and hg.WoundBridge
     if not (WB and WB.cvBridge and WB.IsEnabled) then return false end
     if WB._WSZCIsEnabledPatched then return true end
@@ -181,6 +418,7 @@ WSZC.BridgedWrappers = WSZC.BridgedWrappers or setmetatable({}, { __mode = "k" }
 
 local function PatchIsBridged()
     if not SERVER then return false end
+    if WSZC.Supports and not WSZC.Supports("core") then return false end
     local WB = hg and hg.WoundBridge
     if not (WB and WB.IsBridged and type(WB.IsBridged) == "function") then return false end
 

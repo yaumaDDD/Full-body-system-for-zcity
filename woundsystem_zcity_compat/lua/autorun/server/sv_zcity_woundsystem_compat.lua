@@ -736,18 +736,24 @@ function WSZC.Setup()
 
     local H = WoundSystem and WoundSystem.Health
     local WB = hg and hg.WoundBridge
+    local caps = WSZC.RefreshCapabilities and WSZC.RefreshCapabilities() or nil
     if not (H and WB and WB.IsEnabled and WB.ApplyDamage and WoundSystem.Items) then
         return false
     end
 
+    if WSZC.AdaptiveCompatibility and WSZC.AdaptiveCompatibility()
+        and caps and not caps.core then return false end
+
     WSZC.H = H
     if WSZC.InstallNeckState then WSZC.InstallNeckState(H) end
 
-    -- A future C:U build may already provide the full bridge API.  Even then,
-    -- install our external-minigame implementation: the supplied C:U build has
-    -- none, and the ZCity bridge needs it for non-instant medical items.
-    if type(H.HandleDamage) == "function" and type(H.ApplyItemToBody) == "function" then
+    -- A newer C:U can export the complete native bridge contract.  Prefer it;
+    -- partial lookalikes still go through signature-checked legacy discovery.
+    local legacyNativeFallback = WSZC.AdaptiveCompatibility and not WSZC.AdaptiveCompatibility()
+        and type(H.HandleDamage) == "function" and type(H.ApplyItemToBody) == "function"
+    if (caps and caps.cu_native_api) or legacyNativeFallback then
         if WSZC.InstallMinigameAPI then WSZC.InstallMinigameAPI(H) end
+        if WSZC.Compatibility then WSZC.Compatibility.activeAdapter = "native-api" end
         WSZC.SetupDone = true
         return true
     end
@@ -1105,6 +1111,7 @@ function WSZC.Setup()
     hook.Add("PlayerSpawn", "WSZC_SpawnClear", ClearRagdollState)
     hook.Add("PlayerDeath", "WSZC_DeathClear", ClearRagdollState)
 
+    if WSZC.Compatibility then WSZC.Compatibility.activeAdapter = "legacy-adapter" end
     WSZC.SetupDone = true
     return true
 end
@@ -1116,15 +1123,23 @@ end
 local attempts = 0
 local function Attempt()
     if WSZC.Ready then return true end
+    if WSZC.SetupFailed then return false end
     local ok, ready = pcall(WSZC.Setup)
     if not ok then
-        WSZC.Warn("setup error: " .. tostring(ready))
+        WSZC.SetupFailed = tostring(ready)
+        if WSZC.MarkFeatureFailed then
+            WSZC.MarkFeatureFailed("core", "setup error: " .. tostring(ready))
+        else
+            WSZC.Warn("setup error: " .. tostring(ready))
+        end
         SetGlobalBool("WSZC_Ready", false)
         return false
     end
     if not ready then return false end
 
     WSZC.Ready = true
+    WSZC.SetupFailed = nil
+    if WSZC.Compatibility then WSZC.Compatibility.failures.core = nil end
     SetGlobalBool("WSZC_Ready", true)
     SetGlobalBool("WSZC_OrganismAuthority", WSZC.OrganismAuthority())
     if WSZC.PatchIsEnabled then WSZC.PatchIsEnabled() end
@@ -1142,10 +1157,16 @@ end
 WSZC.Attempt = Attempt
 
 local function Chain()
-    if WSZC.Ready then return end
+    if WSZC.Ready or WSZC.SetupFailed then return end
     if Attempt() then return end
     attempts = attempts + 1
-    if attempts < 60 then timer.Simple(0.5, Chain) end
+    if attempts < 60 then
+        timer.Simple(0.5, Chain)
+    elseif not WSZC._CompatibilityStatusReported then
+        WSZC._CompatibilityStatusReported = true
+        WSZC.Log("no compatible ZCity/C:U core contract; connector remains inactive. Run wszc_compat_status for details.")
+        if WSZC.PrintCompatibilityStatus then WSZC.PrintCompatibilityStatus() end
+    end
 end
 
 if not WSZC._ChainStarted then

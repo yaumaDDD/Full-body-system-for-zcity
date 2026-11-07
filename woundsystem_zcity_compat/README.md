@@ -5,6 +5,39 @@
 (`casualites unknown.zip`), не изменяя исходные ZIP-архивы. Все патчи делаются в
 рантайме, после загрузки C:U и ZCity.
 
+## Адаптивная совместимость со сборками
+
+`WSZC.RefreshCapabilities()` проверяет реальные контракты, а не версию или название
+папки. `zc_woundsystem_compat_adaptive 1` включён по умолчанию. Возможны профили:
+
+| Профиль | Условие | Поведение |
+|---|---|---|
+| `legacy-adapter` | ZCity WoundBridge + узнаваемый legacy damage/medical entrypoint C:U + `debug.getupvalue/setupvalue` | Текущий полный путь; native/external API экспортируются connector-ом |
+| `native-api` | C:U экспортирует `HandleDamage`, `ApplyItemToBody`, `GetBody/GetLimbs` | Нативный API сохраняется; при наличии native external minigames WSZC-копии не подменяют его |
+| `partial` | Найдены лишь некоторые таблицы/функции | Core не активируется; несовместимые функции остаются выключенными |
+| `unavailable` | ZCity/C:U ещё не загружены или отсутствуют | Connector инертен, возможен поздний probe/reprobe |
+
+Core не означает автоматическую поддержку всех расширений. Отдельно проверяются:
+
+- `inspection` — C:U `OpenHealthHUD` или `ToggleHealthHUD`;
+- `medicine` — native medical API либо ZCity `SwepHeal/GetPlayer`;
+- `external_minigames` — native external API либо ZCity `StartMinigame` и оба
+  требуемых клиентских C:U minigame source;
+- `remote` — inspection плюс native state tables или legacy adapter;
+- `organism_extensions` — ZCity `Sync/Think` и `hg.organism.Clear`, чтобы не
+  подменять неизвестную симуляцию здоровья.
+
+Ошибка несовместимого Setup записывается в `Compatibility.failures.core` и не
+повторяется каждые 0.5 с. Команда `wszc_compat_status` печатает профиль, активный
+адаптер, контракты, features и причины отказа. `wszc_compat_reprobe` очищает latch
+и повторяет определение после поздней загрузки/смены аддонов.
+`zc_woundsystem_compat_prefer_native_api 1` сохраняет native external API;
+`adaptive 0` — экспертный legacy override, а не гарантия запуска.
+
+Это **не standalone-версия и не обещание поддержать абсолютно любую сборку**.
+При изменении смысла `ply.organism`, damage/ragdoll hooks или анатомии нужен
+отдельный адаптер по ZIP сборки и живой двухклиентный тест.
+
 ## Режим по умолчанию: `ply.organism` авторитетен
 
 По решению владельца проекта здоровьем управляет **стандартная ZCity**:
@@ -956,7 +989,9 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  suites: `tools/tests/test_wszc_regression.py` (**155/155**, включая Lua 13/13,
  CRC/зеркало/манифест, pixel checks и 32 remote behavior tests),
  `test_gameplay_regression.py` (**93/93**), `test_bandage_regression.py`
- (**35/35**) и `test_medical_regression.py` (**48/48**) — всего **331/331**.
+ (**35/35**), `test_medical_regression.py` (**48/48**) и
+ `test_compatibility_regression.py` (**26/26**: native/legacy/partial/missing API,
+ independent feature gates, optional includes и Setup failure latch) — всего **357/357**.
  Remote M16 проверяет ragdoll range/watchdog; M17 прогоняет настоящий advanced minigame-server:
  `operator→patient`, один расход слота медика и запрет input вне дистанции.
  Medical-suite отдельно проверяет canonical
@@ -1183,10 +1218,14 @@ woundsystem_zcity_compat/
 
 Если строка «compatibility layer active» не появилась:
 
-1. `zc_woundsystem_bridge 1`, `woundsys_enabled 1`
-2. `zc_woundsystem_compat_debug 1` и перезапустить карту
-3. Проверить, что в `lua/autorun` загрузились и `sh_health_init.lua` C:U,
-   и `loader.lua` ZCity.
+1. Выполнить `wszc_compat_status`, затем `wszc_compat_reprobe` после загрузки всех
+   аддонов. Сохранить профиль, список contracts/features и `reason=...`.
+2. `zc_woundsystem_bridge 1`, `woundsys_enabled 1`,
+   `zc_woundsystem_compat_adaptive 1`.
+3. `zc_woundsystem_compat_debug 1` и перезапустить карту.
+4. Проверить, что в `lua/autorun` загрузились и `sh_health_init.lua` C:U,
+   и `loader.lua` ZCity. При `core=no` не отключайте adaptive: нужен ZIP сборки
+   для адаптера, а не принудительный запуск несовместимых wrapper-ов.
 
 Если мини-игра не открывается:
 

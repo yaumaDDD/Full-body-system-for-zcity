@@ -68,6 +68,7 @@ end
 
 local function HealthReady()
     local h = H()
+    if WSZC.Supports and not WSZC.Supports("remote") then return false end
     return WSZC.Ready == true and type(h) == "table"
         and type(h.GetLimbs) == "function" and type(h.GetBody) == "function"
 end

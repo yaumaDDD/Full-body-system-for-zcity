@@ -136,6 +136,31 @@ partial bandage, shrapnel aftercare и защита исходных/посто�
 прерывают лечение. Remote treatment и его кнопка отключаются конваром
 `zc_woundsystem_compat_remote_inspect_button 0`.
 
+## Запуск на другой сборке ZCity
+
+Используйте отдельный `woundsystem_zcity_compat.zip`, а не заменяйте файлы самой
+сборки из `zcity_full_pack.zip`. Установленные ZCity и C:U всё равно обязательны:
+connector адаптирует их API, но не содержит самостоятельную систему здоровья.
+
+По умолчанию включён `zc_woundsystem_compat_adaptive 1`. Он выбирает native API
+новой C:U либо legacy adapter приложенной версии, а неподдерживаемые необязательные
+функции отключает независимо. После входа на сервер выполните в консоли:
+
+```text
+wszc_compat_status
+```
+
+Первая строка содержит профиль совместимости, а строки `core/inspection/medicine/
+external_minigames/remote/organism_extensions` — фактически доступные функции и
+причину отключения. После обновления аддонов без смены карты выполните
+`wszc_compat_reprobe`. `zc_woundsystem_compat_prefer_native_api 1` сохраняет
+родной external-minigame API новой C:U вместо его замены.
+
+Абсолютно любая сборка не гарантируется: при `profile=partial/unavailable` или
+`core=no` пришлите этот вывод и ZIP сборки для отдельного адаптера. Не включайте
+`zc_woundsystem_compat_adaptive 0` как обычное «исправление» — это override для
+эксперимента и возврата старого blind-patching поведения.
+
 ## Установка
 
 1. Распаковать `zcity_full_pack.zip` во временную папку.

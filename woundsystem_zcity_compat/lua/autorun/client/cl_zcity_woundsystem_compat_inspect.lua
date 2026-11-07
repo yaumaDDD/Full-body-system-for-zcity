@@ -40,6 +40,7 @@ local function CompatInspectEnabled()
     if not ConVarAllows("zc_woundsystem_bridge") then return false end
     if not ConVarAllows("woundsys_enabled") then return false end
     if GetGlobalBool and GetGlobalBool("WSZC_Ready", false) ~= true then return false end
+    if WSZC.Supports and not WSZC.Supports("inspection") then return false end
     if not (WoundSystem and WoundSystem.Health) then return false end
     if not (WoundSystem.OpenHealthHUD or WoundSystem.ToggleHealthHUD) then return false end
 
@@ -131,15 +132,15 @@ end
 -- *after* "ZCity_WoundBridge_Inspect", so the stock "Examine Body" entry is
 -- relabelled/repointed instead of producing a duplicate button.
 hook.Add("radialOptions", "ZCity_WoundBridge_Inspect_WSZC", function()
-    EnsureBridgeWrapper()
-
     if not CompatInspectEnabled() then
         -- The stock ZCity hook may still have added "Examine Body"; hide it too
-        -- when the compatibility button is disabled/unavailable.
+        -- when the compatibility button is disabled/unavailable.  Most
+        -- importantly, do not replace WB.OpenWoundView on an unsupported core.
         RemoveInspectOption()
         return
     end
 
+    EnsureBridgeWrapper()
     local ply = LocalPlayer()
     if not IsValid(ply) or not ply:Alive() then
         RemoveInspectOption()
