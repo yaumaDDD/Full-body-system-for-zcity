@@ -76,8 +76,10 @@ local function PatientEntity(ply)
     if not IsValid(ply) then return nil end
     if IsValid(ply.FakeRagdoll) then return ply.FakeRagdoll end
     if ply.GetNWEntity then
-        local ok, ragdoll = pcall(ply.GetNWEntity, ply, "FakeRagdoll", NULL)
-        if ok and IsValid(ragdoll) then return ragdoll end
+        for _, key in ipairs({ "FakeRagdoll", "WoundSystemUnconsciousRagdoll" }) do
+            local ok, ragdoll = pcall(ply.GetNWEntity, ply, key, NULL)
+            if ok and IsValid(ragdoll) then return ragdoll end
+        end
     end
     return ply
 end

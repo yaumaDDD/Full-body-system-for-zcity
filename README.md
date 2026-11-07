@@ -38,7 +38,10 @@ snapshot `PlayerLimbs/Cardio/PlayerStats`; self-state сохраняется и 
 Пять слотов C:U остаются скрытыми и у пациента: визуально remote WoundView
 полностью совпадает с самоосмотром, исключения для инвентаря больше нет. Бинты,
 шприцы и жгуты применяются штатными ZCity SWEP непосредственно на игрока или его
-ragdoll; эффект получает пациент, предмет/заряд расходует лекарь. В WoundView
+ragdoll; эффект получает пациент, предмет/заряд расходует лекарь. Общий connector
+resolver `WB.GetPlayer` покрывает все 12 standalone SWEP, 5 medkit modes и
+bloodbag даже для shared-organism proxy, который native resolver не принимает.
+В WoundView
 остаются native shrapnel/dislocation, снятие statuses и другие действия руками.
 Namespaced C:U item protocol сохранён только для совместимости с конфигурацией
 `zc_woundsystem_compat_hide_cu_inventory 0`. Сервер проверяет operator→patient,

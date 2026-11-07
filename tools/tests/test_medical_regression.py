@@ -99,6 +99,12 @@ check("S09 canonical tourniquet return becomes a timed reusable ZCity SWEP",
       and 'pcall(recipient.Give, recipient, "weapon_tourniquet")' in organism_s
       and 'WSZC.RemoteMedicalReturnRecipient' in organism_s
       and "ReplayRemoveStatus" in organism_s)
+check("S10 all canonical medicine shares the connector's living-patient ragdoll resolver",
+      "local function PatchBridgePlayerResolver" in organism_s
+      and "wb._WSZCOriginalGetPlayer = original" in organism_s
+      and "entOrg == ply.organism and entOrg.owner == ply" in organism_s
+      and "PatchBridgePlayerResolver(wb)" in organism_s
+      and "WSZC.PatchBridgePlayerResolver = PatchBridgePlayerResolver" in organism_s)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -329,8 +335,22 @@ local Definitions = {
         bandage = { durabilityPerWrap = 100 / 12, effectDivisor = 12,
             effects = { bandageSlowAmount = 45, boneHealTimer = -20, dislocationTimer = -20 },
             bandagedAtSlow = 10 } } },
+    STERILIZEDBANDAGE = { max = 100, use = { minigame = "bandage", validLimbs = "any",
+        bandage = { durabilityPerWrap = 100 / 12, effectDivisor = 12,
+            effects = { bandageSlowAmount = 45 }, bandagedAtSlow = 10 } } },
+    MORPHINE = { max = 100, use = { minigame = "syringe", validLimbs = "any",
+        syringe = { drugEffects = { opiateAmount = 100 } } } },
+    FENTANYL = { max = 100, use = { minigame = "syringe", validLimbs = "any",
+        syringe = { drugEffects = { opiateAmount = 100 } } } },
     NALOXONE = { max = 100, use = { minigame = "syringe", validLimbs = "any",
         syringe = { drugEffects = { antagonistAmount = 50 } } } },
+    TOURNIQUET = { max = 100, use = { validLimbs = "any",
+        apply = function(ctx) return true end } },
+    ["BLOOD BAG"] = { max = 50, use = { validLimbs = "any",
+        apply = function(ctx)
+            ctx.body.bloodVolume = math.min((ctx.body.bloodVolume or 0) + 1, 100)
+            return true
+        end } },
     INJECTION = { max = 10, use = { validLimbs = "thorax",
         apply = function(ctx)
             if RejectChestDrain then return false end
@@ -810,6 +830,184 @@ return ply._WSZCTourniquetCycles == nil and ply.given == 0
     and Limbs[ply].thigh_R.customStatuses.TOURNIQUET == nil
 ''')
     check("R32 reset clears an active cycle without manufacturing a SWEP", reset_cycle)
+
+    remote_ragdoll_resolver = lua.execute(r'''
+MinigameEnabled = false
+-- Simulate a shared-organism/C:U proxy for which canonical hg.RagdollOwner
+-- has no current FakeRagdoll link. Native WB.GetPlayer must reject it, while
+-- the connector's verified owner fallback must still treat the living patient.
+hg.RagdollOwner = function() return nil end
+function MakeRemoteSharedBody(patient)
+    local body = { organism = patient.organism, _velocity = Vector() }
+    body.IsPlayer = function() return false end
+    body.IsRagdoll = function() return true end
+    body.GetVelocity = function(self) return self._velocity end
+    return body
+end
+function MakeRemoteMedicalPatient(kind)
+    local patient = MakePlayer()
+    if kind == "bandage" then
+        Limbs[patient].thigh_R.bleed = 4
+        patient.organism.wounds = {
+            { 4, Vector(), Angle(), "ValveBiped.Bip01_R_Thigh", 0 },
+        }
+    elseif kind == "tourniquet" then
+        Limbs[patient].thigh_R.bleed = 6
+        patient.organism.rlegartery = 1
+        patient.organism.arterialwounds = {
+            { 6, Vector(), Angle(), "ValveBiped.Bip01_R_Thigh", 0, nil, "rlegartery" },
+        }
+    end
+    return patient, MakeRemoteSharedBody(patient)
+end
+local patient, body = MakeRemoteMedicalPatient("body")
+local native = hg.WoundBridge._WSZCOriginalGetPlayer(body)
+local resolved = hg.WoundBridge.GetPlayer(body)
+local medic = MakePlayer()
+local swep = MakeSwep(medic, "weapon_adrenaline", 1)
+local ok = hg.WoundBridge.SwepHeal(swep, body, 1)
+
+local linkedPatient = MakePlayer()
+local linkedBody = { GetNWEntity = function() return nil end }
+linkedBody.IsPlayer = function() return false end
+linkedBody.IsRagdoll = function() return true end
+linkedPatient.GetNWEntity = function(_, key)
+    return key == "FakeRagdoll" and linkedBody or NULL
+end
+local oldGetAll = player.GetAll
+player.GetAll = function() return { linkedPatient } end
+local networkResolved = hg.WoundBridge.GetPlayer(linkedBody)
+player.GetAll = oldGetAll
+return native == nil and resolved == patient and networkResolved == linkedPatient and ok == true
+    and Bodies[patient].adrenaline == 45 and Bodies[medic].adrenaline == 0
+    and patient.organism.adrenaline > 0 and medic.organism.adrenaline == 0
+''')
+    check("R34 shared-organism/network-only ragdolls resolve when native owner lookup fails", remote_ragdoll_resolver)
+
+    remote_standalone = lua.execute(r'''
+MinigameEnabled = false
+FrameTimeValue = 0.2
+RemoteStandaloneFailure = nil
+local cases = {
+    { "weapon_bandage_sh", "bandage", 40 },
+    { "weapon_bigbandage_sh", "bandage", 150 },
+    { "weapon_tourniquet", "tourniquet", 1 },
+    { "weapon_needle", "body", 1 },
+    { "weapon_morphine", "body", 1 },
+    { "weapon_fentanyl", "body", 1 },
+    { "weapon_naloxone", "body", 1 },
+    { "weapon_painkillers", "body", 1 },
+    { "weapon_adrenaline", "body", 1 },
+    { "weapon_betablock", "body", 1 },
+    { "weapon_mannitol", "body", 1 },
+    { "weapon_thiamine", "body", 1 },
+}
+for _, case in ipairs(cases) do
+    local class, kind, capacity = case[1], case[2], case[3]
+    for _, ragdollForm in ipairs({ false, true }) do
+        local patient, body = MakeRemoteMedicalPatient(kind)
+        local target = ragdollForm and body or patient
+        local medic = MakePlayer()
+        local swep = MakeSwep(medic, class, capacity)
+        if capacity > 1 then swep.modeValuesdef = { { capacity, true } } end
+        local before = swep.modeValues[1]
+        local ok = hg.WoundBridge.SwepHeal(swep, target, 1)
+        if ok ~= true or not (swep.modeValues[1] < before) then
+            RemoteStandaloneFailure = class .. (ragdollForm and "/ragdoll" or "/standing")
+            return false
+        end
+    end
+end
+return true
+''')
+    check("R35 all 12 standalone ZCity medical SWEPs treat standing/ragdoll patients and consume medic items", remote_standalone)
+    if not remote_standalone:
+        print("REMOTE_STANDALONE_FAILURE", lua.globals().RemoteStandaloneFailure)
+
+    remote_medkit = lua.execute(r'''
+MinigameEnabled = false
+RemoteMedkitFailure = nil
+for mode = 1, 5 do
+    for _, ragdollForm in ipairs({ false, true }) do
+        local kind = mode == 1 and "bandage" or (mode == 4 and "tourniquet" or "body")
+        local patient, body = MakeRemoteMedicalPatient(kind)
+        local target = ragdollForm and body or patient
+        local medic = MakePlayer()
+        local swep = MakeSwep(medic, "weapon_medkit_sh", 1)
+        swep.mode = mode
+        swep.modeValues = { 80, 1, 10, 1, 1 }
+        swep.modeValuesdef = { { 80, true }, { 1, false }, { 10, true }, { 1, true }, { 1, false } }
+        local before = swep.modeValues[mode]
+        local ok = hg.WoundBridge.SwepHeal(swep, target, mode)
+        if ok ~= true or not (swep.modeValues[mode] < before) then
+            RemoteMedkitFailure = tostring(mode) .. (ragdollForm and "/ragdoll" or "/standing")
+            return false
+        end
+    end
+end
+return true
+''')
+    check("R36 all five medkit modes work on standing and ragdoll patients", remote_medkit)
+    if not remote_medkit:
+        print("REMOTE_MEDKIT_FAILURE", lua.globals().RemoteMedkitFailure)
+
+    remote_bloodbag = lua.execute(r'''
+FrameTimeValue = 0.2
+for _, ragdollForm in ipairs({ false, true }) do
+    local patient, body = MakeRemoteMedicalPatient("body")
+    local target = ragdollForm and body or patient
+    Bodies[patient].bloodVolume = 80
+    local medic = MakePlayer()
+    local bag = MakeSwep(medic, "weapon_bloodbag", 1)
+    local gave = hg.WoundBridge.BloodBagGive(bag, target)
+    local giveOK = gave == true and bag.modeValues[1] < 1
+        and Bodies[patient].bloodVolume > 80 and Bodies[medic].bloodVolume == 100
+
+    local donor, donorBody = MakeRemoteMedicalPatient("body")
+    local donorTarget = ragdollForm and donorBody or donor
+    local donorMedic = MakePlayer()
+    local emptyBag = MakeSwep(donorMedic, "weapon_bloodbag", 0)
+    local took = hg.WoundBridge.BloodBagTake(emptyBag, donorTarget)
+    local takeOK = took == true and math.abs(emptyBag.modeValues[1] - 0.1) < 0.001
+        and math.abs(Bodies[donor].bloodVolume - 99) < 0.001
+        and math.abs(donor.organism.blood - 4950) < 0.001
+        and donorMedic.organism.blood == 5000
+    if not (giveOK and takeOK) then return false end
+end
+return true
+''')
+    check("R37 bloodbag give/take work on standing and shared-organism ragdoll patients", remote_bloodbag)
+
+    remote_minigames = lua.execute(r'''
+MinigameEnabled = true
+local function RunContinuous(class, kind, capacity, ragdollForm)
+    local patient, body = MakeRemoteMedicalPatient(kind)
+    local target = ragdollForm and body or patient
+    local medic = MakePlayer()
+    local swep = MakeSwep(medic, class, capacity)
+    if capacity > 1 then swep.modeValuesdef = { { capacity, true } } end
+    CapturedMinigame = nil
+    local result = hg.WoundBridge.SwepHeal(swep, target, 1)
+    local captured = CapturedMinigame
+    if result ~= false or not captured or captured.owner ~= medic then return false end
+    local session = { startAmount = captured.options.amount, deferredUsed = 0 }
+    captured.options.onProgress(medic, session, captured.options.amount)
+    captured.options.onClose(medic, session, "complete")
+    return patient, medic, swep
+end
+for _, ragdollForm in ipairs({ false, true }) do
+    local bandagePatient, bandageMedic, bandageSwep = RunContinuous("weapon_bandage_sh", "bandage", 40, ragdollForm)
+    local bandageOK = bandagePatient and #bandagePatient.organism.wounds == 0
+        and bandageSwep.modeValues[1] == 0 and bandageMedic.organism.wounds
+        and #bandageMedic.organism.wounds == 0
+    local drugPatient, drugMedic, drugSwep = RunContinuous("weapon_morphine", "body", 1, ragdollForm)
+    local drugOK = drugPatient and Bodies[drugPatient].opiateAmount > 0
+        and Bodies[drugMedic].opiateAmount == 0 and drugSwep.modeValues[1] == 0
+    if not (bandageOK and drugOK) then return false end
+end
+return true
+''')
+    check("R38 continuous bandage/syringe minigames keep medic and standing/ragdoll patient separate", remote_minigames)
 
 failed = [name for name, ok in results if not ok]
 print(f"TEST_OK {len(results) - len(failed)} / {len(results)}")

@@ -470,7 +470,9 @@ check('S51 separate remote radial option; self inspection remains intact',
       and '_WSZCRemoteInspect = true' in remote_client_s
       and 'target ~= ply' in remote_client_s
       and 'hg.RagdollOwner' in remote_client_s
-      and 'candidate.GetNWEntity, candidate, "FakeRagdoll", NULL' in remote_client_s
+      and 'hg.eyeTrace, ply, RANGE' in remote_client_s
+      and 'IsValid(MENUPANELHUYHUY) and ValidPatient(ply, Remote.focusTarget)' in remote_client_s
+      and 'for _, key in ipairs({ "FakeRagdoll", "WoundSystemUnconsciousRagdoll" })' in remote_client_s
       and 'local function PatientEntity(target)' in remote_client_s
       and 'WSZC.OpenCUWoundMenu = function(...)' in remote_client_s
       and 'ZCity_WoundBridge_RemoteInspect_WSZC'

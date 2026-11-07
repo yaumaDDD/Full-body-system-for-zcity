@@ -1822,13 +1822,74 @@ local function OwnerOf(ent, allowDead, skipNativeResolver)
             if ok and IsValid(ply) and ply:IsPlayer() and (allowDead or ply:Alive()) then return ply end
         end
     end
-    if allowDead then
+    -- Do not scan every player's network vars for arbitrary map entities on
+    -- damage paths. Reverse lookup is needed only for unresolved ragdolls;
+    -- direct owner/organism/native links above remain the common fast paths.
+    local reverseBodyLookup = allowDead
+    if not reverseBodyLookup and ent.IsRagdoll then
+        local ok, isRagdoll = pcall(ent.IsRagdoll, ent)
+        reverseBodyLookup = ok and isRagdoll or false
+    end
+    if reverseBodyLookup then
         for _, ply in ipairs(player.GetAll()) do
-            if ply.FakeRagdoll == ent or ply.DeathRagdoll == ent or ply.Ragdoll == ent then return ply end
+            if allowDead or ply:Alive() then
+                if ply.FakeRagdoll == ent or ply.DeathRagdoll == ent or ply.Ragdoll == ent then return ply end
+                if ply.GetNWEntity then
+                    for _, key in ipairs({ "FakeRagdoll", "WoundSystemUnconsciousRagdoll" }) do
+                        local ok, ragdoll = pcall(ply.GetNWEntity, ply, key, NULL)
+                        if ok and ragdoll == ent then return ply end
+                    end
+                end
+            end
         end
     end
     return nil
 end
+
+-- Canonical WB.GetPlayer accepts only the exact current ZCity FakeRagdoll.
+-- The connector also supports shared-organism/C:U proxies and network-only
+-- fake links, so medicine must resolve those same living patients instead of
+-- silently falling through to legacy SWEP code. Keep the native fast path and
+-- add only verified owner/current-body/shared-organism links; dead players and
+-- unrelated ragdolls remain rejected.
+local function PatchBridgePlayerResolver(wb)
+    if type(wb) ~= "table" or type(wb.GetPlayer) ~= "function" then return false end
+    if wb._WSZCGetPlayerPatched then return true end
+    local original = wb.GetPlayer
+    wb._WSZCOriginalGetPlayer = original
+    wb.GetPlayer = function(ent)
+        if IsValid(ent) then
+            local ok, ply = pcall(original, ent)
+            if ok and IsValid(ply) and ply:IsPlayer() and ply:Alive() then return ply end
+        end
+
+        local ply = OwnerOf(ent)
+        if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return nil end
+        if ent == ply then return ply end
+
+        local entOrg = ent.organism
+        if type(entOrg) == "table" and entOrg == ply.organism and entOrg.owner == ply then
+            return ply
+        end
+        if ply.FakeRagdoll == ent or ply.DeathRagdoll == ent or ply.Ragdoll == ent then return ply end
+        if ply.GetNWEntity then
+            for _, key in ipairs({ "FakeRagdoll", "WoundSystemUnconsciousRagdoll" }) do
+                local ok, ragdoll = pcall(ply.GetNWEntity, ply, key, NULL)
+                if ok and ragdoll == ent then return ply end
+            end
+        end
+        if ent.GetNWEntity then
+            for _, key in ipairs({ "ply", "WoundSystemOwner", "Owner", "RagdollOwner" }) do
+                local ok, owner = pcall(ent.GetNWEntity, ent, key, NULL)
+                if ok and owner == ply then return ply end
+            end
+        end
+        return nil
+    end
+    wb._WSZCGetPlayerPatched = true
+    return true
+end
+WSZC.PatchBridgePlayerResolver = PatchBridgePlayerResolver
 
 ---------------------------------------------------------------------------
 -- The ONE shrapnel state
@@ -3992,6 +4053,7 @@ local function InstallMedicalBridge()
     WSZC.InstallTourniquetRemovalBridge()
     local wb = WB()
     if not (wb and wb.SwepHeal) then return false end
+    PatchBridgePlayerResolver(wb)
     PatchBodyDrugSpecs(wb)
     PatchBloodBagTake(wb)
     InstallTimedEffectBridge()

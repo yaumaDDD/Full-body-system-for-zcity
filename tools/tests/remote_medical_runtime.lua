@@ -591,6 +591,7 @@ else
     player = { GetAll = function() return { op, patient, patient2 } end }
     local ragdoll = { valid = true, IsPlayer = function() return false end }
     hg = { radialOptions = {}, RagdollOwner = function(ent) return ent == ragdoll and patient or nil end }
+    hg.eyeTrace = function(ply) return { Entity = ply.hgTraceEntity or ply.traceEntity } end
 
     CreateClientConVar = function() return { GetBool = function() return true end } end
     GetConVar = function() return { GetBool = function() return true end } end
@@ -654,6 +655,9 @@ else
     local function Reset()
         if WSZC.RemoteMedical.active or WSZC.RemoteMedical.pending then WSZC.RemoteMedical.Finish("test_reset") end
         op.x, op.alive, op.valid, op.traceEntity = 0, true, true, patient
+        op.hgTraceEntity = nil
+        WSZC.RemoteMedical.focusTarget = nil
+        MENUPANELHUYHUY = nil
         patient.x, patient.alive, patient.valid = 20, true, true
         patient.FakeRagdoll = nil
         patient.GetNWEntity = function() return NULL end
@@ -824,6 +828,24 @@ else
         outgoing = {}
         Assert(WSZC.OpenRemotePatient(patient)); RunSimple()
         Equal(outgoing[1].name, "WSZC_RemoteMedicalOpen")
+    end)
+
+    Test("C15 ZCity eye trace and radial refresh keep a ragdoll patient selectable", function()
+        Reset()
+        op.traceEntity = nil -- engine trace misses the third-person/fake-camera body
+        op.hgTraceEntity = ragdoll
+        Equal(WSZC.RemoteMedical.FindPatient(), patient)
+
+        MENUPANELHUYHUY = { valid = true }
+        op.hgTraceEntity = nil -- cursor moved towards the radial sector; trace no longer hits the body
+        Equal(WSZC.RemoteMedical.FindPatient(), patient)
+        hg.radialOptions = {}
+        hooks.radialOptionsZCity_WoundBridge_RemoteInspect_WSZC()
+        Equal(#hg.radialOptions, 1, "0.25 s radial refresh must not remove the treatment option")
+
+        hooks.RadialMenuPressedZCity_WoundBridge_RemoteInspectFocus_WSZC()
+        MENUPANELHUYHUY = nil
+        Assert(WSZC.RemoteMedical.FindPatient() == nil)
     end)
 end
 

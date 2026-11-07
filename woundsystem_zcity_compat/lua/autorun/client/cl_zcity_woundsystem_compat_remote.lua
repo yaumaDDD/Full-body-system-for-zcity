@@ -93,8 +93,10 @@ local function PlayerFromEntity(ent)
                 return candidate
             end
             if candidate.GetNWEntity then
-                local ok, ragdoll = pcall(candidate.GetNWEntity, candidate, "FakeRagdoll", NULL)
-                if ok and ragdoll == ent then return candidate end
+                for _, key in ipairs({ "FakeRagdoll", "WoundSystemUnconsciousRagdoll" }) do
+                    local ok, ragdoll = pcall(candidate.GetNWEntity, candidate, key, NULL)
+                    if ok and ragdoll == ent then return candidate end
+                end
             end
         end
     end
@@ -107,8 +109,10 @@ local function PatientEntity(target)
     if not IsValid(target) then return nil end
     if IsValid(target.FakeRagdoll) then return target.FakeRagdoll end
     if target.GetNWEntity then
-        local ok, ragdoll = pcall(target.GetNWEntity, target, "FakeRagdoll", NULL)
-        if ok and IsValid(ragdoll) then return ragdoll end
+        for _, key in ipairs({ "FakeRagdoll", "WoundSystemUnconsciousRagdoll" }) do
+            local ok, ragdoll = pcall(target.GetNWEntity, target, key, NULL)
+            if ok and IsValid(ragdoll) then return ragdoll end
+        end
     end
     return target
 end
@@ -127,9 +131,33 @@ end
 local function FindPatient()
     local ply = LocalPlayer()
     if not IsValid(ply) or not ply:Alive() then return nil end
+
+    -- Player:GetEyeTrace() does not use ZCity's fake/ragdoll camera anchor.
+    -- The radial menu and every medical SWEP use hg.eyeTrace(), so inspect the
+    -- same entity the player actually sees under the ZCity crosshair.
+    if hg and hg.eyeTrace then
+        local ok, trace = pcall(hg.eyeTrace, ply, RANGE)
+        local target = ok and PlayerFromEntity(trace and trace.Entity or nil) or nil
+        if ValidPatient(ply, target) then
+            Remote.focusTarget = target
+            return target
+        end
+    end
     local trace = ply:GetEyeTrace()
     local target = PlayerFromEntity(trace and trace.Entity or nil)
-    if ValidPatient(ply, target) then return target end
+    if ValidPatient(ply, target) then
+        Remote.focusTarget = target
+        return target
+    end
+
+    -- CreateRadialMenu rebuilds every option four times a second while the
+    -- cursor is moving towards a sector. Keep the last genuinely traced body
+    -- for that open menu instead of making a narrow ragdoll option vanish
+    -- before the click. Range/alive are still checked on every rebuild.
+    if IsValid(MENUPANELHUYHUY) and ValidPatient(ply, Remote.focusTarget) then
+        return Remote.focusTarget
+    end
+    Remote.focusTarget = nil
     return nil
 end
 Remote.FindPatient = FindPatient
@@ -403,6 +431,10 @@ if type(WSZC.OpenCUWoundMenu) == "function" and not Remote.selfOpenWrapped then
         return baseOpen(...)
     end
 end
+
+hook.Add("RadialMenuPressed", "ZCity_WoundBridge_RemoteInspectFocus_WSZC", function()
+    Remote.focusTarget = nil
+end)
 
 hook.Add("radialOptions", "ZCity_WoundBridge_RemoteInspect_WSZC", function()
     if not Ready() then return end

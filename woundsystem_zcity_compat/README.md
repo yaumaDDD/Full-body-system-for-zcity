@@ -37,9 +37,17 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 `wszc_treat_player`.
 
 Для ragdoll client resolver последовательно проверяет `hg.RagdollOwner`,
-`organism.owner`, `ragdoll.ply`, NW `ply/Owner/RagdollOwner` и обратную связь
-`player:GetNWEntity("FakeRagdoll")`. Client и server измеряют дистанцию до
-актуального ragdoll, а не до устаревшей позиции скрытого player entity.
+`organism.owner`, `ragdoll.ply`, NW `ply/Owner/RagdollOwner` и обратные связи
+`FakeRagdoll` / `WoundSystemUnconsciousRagdoll`. Trace берётся из того же
+`hg.eyeTrace()`, что у ZCity camera/SWEP; выбранный пациент сохраняется во время
+0.25-секундных rebuild открытого radial menu. Client и server измеряют дистанцию
+до актуального ragdoll, а не до устаревшей позиции скрытого player entity.
+
+Серверный `PatchBridgePlayerResolver()` сохраняет native `WB.GetPlayer` fast path
+и добавляет проверенные owner/current-body/shared-organism links. Поэтому один
+resolver работает для всех 12 standalone medical SWEP, всех 5 medkit modes,
+bloodbag give/take и continuous minigames, включая proxy ragdoll, который
+canonical `hg.RagdollOwner` не смог разрешить.
 
 Remote-модуль **не рисует второй UI и не добавляет patient banner**. Используются
 те же 17 native limb id и 17 traced частей custom doll, включая `neck/pelvis`,
@@ -945,10 +953,10 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  не переопределяются.
 - Проверено синтаксически (`luaparser`, 13 файлов), статически, на заглушечном
  Lua-рантайме и через canonical ZCity WoundBridge из исходного ZIP. Актуальные
- suites: `tools/tests/test_wszc_regression.py` (**154/154**, включая Lua 13/13,
- CRC/зеркало/манифест, pixel checks и 31 remote behavior tests),
+ suites: `tools/tests/test_wszc_regression.py` (**155/155**, включая Lua 13/13,
+ CRC/зеркало/манифест, pixel checks и 32 remote behavior tests),
  `test_gameplay_regression.py` (**93/93**), `test_bandage_regression.py`
- (**35/35**) и `test_medical_regression.py` (**42/42**) — всего **324/324**.
+ (**35/35**) и `test_medical_regression.py` (**48/48**) — всего **331/331**.
  Remote M16 проверяет ragdoll range/watchdog; M17 прогоняет настоящий advanced minigame-server:
  `operator→patient`, один расход слота медика и запрет input вне дистанции.
  Medical-suite отдельно проверяет canonical
