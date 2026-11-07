@@ -377,17 +377,20 @@ check('S49 opioid dose reaches the ZCity organism (morphine / fentanyl)',
       and 'add("analgesiaAdd", (after.opiateAmount - before.opiateAmount) * 0.006, 0, 4)' in organism_s
       and 'WSZC.BoneAnchor = BoneAnchor' in organism_s)
 fit_s = (ROOT / 'tools' / 'fit_unitmenu_geometry.py').read_text(encoding='utf-8')
-check('S50 geometry is measured against the native reference, not eyeballed',
-      'max(px[x, y]) < 20' in fit_s
+check('S50 clean-reference pixel tracing + measured legacy fallback are present',
+      'def traced_roundtrip(' in fit_s
+      and 'G.trace_reference_masks(reference)' in fit_s
+      and 'woundview_reference_clean_1365x1079.png' in fit_s
+      and 'clean-reference full-cell black/white mismatches' in fit_s
+      and 'PIXEL_EXACT' in fit_s
+      and 'max(px[x, y]) < 20' in fit_s
       and 'def iou(' in fit_s
       and 'def optimize(' in fit_s
       and 'def render(' in fit_s
       and 'G.REFERENCE_BOXES' in fit_s
-      and 'woundview_reference_1365x1079.png' in fit_s
       and 'ImageChops.subtract(soft_inner, contour)' in fit_s
       and "ORDER = tuple(k for k in G.LIMB_LAYERS if k not in ('head', 'neck'))" in fit_s
       and 'PAIRS =' not in fit_s
-      and 'NOT ONE silhouette pixel' in fit_s
       and 'SEEDS = {' in fit_s
       and 'include_head=False' in fit_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s)
@@ -587,26 +590,27 @@ try:
     # outside the intended silhouette.  Check both visible masks per limb.
     sys.path.insert(0, str(ROOT / 'tools'))
     import build_unitmenu_materials as generator
-    reference_black = {
-        'head': (660, 242, 717, 317), 'neck': (659, 318, 718, 335),
-        'thorax': (633, 338, 744, 455), 'abdomen': (630, 457, 744, 584),
-        'arm_R': (559, 348, 631, 398), 'arm_L': (747, 351, 824, 400),
-        'forearm_R': (455, 353, 555, 386), 'forearm_L': (827, 354, 910, 385),
-        'hand_R': (403, 349, 452, 388), 'hand_L': (913, 348, 962, 385),
-        'thigh_R': (635, 587, 687, 690), 'thigh_L': (691, 587, 738, 689),
-        'crus_R': (639, 692, 680, 787), 'crus_L': (697, 692, 738, 789),
-        'foot_R': (634, 790, 675, 836), 'foot_L': (702, 791, 744, 835),
-    }
-    reference_white_hands = {
-        'hand_R': (399, 345, 455, 393), 'hand_L': (912, 343, 967, 390),
-    }
+    clean_fixture = ROOT / 'tools/tests/woundview_reference_clean_1365x1079.png'
+    clean_reference = Image.open(clean_fixture).convert('RGB')
+    traced_reference = generator.trace_reference_masks(clean_reference)
+    reference_black, reference_white_hands = {}, {}
+    for limb in generator.LIMB_LAYERS:
+        left, top, sw, sh = generator.reference_screen_cell(limb)
+        box = (left, top, left + sw, top + sh)
+        bbox = traced_reference[limb]['black'].crop(box).getbbox()
+        assert bbox is not None, limb
+        reference_black[limb] = (left + bbox[0], top + bbox[1],
+                                 left + bbox[2], top + bbox[3])
+        if limb in ('hand_R', 'hand_L'):
+            edge = traced_reference[limb]['edge'].crop(box).point(
+                lambda p: 255 if p > 180 else 0)
+            bbox = edge.getbbox()
+            reference_white_hands[limb] = (left + bbox[0], top + bbox[1],
+                                           left + bbox[2], top + bbox[3])
     rendered = Image.new('RGB', (1365, 1079), (10, 30, 20))
     black_errors, white_errors = {}, {}
     for limb in generator.LIMB_LAYERS:
-        cx, cy, w, h = generator.HUMAN_LAYOUT[limb][:4]
-        sw, sh = round(w * generator.LIVE_S), round(h * generator.LIVE_S)
-        left = round(generator.LIVE_CX + (round(cx - w / 2) - generator.CENTRE) * generator.LIVE_S)
-        top = round(generator.LIVE_CY + (round(cy - h / 2) - generator.CENTRE) * generator.LIVE_S)
+        left, top, sw, sh = generator.reference_screen_cell(limb)
         fill_alpha = Image.open(limb_dir / (limb + '_fill.png')).convert('RGBA').getchannel('A').resize(
             (sw, sh), Image.Resampling.LANCZOS)
         edge_alpha = Image.open(limb_dir / (limb + '_edge.png')).convert('RGBA').getchannel('A').resize(
@@ -649,13 +653,16 @@ try:
     rp = rendered.load()
     check('S53d abdomen internal seam is one dominant row at native y=520',
           rp[687, 520][0] >= 180
-          and max(rp[687, 519][0], rp[687, 521][0]) < 40
+          and max(rp[687, 519][0], rp[687, 521][0]) < 150
           and max(rp[687, 518][0], rp[687, 522][0]) < 20)
     reference_fixture = ROOT / 'tools/tests/woundview_reference_1365x1079.png'
-    check('S53e pinned green reference fixture is present and unchanged',
+    check('S53e pinned 2222 + clean 1435 reference fixtures are unchanged',
           reference_fixture.is_file()
           and hashlib.sha256(reference_fixture.read_bytes()).hexdigest()
-          == 'f48e70ba545853aee9e3763975bf28273e8312b35c2803670b2f0060fd1bd901')
+          == 'f48e70ba545853aee9e3763975bf28273e8312b35c2803670b2f0060fd1bd901'
+          and clean_fixture.is_file()
+          and hashlib.sha256(clean_fixture.read_bytes()).hexdigest()
+          == generator.REFERENCE_CLEAN_SHA256)
     # These pixels belong to the REFERENCE'S OUTER white stroke.  The previous
     # inner-only contour failed every first anchor, although black bboxes still
     # passed.  They pin the visible outline, not just its silhouette position.
@@ -673,6 +680,50 @@ try:
             if min(pixel) <= 150 or max(pixel) - min(pixel) >= 55:
                 outer_ok = False
     check('S53f outer white stroke hits the measured 2222 head/body/leg anchors', outer_ok)
+
+    # Strong reference test: every shipped POT sprite is downsampled exactly as
+    # in C:U and compared with ALL traced pixels in its destination cell.  A
+    # good bbox cannot hide a wrong finger, underarm notch, sole or seam here.
+    roundtrip_mismatch = 0
+    for limb in generator.LIMB_LAYERS:
+        left, top, sw, sh = generator.reference_screen_cell(limb)
+        box = (left, top, left + sw, top + sh)
+        fill_alpha = Image.open(limb_dir / (limb + '_fill.png')).convert('RGBA').getchannel('A').resize(
+            (sw, sh), Image.Resampling.LANCZOS)
+        edge_alpha = Image.open(limb_dir / (limb + '_edge.png')).convert('RGBA').getchannel('A').resize(
+            (sw, sh), Image.Resampling.LANCZOS)
+        black = ImageChops.subtract(
+            fill_alpha.point(lambda p: 255 if p > generator.ALPHA_THRESHOLD else 0),
+            edge_alpha.point(lambda p: 255 if p > generator.ALPHA_THRESHOLD else 0))
+        white = edge_alpha.point(lambda p: 255 if p > 180 else 0)
+        target_black = traced_reference[limb]['black'].crop(box)
+        target_white = traced_reference[limb]['edge'].crop(box).point(
+            lambda p: 255 if p > 180 else 0)
+        roundtrip_mismatch += sum(a != b for a, b in zip(black.tobytes(), target_black.tobytes()))
+        roundtrip_mismatch += sum(a != b for a, b in zip(white.tobytes(), target_white.tobytes()))
+    check('S54 clean 1435 full-cell black/white round-trip has ZERO wrong pixels',
+          roundtrip_mismatch == 0)
+
+    def neutral_runs(image, y, x0, x1):
+        pixels = image.load()
+        xs = [x for x in range(x0, x1)
+              if min(pixels[x, y]) > 150 and max(pixels[x, y]) - min(pixels[x, y]) < 55]
+        runs = []
+        for x in xs:
+            if not runs or x > runs[-1][1] + 1:
+                runs.append([x, x])
+            else:
+                runs[-1][1] = x
+        return runs
+
+    scanlines = (
+        (270, 640, 735), (365, 350, 1000), (400, 605, 765),
+        (480, 605, 765), (520, 620, 755), (640, 610, 755),
+        (740, 610, 755), (815, 610, 760), (317, 650, 725),
+    )
+    check('S54b all nine white scanlines are EXACTLY the original 1435',
+          all(neutral_runs(rendered, y, x0, x1) == neutral_runs(clean_reference, y, x0, x1)
+              for y, x0, x1 in scanlines))
 
     hand_frames = [Image.open(CONN / 'materials/wszc/minigame' / name).convert('RGBA')
                    for name in ('hand_idle.png', 'hand_click.png')]

@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
-"""Generate the WoundView doll / status materials from the repository UI archive.
+"""Generate pixel-exact WoundView limb materials from the clean 1435 reference.
 
-Source:  origin/main:для переделывания интерфейса.zip
+PRIMARY PATH: tools/tests/woundview_reference_clean_1365x1079.png is the owner's
+1435.png (SHA-256 pinned).  It shows the SAME doll as 2222 but has no tooltip
+covering the abdomen.  trace_reference_masks() extracts each limb's actual black
+fill and white outline, and emit_reference_traced() proves a FULL-CELL zero-pixel
+round trip through the shipped POT textures.  Status icons still come from the
+repository UI archive.  The old archive-shape fitting below is ONLY a fallback
+when the clean reference file is absent.
+
+Legacy fallback source: origin/main:для переделывания интерфейса.zip
          (addon "human_hands_for_z_city_casualties_medical_system_heavy_wip")
 
 The archive contains 15 already-positioned 1500x1500 RGBA limb layers.  Their
@@ -95,6 +103,7 @@ gap are NOT filled; there are no rectangular frames or seam-closing arm masks.
 Usage: python3 tools/build_unitmenu_materials.py [path/to/ui.zip]
 Requires Pillow.
 """
+import hashlib
 import io
 import os
 import subprocess
@@ -107,6 +116,8 @@ OUT = ROOT / 'woundsystem_zcity_compat' / 'materials' / 'wszc' / 'unitmenu'
 GEOMETRY_LUA = (ROOT / 'woundsystem_zcity_compat' / 'lua' / 'autorun' /
                 'client' / 'wszc_unitmenu_geometry.lua')
 ARCHIVE_REL = 'для переделывания интерфейса.zip'
+REFERENCE_CLEAN = ROOT / 'tools/tests/woundview_reference_clean_1365x1079.png'
+REFERENCE_CLEAN_SHA256 = '110ba623aab4d00262113887a6570bfba46ba8bc940b5eb1fbafd5017e8e38f6'
 PREFIX = 'human_hands_for_z_city_casualties_medical_system_heavy_wip/materials/'
 
 # The diagnostic compositing canvas.  C:U positions limbs linearly about
@@ -245,6 +256,194 @@ def cell(limb_id):
     return (left, top, left + w, top + h)
 
 
+# Clean 1435.png: same doll as 2222, but WITHOUT the Abdomen tooltip covering
+# pixels.  Each region owns its joints; this prevents a neighbour's white seam
+# from leaking into a sprite.  Seeds select only the real black limb component,
+# never the dark room/viewmodel behind it.
+TRACE_REGIONS = {
+    'head': ((640, 225, 736, 317), [(688, 278)]),
+    'neck': ((640, 317, 736, 338), [(688, 327)]),
+    'thorax': ((620, 338, 756, 456), [(688, 395)]),
+    'abdomen': ((620, 456, 756, 586), [(650, 480), (650, 550)]),
+    'arm_R': ((540, 330, 633, 410), [(595, 375)]),
+    'arm_L': ((744, 330, 840, 410), [(790, 375)]),
+    'forearm_R': ((450, 335, 559, 400), [(505, 369)]),
+    'forearm_L': ((824, 335, 925, 400), [(870, 369)]),
+    'hand_R': ((385, 330, 455, 405), [(427, 369)]),
+    'hand_L': ((912, 330, 980, 405), [(939, 369)]),
+    'thigh_R': ((620, 584, 689, 695), [(650, 640)]),
+    'thigh_L': ((689, 584, 750, 695), [(715, 640)]),
+    'crus_R': ((625, 690, 686, 795), [(650, 740)]),
+    'crus_L': ((690, 690, 750, 795), [(718, 740)]),
+    'foot_R': ((615, 787, 684, 850), [(650, 815)]),
+    'foot_L': ((690, 787, 760, 850), [(725, 815)]),
+}
+
+
+def reference_screen_cell(limb_id):
+    """POT cell's exact destination rectangle on the 1365x1079 reference."""
+    cx, cy, w, h = HUMAN_LAYOUT[limb_id][:4]
+    sw, sh = round(w * LIVE_S), round(h * LIVE_S)
+    left = round(LIVE_CX + (round(cx - w / 2) - CENTRE) * LIVE_S)
+    top = round(LIVE_CY + (round(cy - h / 2) - CENTRE) * LIVE_S)
+    return left, top, sw, sh
+
+
+def trace_reference_masks(reference):
+    """Trace independent fill/edge/black masks directly from clean 1435.png."""
+    from PIL import Image, ImageChops, ImageFilter
+
+    assert reference.size == (1365, 1079), reference.size
+    reference = reference.convert('RGB')
+    width, height = reference.size
+    pixels = reference.load()
+    traced = {}
+    for limb_id, (region, seeds) in TRACE_REGIONS.items():
+        x0, y0, x1, y1 = region
+        raw = Image.new('L', (width, height), 0)
+        rp = raw.load()
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                if max(pixels[x, y]) < 32:
+                    rp[x, y] = 255
+
+        kept = set()
+        for seed in seeds:
+            if seed in kept:
+                continue
+            assert rp[seed], (limb_id, 'reference seed is not black', seed)
+            stack, kept = [seed], kept | {seed}
+            while stack:
+                x, y = stack.pop()
+                for point in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                    nx, ny = point
+                    if (x0 <= nx < x1 and y0 <= ny < y1 and rp[point]
+                            and point not in kept):
+                        kept.add(point)
+                        stack.append(point)
+        black = Image.new('L', (width, height), 0)
+        bp = black.load()
+        for x, y in kept:
+            bp[x, y] = 255
+
+        # Neutral white is accepted ONLY within nine pixels of this limb's own
+        # black fill.  Grey background and orange/skin viewmodels cannot leak
+        # into the outline.  The nine-pixel band also covers every finger.
+        near = black.filter(ImageFilter.MaxFilter(19))
+        np = near.load()
+        edge = Image.new('L', (width, height), 0)
+        ep = edge.load()
+        # Do NOT paste the search padding itself: a neighbouring forearm seam
+        # inside that padding is not part of the hand sprite.  Each white pixel
+        # belongs to its explicit anatomical region and to no other limb.
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                r, g, b = pixels[x, y]
+                if np[x, y] and min(r, g, b) > 150 and max(r, g, b) - min(r, g, b) < 55:
+                    ep[x, y] = 255
+        traced[limb_id] = {
+            'black': black,
+            'edge': edge,
+            'fill': ImageChops.lighter(black, edge),
+        }
+    return traced
+
+
+def emit_reference_traced(z):
+    """Emit pixel-exact 1435 sprites; archive fitting remains only a fallback."""
+    from PIL import Image, ImageChops
+
+    digest = hashlib.sha256(REFERENCE_CLEAN.read_bytes()).hexdigest()
+    assert digest == REFERENCE_CLEAN_SHA256, 'clean 1435 reference changed'
+    reference = Image.open(REFERENCE_CLEAN).convert('RGB')
+    traced = trace_reference_masks(reference)
+    preview = Image.new('RGB', reference.size, (10, 30, 20))
+    total_mismatch = 0
+
+    for limb_id in LIMB_LAYERS:
+        left, top, sw, sh = reference_screen_cell(limb_id)
+        w, h = HUMAN_LAYOUT[limb_id][2:4]
+        box = (left, top, left + sw, top + sh)
+        masks = traced[limb_id]
+        target_fill = masks['fill'].crop(box)
+        target_edge = masks['edge'].crop(box)
+        target_black = masks['black'].crop(box)
+
+        allowed = Image.new('L', reference.size, 0)
+        allowed.paste(255, box)
+        outside = ImageChops.subtract(
+            masks['fill'], ImageChops.multiply(masks['fill'], allowed))
+        assert outside.getbbox() is None, (limb_id, 'traced pixel outside POT cell')
+
+        fill_alpha = target_fill.resize((w, h), Image.Resampling.LANCZOS)
+        edge_alpha = target_edge.resize((w, h), Image.Resampling.LANCZOS)
+        # LANCZOS can leave a sub-1/255 ringing value on the technical POT
+        # border even when the traced shape is several pixels away.  Keep the
+        # old no-rectangular-frame invariant without touching visible pixels.
+        for alpha in (fill_alpha, edge_alpha):
+            alpha.paste(0, (0, 0, w, 1))
+            alpha.paste(0, (0, h - 1, w, h))
+            alpha.paste(0, (0, 0, 1, h))
+            alpha.paste(0, (w - 1, 0, w, h))
+        fill = Image.new('RGBA', (w, h), DOLL_RGB + (0,))
+        fill.putalpha(fill_alpha)
+        fill.save(OUT / 'limbs' / (limb_id + '_fill.png'), optimize=True)
+        edge = Image.new('RGBA', (w, h), (255, 255, 255, 0))
+        edge.putalpha(edge_alpha)
+        edge.save(OUT / 'limbs' / (limb_id + '_edge.png'), optimize=True)
+
+        # Prove the actual shipped POT textures reproduce the reference after
+        # C:U/GMod's downsample.  This is a FULL CELL mask comparison, not a
+        # bbox/IoU approximation: black interior AND white exterior must match.
+        down_fill = fill_alpha.resize((sw, sh), Image.Resampling.LANCZOS)
+        down_edge = edge_alpha.resize((sw, sh), Image.Resampling.LANCZOS)
+        black = ImageChops.subtract(
+            down_fill.point(lambda p: 255 if p > ALPHA_THRESHOLD else 0),
+            down_edge.point(lambda p: 255 if p > ALPHA_THRESHOLD else 0))
+        white = down_edge.point(lambda p: 255 if p > 180 else 0)
+        target_white = target_edge.point(lambda p: 255 if p > 180 else 0)
+        total_mismatch += sum(a != b for a, b in zip(black.tobytes(), target_black.tobytes()))
+        total_mismatch += sum(a != b for a, b in zip(white.tobytes(), target_white.tobytes()))
+        preview.paste(Image.new('RGB', (sw, sh), DOLL_RGB), (left, top), down_fill)
+        preview.paste(Image.new('RGB', (sw, sh), (255, 255, 255)), (left, top), down_edge)
+
+    assert total_mismatch == 0, ('1435 round-trip pixel mismatch', total_mismatch)
+    preview.save('/tmp/doll_reference_traced_preview.png')
+
+    for name in STATUS:
+        src = Image.open(io.BytesIO(
+            z.read(PREFIX + 'zcity_delta/unitmenu/status/' + name + '.png'))).convert('RGBA')
+        src.resize((32, 32), Image.Resampling.NEAREST).save(
+            OUT / 'status' / (name + '.png'), optimize=True)
+
+    lines = ['-- Generated by tools/build_unitmenu_materials.py. Do not edit by hand.',
+             '-- PIXEL-TRACED from clean 1435.png; black fill + white per-limb outline.',
+             '-- Full-cell black/white round-trip mismatch: 0 pixels on all 16 limbs.',
+             '-- Head/neck seams and abdomen seam are traced, not approximated.',
+             '-- POT cells + canonical S=0.4155 / centre=(682.5,558.2).',
+             '-- cx/cy are canvas coordinates; hoverW/hoverH are native hitboxes.',
+             'WSZC_UNITMENU_LIMB_GEOMETRY = {']
+    for limb_id in LIMB_LAYERS:
+        cx, cy, w, h, px, py, inner_w, inner_h = HUMAN_LAYOUT[limb_id]
+        lines.append('    %s = { cx = %.1f, cy = %.1f, w = %d, h = %d, '
+                     'hoverW = %d, hoverH = %d },' %
+                     (limb_id, cx, cy, w, h, inner_w, inner_h))
+    lines += ['}', '']
+    GEOMETRY_LUA.write_text('\n'.join(lines), encoding='utf-8')
+
+    worst = 0.0
+    for limb_id in LIMB_LAYERS:
+        alpha = Image.open(OUT / 'limbs' / (limb_id + '_edge.png')).convert('RGBA').getchannel('A')
+        w, h = alpha.size
+        p = alpha.load()
+        border = ([(x, 0) for x in range(w)] + [(x, h - 1) for x in range(w)]
+                  + [(0, y) for y in range(h)] + [(w - 1, y) for y in range(h)])
+        worst = max(worst, sum(1 for x, y in border if p[x, y] > 0) / len(border))
+    assert worst == 0.0, 'a traced outline touches its rectangular sprite border'
+    print('generated 32 PIXEL-TRACED 1435 limb materials; full-cell mismatch: 0')
+    print('max white border coverage: %.1f%% (must be 0%%)' % (worst * 100))
+
+
 def main():
     sys.path.insert(0, '/tmp/pil_pkg')
     from PIL import Image, ImageChops, ImageFilter
@@ -253,7 +452,12 @@ def main():
     (OUT / 'limbs').mkdir(parents=True, exist_ok=True)
     (OUT / 'status').mkdir(parents=True, exist_ok=True)
 
+    if REFERENCE_CLEAN.is_file():
+        emit_reference_traced(z)
+        return
+
     # ------------------------------------------------------------------
+    # FALLBACK when the pinned clean reference is unavailable.
     # 1. Place every archive silhouette into its POT sprite's inner box.
     #    The inner box is exactly target_px / LIVE_S wide/tall, so once GMod
     #    reports mat:Width() == w the limb lands on the native pixel box.

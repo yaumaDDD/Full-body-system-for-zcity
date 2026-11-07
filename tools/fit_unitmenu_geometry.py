@@ -1,33 +1,21 @@
 #!/usr/bin/env python3
-"""Pixel-fit the WoundView doll against the owner's native reference screenshot.
+"""Verify pixel-exact WoundView materials against the owner's clean 1435.png.
 
-The supplied green WoundView screenshot is the visual authority.  This tool
-makes its placement and proportions measurable instead of eyeballed:
+Default mode traces every anatomical region in
+``tools/tests/woundview_reference_clean_1365x1079.png``, downsamples every
+checked-in POT sprite exactly like C:U, and compares the COMPLETE black and
+white masks in all 16 destination cells.  ``PIXEL_EXACT`` requires zero wrong
+pixels; it is stronger than the old bbox/IoU approximation.
 
-  1. build a target mask from tools/tests/woundview_reference_1365x1079.png.
-     The doll is true black (RGB 0..5), so ``max(RGB) < 20`` plus connected
-     components rejects the green room and interface text;
-  2. render the VERBATIM archive silhouettes into SCREEN space using the
-     exact same linear placement C:U uses (S=0.4155, centre=(682.5,558.2),
-     mat:Width()/Height() are the POT sprite sizes), then SUBTRACT the white
-     edge because C:U draws fill first and outline second;
-  3. report intersection-over-union, and optionally run a bounded coordinate
-     descent over the REFERENCE_BOXES numbers (tx, ty, w, h).  Every limb is
-     independent (native arms are asymmetric), widths/heights stay within
-     +/-35% of the checked-in values, and NOT ONE silhouette pixel is redrawn.
-     Head and neck are checked separately because their one-row joint needs
-     explicit contour assertions rather than a connected black-component fit.
-
-Only the four numbers per limb ever change: position and proportion, never
-shape, colour, outline or T-pose.
+``--optimize`` retains the legacy archive-only coordinate fit for diagnostics
+when explicitly requested.  It is not used for the shipped 1435-traced assets.
 
 Usage:
-    python3 tools/fit_unitmenu_geometry.py --reference /path/woundview_reference_1365x1079.png
-    python3 tools/fit_unitmenu_geometry.py --reference ... --optimize
-    python3 tools/fit_unitmenu_geometry.py --reference ... --overlay /tmp/overlay.png
+    python3 tools/fit_unitmenu_geometry.py
+    python3 tools/fit_unitmenu_geometry.py --overlay /tmp/reference-render.png
+    python3 tools/fit_unitmenu_geometry.py --reference /path/2222.png --optimize
 
-Requires Pillow.  The archive layers come from ``git show origin/main:<zip>``,
-exactly like tools/build_unitmenu_materials.py.
+Requires Pillow.  Legacy archive layers come from ``git show origin/main:<zip>``.
 """
 import argparse
 import io
@@ -264,12 +252,49 @@ def overlay(img, target, path):
     print('overlay ->', path, '(yellow = match, red = reference only, green = ours only)')
 
 
+def traced_roundtrip(reference_path, overlay_path=None):
+    """Validate the shipped reference-traced textures, not an archive guess."""
+    reference = Image.open(reference_path).convert('RGB')
+    traced = G.trace_reference_masks(reference)
+    limb_dir = ROOT / 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs'
+    preview = Image.new('RGB', reference.size, (10, 30, 20))
+    mismatch = 0
+    for limb in G.LIMB_LAYERS:
+        left, top, sw, sh = G.reference_screen_cell(limb)
+        box = (left, top, left + sw, top + sh)
+        fill = Image.open(limb_dir / (limb + '_fill.png')).convert('RGBA').getchannel('A').resize(
+            (sw, sh), Image.Resampling.LANCZOS)
+        edge = Image.open(limb_dir / (limb + '_edge.png')).convert('RGBA').getchannel('A').resize(
+            (sw, sh), Image.Resampling.LANCZOS)
+        black = ImageChops.subtract(
+            fill.point(lambda p: 255 if p > G.ALPHA_THRESHOLD else 0),
+            edge.point(lambda p: 255 if p > G.ALPHA_THRESHOLD else 0))
+        white = edge.point(lambda p: 255 if p > 180 else 0)
+        target_black = traced[limb]['black'].crop(box)
+        target_white = traced[limb]['edge'].crop(box).point(lambda p: 255 if p > 180 else 0)
+        mismatch += sum(a != b for a, b in zip(black.tobytes(), target_black.tobytes()))
+        mismatch += sum(a != b for a, b in zip(white.tobytes(), target_white.tobytes()))
+        preview.paste(Image.new('RGB', (sw, sh), (0, 0, 0)), (left, top), fill)
+        preview.paste(Image.new('RGB', (sw, sh), (255, 255, 255)), (left, top), edge)
+    if overlay_path:
+        preview.save(overlay_path)
+        print('reference render ->', overlay_path)
+    return mismatch
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--reference', default=str(ROOT / 'tools/tests/woundview_reference_1365x1079.png'))
-    ap.add_argument('--optimize', action='store_true')
+    ap.add_argument('--reference', default=str(G.REFERENCE_CLEAN))
+    ap.add_argument('--optimize', action='store_true',
+                    help='legacy archive-only fit; not used for the pixel-traced 1435 materials')
     ap.add_argument('--overlay')
     args = ap.parse_args()
+
+    if not args.optimize:
+        mismatch = traced_roundtrip(args.reference, args.overlay)
+        print('clean-reference full-cell black/white mismatches: %d' % mismatch)
+        print('PIXEL_EXACT' if mismatch == 0 else 'PIXEL_MISMATCH')
+        raise SystemExit(0 if mismatch == 0 else 1)
 
     base = {k: tuple(v) for k, v in G.REFERENCE_BOXES.items()}
     alphas = archive_alphas()
