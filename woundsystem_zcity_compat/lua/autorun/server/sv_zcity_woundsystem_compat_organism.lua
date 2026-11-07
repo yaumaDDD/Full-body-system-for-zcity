@@ -72,6 +72,9 @@ local cvPreserveReset = CreateConVar("zc_woundsystem_compat_preserve_reset_struc
 local cvDislocationStart = CreateConVar("zc_woundsystem_compat_dislocation_start", "35",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Starting bone displacement (0..100) for the C:U manual reduction minigame; lower = fewer hits and a bone that stays on screen", 10, 100)
+local cvBandageStrength = CreateConVar("zc_woundsystem_compat_bandage_strength", "3",
+    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
+    "Authoritative ZCity wound treatment multiplier for C:U bandage profiles", 0.1, 10)
 local cvDebug = CreateConVar("zc_woundsystem_compat_organism_debug", "0",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Print organism-authority diagnostics", 0, 1)
@@ -307,6 +310,50 @@ local function LimbBleedMap(ply, org)
 end
 WSZC.LimbBleedMap = LimbBleedMap -- exported for diagnostics / headless tests
 
+local NORMAL_WOUND_BLEED = 2.0
+
+local function NormalBleedingOnLimb(ply, org, limbId)
+    limbId = NormalizeLimb(limbId) or limbId
+    if not limbId or type(org) ~= "table" then return 0 end
+    local total = 0
+    for _, wound in pairs(org.wounds or {}) do
+        if type(wound) == "table"
+            and NormalizeLimb(LimbFromBoneName(BoneNameOf(ply, wound[4]))) == limbId then
+            total = total + math.max(tonumber(wound[1]) or 0, 0) * NORMAL_WOUND_BLEED
+        end
+    end
+    return total
+end
+
+--- Bandages treat only real ordinary ZCity wounds.  In particular, arterial
+--- wounds and damage-only shadow bleed are not legal bandage targets.
+function WSZC.GetBandageBleeding(ply, limbId)
+    local org = IsValid(ply) and ply.organism or nil
+    if Authority() and type(org) == "table" then
+        return NormalBleedingOnLimb(ply, org, limbId)
+    end
+    local h = H()
+    local state = h and h.GetLimbState and h.GetLimbState(ply, limbId)
+    return type(state) == "table" and math.max(tonumber(state.bleed) or 0, 0) or 0
+end
+
+--- ZCity's sv_blood uses #org.wounds and table.remove while iterating.  Keep
+--- the array compact after treatment, but retain every positive unrelated
+--- wound (including its original table and metadata).
+local function CompactWoundTable(wounds)
+    if type(wounds) ~= "table" then return end
+    local entries = {}
+    for key, wound in pairs(wounds) do
+        if type(key) == "number" and type(wound) == "table"
+            and (tonumber(wound[1]) or 0) > 0 then
+            entries[#entries + 1] = { key = key, wound = wound }
+        end
+    end
+    table.sort(entries, function(a, b) return a.key < b.key end)
+    for key in pairs(wounds) do wounds[key] = nil end
+    for i, entry in ipairs(entries) do wounds[i] = entry.wound end
+end
+
 ---------------------------------------------------------------------------
 -- Shrapnel minigame complications (pain + growing bleeding)
 ---------------------------------------------------------------------------
@@ -315,6 +362,8 @@ WSZC.LimbBleedMap = LimbBleedMap -- exported for diagnostics / headless tests
 -- used to overwrite those values from ply.organism every 250 ms, so nothing
 -- ever bled.  Detect the unexpected jump and mirror it into the ZCity
 -- organism: a real wound on that limb plus a rising irritation counter.
+local SHRAPNEL_COMPLICATION_TAG = "WSZC_SHRAPNEL_COMPLICATION"
+
 local COMPLICATION_BONES = {
     head = "ValveBiped.Bip01_Head1", thorax = "ValveBiped.Bip01_Spine2",
     abdomen = "ValveBiped.Bip01_Spine1",
@@ -362,11 +411,187 @@ function WSZC.ApplyShrapnelComplication(ply, org, limbId, bleedDelta, painDelta)
     end
     local bone = COMPLICATION_BONES[limbId] or COMPLICATION_BONES[NormalizeLimb(limbId) or ""]
         or "ValveBiped.Bip01_R_Hand"
-    org.wounds[last + 1] = {
-        math.Clamp(irritation * 1.2, 4, 24), nil, nil, bone, now,
+    local wound = {
+        math.Clamp(irritation * 1.2, 4, 24),
+        Vector and Vector(0, 0, 0) or nil,
+        Angle and Angle(0, 0, 0) or nil,
+        bone, now,
     }
+    -- This is an ADDITIONAL wound caused by a botched grasp, not the original
+    -- gunshot/blast wound.  Tag it so successful extraction can close exactly
+    -- this complication without deleting lawful unrelated injuries.
+    wound.wszcShrapnel = SHRAPNEL_COMPLICATION_TAG
+    wound.wszcLimb = limbId
+    org.wounds[last + 1] = wound
+    if ply.SetNetVar then pcall(ply.SetNetVar, ply, "wounds", org.wounds) end
     Debug("shrapnel complication on %s: bleed +%.2f pain +%.1f", tostring(limbId), bleedDelta, painDelta)
     return true
+end
+
+--- Successful extraction ends the complication that was created by a botched
+--- grasp.  It deliberately does NOT clear org.wounds as a whole: the initial
+--- gunshot/blast injury and every unrelated wound remain available to a real
+--- bandage.  Irritation is a property of the lodged fragment and ends with it.
+function WSZC.CloseShrapnelComplications(ply, org, limbId)
+    if not (IsValid(ply) and type(org) == "table") then return false end
+    limbId = NormalizeLimb(limbId) or limbId
+    local removedSeverity, removed = 0, 0
+    for _, wound in pairs(org.wounds or {}) do
+        if type(wound) == "table" and wound.wszcShrapnel == SHRAPNEL_COMPLICATION_TAG
+            and (wound.wszcLimb == nil or (NormalizeLimb(wound.wszcLimb) or wound.wszcLimb) == limbId) then
+            removed = removed + 1
+            removedSeverity = removedSeverity + math.max(tonumber(wound[1]) or 0, 0)
+            wound[1] = 0
+        end
+    end
+
+    local changed = removed > 0
+    if removed > 0 then
+        CompactWoundTable(org.wounds)
+        org.bleed = math.max((tonumber(org.bleed) or 0) - removedSeverity * 0.2, 0)
+        if ply.SetNetVar then pcall(ply.SetNetVar, ply, "wounds", org.wounds) end
+        ply.fullsend = true
+    end
+    if type(org.wszc_shrapnel_irritation) == "table"
+        and org.wszc_shrapnel_irritation[limbId] ~= nil then
+        org.wszc_shrapnel_irritation[limbId] = nil
+        changed = true
+    end
+    if type(org.wszc_shrapnel_floor) == "table" and org.wszc_shrapnel_floor[limbId] ~= nil then
+        org.wszc_shrapnel_floor[limbId] = nil
+        changed = true
+    end
+    return changed
+end
+
+--- Convert the SAME partial C:U bandage dose into an immediate reduction of
+--- authoritative ZCity wound severity.  C:U's own bleed timer is disabled in
+--- organism mode; mirroring only its shadow delta therefore used to consume
+--- the roll while sv_blood recreated the old bleed from unchanged org.wounds.
+--- Arterial wounds are intentionally excluded: they require a tourniquet.
+function WSZC.BandageSeverityPerFullEffect(profile)
+    local effects = type(profile) == "table" and type(profile.effects) == "table"
+        and profile.effects or {}
+    local fullBudget = math.max(tonumber(effects.bandageSlowAmount) or 0, 0)
+        + math.max(-(tonumber(effects.bleed) or 0), 0)
+    local strength = cvBandageStrength and cvBandageStrength:GetFloat() or 3
+    return fullBudget * math.max(tonumber(strength) or 3, 0.01) / NORMAL_WOUND_BLEED
+end
+
+--- Returns treatedAmount, beforeBleed, afterBleed in LimbBleedMap units.
+function WSZC.ApplyBandageToOrganism(ctx, profile, effectFraction)
+    local ply = ctx and ctx.ply
+    local org = IsValid(ply) and ply.organism or nil
+    if not (Authority() and type(org) == "table" and type(profile) == "table") then
+        return 0, nil, nil
+    end
+
+    local limbId = NormalizeLimb(ctx.limbId) or ctx.limbId
+    local normalBefore = NormalBleedingOnLimb(ply, org, limbId)
+    local totalBefore = (LimbBleedMap(ply, org)[limbId] or 0)
+    local arterial = math.max(totalBefore - normalBefore, 0)
+    local budget = WSZC.BandageSeverityPerFullEffect(profile)
+        * math.max(tonumber(effectFraction) or 0, 0) * NORMAL_WOUND_BLEED
+    if budget <= 0 then return 0, totalBefore, totalBefore end
+
+    local candidates = {}
+    for _, wound in pairs(org.wounds or {}) do
+        if type(wound) == "table" and (tonumber(wound[1]) or 0) > 0
+            and NormalizeLimb(LimbFromBoneName(BoneNameOf(ply, wound[4]))) == limbId then
+            candidates[#candidates + 1] = {
+                wound = wound,
+                -- Treat a shrapnel complication before a large unrelated wound;
+                -- otherwise every partial wrap can miss the reported problem.
+                priority = wound.wszcShrapnel == SHRAPNEL_COMPLICATION_TAG and 0 or 1,
+            }
+        end
+    end
+    table.sort(candidates, function(a, b)
+        if a.priority ~= b.priority then return a.priority < b.priority end
+        return (tonumber(a.wound[1]) or 0) > (tonumber(b.wound[1]) or 0)
+    end)
+
+    for _, candidate in ipairs(candidates) do
+        if budget <= 0.000001 then break end
+        local wound = candidate.wound
+        local severity = math.max(tonumber(wound[1]) or 0, 0)
+        local reduction = math.min(severity, budget / NORMAL_WOUND_BLEED)
+        wound[1] = math.max(severity - reduction, 0)
+        budget = math.max(budget - reduction * NORMAL_WOUND_BLEED, 0)
+    end
+
+    CompactWoundTable(org.wounds)
+    local normalAfter = NormalBleedingOnLimb(ply, org, limbId)
+    local treated = math.max(normalBefore - normalAfter, 0)
+    local after = normalAfter + arterial
+    if treated <= 0.000001 then return 0, totalBefore, after end
+
+    org.bleed = math.max((tonumber(org.bleed) or 0) - treated * 0.2, 0)
+    if type(ctx.limb) == "table" then
+        ctx.limb.bleed = after
+        -- Native bandagedAtSlow=10 is reached long before a real ZCity wound
+        -- closes.  A stale true flag must not veto the next physical roll.
+        ctx.limb.isBandaged = normalAfter <= 0.0001
+    end
+    ply._WSZCExpectedBleed = ply._WSZCExpectedBleed or {}
+    ply._WSZCExpectedBleed[limbId] = after
+    ply.fullsend = true
+    if ply.SetNetVar then pcall(ply.SetNetVar, ply, "wounds", org.wounds) end
+    Debug("bandage treated %s/%s: %.3f -> %.3f (-%.3f)",
+        tostring(ply), tostring(limbId), totalBefore, after, treated)
+    return treated, totalBefore, after
+end
+
+--- Select from authoritative wounds, never the 4 Hz presentation shadow.
+--- This keeps partially dressed real wounds eligible and rejects phantom
+--- damage-only/artery-only bleed that native BestLimb could otherwise choose.
+function WSZC.BestBandageLimb(ply, spec, preferred)
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    local org = IsValid(ply) and ply.organism or nil
+    if type(limbs) ~= "table" or type(org) ~= "table" then return nil end
+    preferred = NormalizeLimb(preferred) or preferred
+    local bestId, bestScore
+    for limbId, state in pairs(limbs) do
+        if type(state) == "table" and not state.dismembered then
+            local bleed = NormalBleedingOnLimb(ply, org, limbId)
+            if bleed > 0.1 then
+                local score = bleed + (limbId == preferred and 1000 or 0)
+                if not bestScore or score > bestScore
+                    or (score == bestScore and limbId < bestId) then
+                    bestId, bestScore = limbId, score
+                end
+            end
+        end
+    end
+    return bestId
+end
+
+--- Replace only ZCity WoundBridge's private BestLimb upvalue.  Syringes,
+--- tourniquets and non-authority mode keep the stock function unchanged.
+local patchedBandageSelectors = setmetatable({}, { __mode = "k" })
+function WSZC.PatchBandageBestLimb(swepHeal)
+    if type(swepHeal) ~= "function" or not (debug and debug.getupvalue and debug.setupvalue) then
+        return false
+    end
+    for i = 1, 64 do
+        local name, bestLimb = debug.getupvalue(swepHeal, i)
+        if not name then break end
+        if name == "BestLimb" and type(bestLimb) == "function" then
+            if patchedBandageSelectors[bestLimb] then return true end
+            local wrapped = function(ply, spec, preferred)
+                if Authority() and type(spec) == "table" and spec.kind == "bandage"
+                    and IsValid(ply) and type(ply.organism) == "table" then
+                    return WSZC.BestBandageLimb(ply, spec, preferred)
+                end
+                return bestLimb(ply, spec, preferred)
+            end
+            patchedBandageSelectors[wrapped] = true
+            debug.setupvalue(swepHeal, i, wrapped)
+            return true
+        end
+    end
+    return false
 end
 
 -- Resolve the player who owns a damaged player or fake ragdoll.
@@ -558,6 +783,12 @@ local function SyncShrapnel(ply, org)
             if (tonumber(org.wszc_shrapnel[limbId]) or 0) ~= n then
                 org.wszc_shrapnel[limbId] = n
                 if n <= 0 then org.wszc_shrapnel_floor[limbId] = nil end
+            end
+            if n <= 0 then
+                -- CountRemainingPieces() reaches zero only when every fragment
+                -- is out and released.  Close this limb's tagged complication
+                -- now; do not wait for an unrelated later bandage or reset.
+                WSZC.CloseShrapnelComplications(ply, org, limbId)
             end
         end
     end
@@ -1547,6 +1778,49 @@ local function Stub(name, ret)
     end
 end
 
+--- Native RemoveLimbStatus already clears TOURNIQUET on the selected limb and
+--- all downstream C:U states.  Only its item-return policy is wrong for ZCity:
+--- ReturnAttachedMedicalItem uses C:U's hidden inventory and otherwise spawns
+--- item_healthvial (seen by the player as a bandage).  Return the actual ZCity
+--- SWEP instead, leaving the native limb-removal receiver byte-for-byte intact.
+function WSZC.InstallTourniquetReturnBridge()
+    local h = H()
+    if not (h and type(h.ReturnAttachedMedicalItem) == "function") then return false end
+    if h._WSZCOriginalReturnAttachedMedicalItem then return true end
+    local original = h.ReturnAttachedMedicalItem
+    h._WSZCOriginalReturnAttachedMedicalItem = original
+    h.ReturnAttachedMedicalItem = function(ply, itemId, durability, preferredSlot)
+        local normalized = WSZC.NormalizeItemId and WSZC.NormalizeItemId(itemId)
+            or string.upper(tostring(itemId or ""))
+        if not Authority() or normalized ~= "TOURNIQUET" then
+            return original(ply, itemId, durability, preferredSlot)
+        end
+
+        -- A remote medic performs the removal and receives the reusable item;
+        -- ordinary self-treatment still returns it to the patient.
+        local recipient = WSZC.RemoteMedicalReturnRecipient
+        if not IsValid(recipient) then recipient = ply end
+        if not (IsValid(recipient) and recipient:IsPlayer() and recipient:Alive() and recipient.Give) then
+            Warn("cannot return tourniquet: invalid recipient")
+            return false
+        end
+        local ok, swep = pcall(recipient.Give, recipient, "weapon_tourniquet")
+        if not ok or not IsValid(swep) then
+            Warn("cannot return weapon_tourniquet: " .. tostring(swep))
+            return false
+        end
+        swep.modeValues = type(swep.modeValues) == "table" and swep.modeValues or {}
+        swep.modeValues[1] = 1
+        if swep.SetNetVar then pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues) end
+        -- Player:Give normally triggers WeaponEquip/RenewInv.  Renew once more
+        -- when ZCity exposes it so the selector is refreshed immediately even
+        -- for an explicitly borrowed remote-treatment context.
+        if hg and type(hg.RenewInv) == "function" then pcall(hg.RenewInv, recipient) end
+        return true
+    end
+    return true
+end
+
 -- ZCity medicine goes through WB.SwepHeal(): instant items use spec.fn()
 -- directly on the C:U body, continuous items use H.ApplyItemToBody() later from
 -- the minigame's onProgress.  Wrap the synchronous path here and let
@@ -1555,10 +1829,13 @@ end
 WSZC.SwepHealDepth = 0
 
 local function InstallMedicalBridge()
+    WSZC.InstallTourniquetReturnBridge()
     local wb = WB()
-    if not (wb and wb.SwepHeal) or wb._WSZCSwepHealPatched then return end
+    if not (wb and wb.SwepHeal) then return false end
+    if wb._WSZCSwepHealPatched then return true end
     wb._WSZCSwepHealPatched = true
     local original = wb.SwepHeal
+    WSZC.PatchBandageBestLimb(original)
     wb.SwepHeal = function(swep, ent, mode, bone)
         if not Authority() then return original(swep, ent, mode, bone) end
         local ply = OwnerOf(ent) or (IsValid(ent) and ent:IsPlayer() and ent)
@@ -1576,7 +1853,9 @@ local function InstallMedicalBridge()
         end
         return a, b, c
     end
+    return true
 end
+WSZC.InstallMedicalBridge = InstallMedicalBridge
 
 local function DisableCUPhysiology()
     if not Authority() then return end

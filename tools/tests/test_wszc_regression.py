@@ -1330,6 +1330,50 @@ if LuaRuntime is not None:
             check('REMOTE_' + mode.upper() + '_HARNESS_LOAD', False)
             print('ERR REMOTE_' + mode.upper() + '_HARNESS_LOAD', type(exc).__name__, str(exc)[:300])
 
+# Tourniquet/shrapnel/bandage treatment runs against the canonical ZCity
+# WoundBridge from the pinned ZIP plus the production connector sources.
+if LuaRuntime is not None:
+    try:
+        with zipfile.ZipFile(ROOT / 'zcity.zip') as archive:
+            zcity_shared = archive.read('z_city/lua/homigrad/woundbridge/sh_woundbridge.lua').decode('utf-8')
+            zcity_server = archive.read('z_city/lua/homigrad/woundbridge/sv_woundbridge.lua').decode('utf-8')
+        with zipfile.ZipFile(ROOT / 'casualites unknown.zip') as archive:
+            native_gauze = archive.read(
+                'casualties_unknown_health_system_beta/lua/woundsystem/medical_tools/sh_gauze.lua'
+            ).decode('utf-8')
+        # Offline Lua has no GMod `continue`; preserve the canonical loop with
+        # goto+label solely in the test copy (the shipped addon is untouched).
+        zcity_server = zcity_server.replace('then continue end', 'then goto continue end')
+        zcity_server = zcity_server.replace(
+            '\t\t\tbestId, best = id, score\n\t\tend\n\tend\n\n\treturn bestId',
+            '\t\t\tbestId, best = id, score\n\t\tend\n\t\t::continue::\n\tend\n\n\treturn bestId',
+            1,
+        )
+        medical_lua = LuaRuntime(unpack_returned_tuples=True)
+        medical_lua.globals().ZCITY_SHARED_SOURCE = zcity_shared
+        medical_lua.globals().ZCITY_SERVER_SOURCE = zcity_server
+        medical_lua.globals().NATIVE_GAUZE_SOURCE = native_gauze
+        medical_lua.globals().ORGANISM_SOURCE = organism_s
+        medical_lua.globals().SERVER_SOURCE = (SERVER / 'sv_zcity_woundsystem_compat.lua').read_text(encoding='utf-8')
+        medical_fixture = (ROOT / 'tools/tests/medical_treatment_runtime.lua').read_text(encoding='utf-8')
+        medical_cases = medical_lua.execute(medical_fixture)
+        invoke = medical_lua.eval('function(fn) local ok, err = pcall(fn); return ok, err end')
+        index = 1
+        while medical_cases[index] is not None:
+            case = medical_cases[index]
+            try:
+                ok, err = invoke(case.fn)
+                check(case.name, ok)
+                if not ok:
+                    print('ERR', case.name, str(err)[:300])
+            except Exception as exc:
+                check(case.name, False)
+                print('ERR', case.name, type(exc).__name__, str(exc)[:300])
+            index += 1
+    except Exception as exc:
+        check('MEDICAL_HARNESS_LOAD', False)
+        print('ERR MEDICAL_HARNESS_LOAD', type(exc).__name__, str(exc)[:400])
+
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)
 passed = sum(1 for _, ok in results if ok)

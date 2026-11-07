@@ -178,7 +178,10 @@ if MODE == "server" then
         H.TryUseInventoryMedicalItem(p, slotIdx, itemId, limbId)
     end
     net.Receivers.WoundSystem_RemoveLimbStatus = function(_, p)
-        statuses[#statuses + 1] = { p = p, limb = net.ReadString(), status = net.ReadString() }
+        statuses[#statuses + 1] = {
+            p = p, limb = net.ReadString(), status = net.ReadString(),
+            returnRecipient = WSZC.RemoteMedicalReturnRecipient,
+        }
     end
 
     local function InstallNative(kind, networkKind)
@@ -334,10 +337,12 @@ if MODE == "server" then
         Equal(inventories[patient][1].durability, 77)
     end)
 
-    Test("M05 status removal executes against the patient", function()
+    Test("M05 status removal treats patient and returns tourniquet to medic", function()
         Reset(); Open(patient)
         Action(patient, "WoundSystem_RemoveLimbStatus", { "arm_R", "TOURNIQUET" })
         Equal(#statuses, 1); Equal(statuses[1].p, patient); Equal(statuses[1].status, "TOURNIQUET")
+        Equal(statuses[1].returnRecipient, op)
+        Equal(WSZC.RemoteMedicalReturnRecipient, nil, "recipient override must be restored")
     end)
 
     Test("M06 shrapnel Start/Input/Close and asynchronous state use patient session + medic UI", function()

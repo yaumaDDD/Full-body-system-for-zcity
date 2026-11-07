@@ -103,6 +103,13 @@ WIP-аддон больше не обязателен), а весь `casunknown-
 4. Предмет/заряд списывается у вас, лечение применяется к пациенту. Бинт и
    непрерывный шприц работают через те же WSZC external-мини-игры.
 
+При снятии жгута native C:U очищает именно выбранный limb, а вам в weapon
+selector возвращается `weapon_tourniquet` (при самолечении — пациенту). После
+полного извлечения осколков исходную рану можно сразу продолжить бинтовать:
+удаляется только дополнительная рана-осложнение от неудачного рывка, не вся
+`org.wounds`. Обычные раны лечатся частичными дозами бинта; артериальное
+кровотечение по-прежнему требует жгут.
+
 Кнопка управляется `zc_woundsystem_compat_remote_inspect_button 1`. Смерть,
 disconnect, удаление друг от друга и закрытие WoundView прерывают сессию.
 Сервер не доверяет клиентски выбранной цели без активной inspection session и
@@ -164,6 +171,7 @@ ZCity сам вызывает `resource.AddWorkshop` при `hg_loadcontent 1`:
 woundsys_enabled 1                      HUD/мини-игры/shrapnel C:U (не выключать)
 zc_woundsystem_bridge 1                 сам мост ZCity
 zc_woundsystem_compat_authority 1       ply.organism авторитетен (0 = старый мост)
+zc_woundsystem_compat_bandage_strength 3  сила лечения реальных org.wounds бинтом
 zc_woundsystem_compat_shrapnel 1        единый state.shrapnel
 zc_woundsystem_compat_glass_shrapnel 1  стекло как источник шрапнели
 zc_woundsystem_compat_inspect_button 1  кнопка «Проверить травмы» в радиал-меню

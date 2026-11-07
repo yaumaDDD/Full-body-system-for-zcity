@@ -560,7 +560,13 @@ net.Receive("WSZC_RemoteMedicalAction", function(_, operator)
             pcall(WSZC.ApplyMedicalDelta, target, payload[3], before)
         end
     elseif action == "WoundSystem_RemoveLimbStatus" then
+        -- Native removal still runs as the PATIENT, so it clears exactly the
+        -- requested limb.  Only a returned tourniquet changes recipient: the
+        -- medic who removed it gets weapon_tourniquet in their ZCity selector.
+        local previousRecipient = WSZC.RemoteMedicalReturnRecipient
+        WSZC.RemoteMedicalReturnRecipient = operator
         InvokeNative(operator, target, action, payload, 0)
+        WSZC.RemoteMedicalReturnRecipient = previousRecipient
     end
 end)
 

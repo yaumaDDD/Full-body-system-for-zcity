@@ -117,6 +117,33 @@ remote treatment** пять слотов показывают реальные �
 inspection/native/external sessions при смерти, дистанции, потере цели,
 disconnect и закрытии панели.
 
+## Жгут и перевязка после извлечения шрапнели
+
+- `WoundSystem_RemoveLimbStatus` по-прежнему выполняется нативно для выбранного
+  limb: C:U очищает `TOURNIQUET` и downstream states. Connector перехватывает
+  только `Health.ReturnAttachedMedicalItem(..., "TOURNIQUET", ...)`. Вместо
+  скрытого C:U inventory или `item_healthvial` вызывается
+  `ply:Give("weapon_tourniquet")`, восстанавливается `modeValues[1] = 1` и
+  обновляется `hg.RenewInv`, поэтому жгут виден в weapon selector ZCity.
+  При self-removal получатель — пациент; при remote removal — медик.
+- Рана, созданная `ApplyShrapnelComplication` после неудачного рывка, имеет tag
+  `WSZC_SHRAPNEL_COMPLICATION` и `wszcLimb`. Когда native мини-игра доводит
+  `state.shrapnel` до нуля, `SyncShrapnel` удаляет только такие tagged wounds на
+  этом limb и очищает его irritation/floor. Исходная рана от выстрела/взрыва,
+  осложнения на других limbs и все посторонние раны сохраняются.
+- `WB.SwepHeal` использует patched `BestLimb` только для bandage: цель выбирается
+  по обычным `org.wounds`, а не по shadow `state.bleed/isBandaged`. Поэтому
+  частично перевязанная рана не блокирует следующий рулон, а phantom/arterial
+  bleed не создаёт бесполезную сессию. Каждая `onProgress` доза уменьшает
+  severity реальных ordinary wounds пропорционально потраченной durability;
+  generic medical mirror не вычитает то же bleed лечение повторно.
+  `org.arterialwounds` бинт не изменяет.
+
+Множитель преобразования C:U bandage profile в severity ZCity:
+`zc_woundsystem_compat_bandage_strength 3` (диапазон `0.1..10`). Это не второй
+health simulation: окончательный расход крови по-прежнему считает ZCity
+`sv_blood` из оставшихся `org.wounds`.
+
 ## Шрапнель: одно состояние, три источника
 
 Поле `state.shrapnel` в `PlayerLimbs` — **единственный** источник истины.
@@ -307,6 +334,7 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | Конвар | Откуда | Назначение |
 | --- | --- | --- |
 | `zc_woundsystem_compat_authority` | этот аддон, replicated | **По умолчанию `1`**: `ply.organism` авторитетен, C:U = UI/мини-игры/показатели/шрапнель. `0` — прежний мост, C:U владеет ранами. Переключается на ходу, карту перезапускать не обязательно. |
+| `zc_woundsystem_compat_bandage_strength` | этот аддон (server) | `3` — множитель преобразования bandage profile в уменьшение реальной severity `org.wounds`; диапазон `0.1..10`. Не действует на arterial wounds. |
 | `zc_woundsystem_compat_shrapnel` | этот аддон | `1` — единый `state.shrapnel` (пули, взрывы, стекло); `0` — не создавать осколки. |
 | `zc_woundsystem_compat_glass_shrapnel` | этот аддон | `1` — осколки от стекла руками/ногами и ragdoll-коллизий. |
 | `zc_woundsystem_compat_shrapnel_regen_block` | этот аддон | `1` — застрявший осколок блокирует регенерацию лимба ZCity до извлечения. |

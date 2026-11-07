@@ -570,12 +570,14 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         if snapOk then medicalBefore = snap end
     end
     local ok = false
+    local bandageEffectFraction = 0
 
     if minigame == "bandage" then
         local profile = BandageProfile(itemId, item)
         local perWrap = math.max(tonumber(profile.durabilityPerWrap) or (maxDurability / 12), 0.0001)
         local wrapFraction = used / perWrap
         local effectFraction = wrapFraction / math.max(tonumber(profile.effectDivisor) or 1, 1)
+        bandageEffectFraction = effectFraction
         ctx.wrapFraction = wrapFraction
         ctx.degreesMoved = wrapFraction * 360
         ctx.profile = profile
@@ -612,6 +614,19 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
     end
 
     if not ok then return false, 0 end
+
+    if minigame == "bandage" and WSZC.ApplyBandageToOrganism then
+        local treatOk, treated, _, afterBleed = pcall(
+            WSZC.ApplyBandageToOrganism, ctx, ctx.profile, bandageEffectFraction)
+        if not treatOk then
+            if WSZC.Warn then WSZC.Warn("bandage organism treatment failed: " .. tostring(treated)) end
+        elseif (tonumber(treated) or 0) > 0 and medicalBefore then
+            -- The authoritative wounds and immediate org.bleed were updated by
+            -- ApplyBandageToOrganism.  Zero ONLY this snapshot's bleed delta so
+            -- the generic C:U -> organism mirror cannot treat the same dose twice.
+            medicalBefore.limbBleed = tonumber(afterBleed) or medicalBefore.limbBleed
+        end
+    end
 
     -- When called from inside WB.SwepHeal() the outer wrapper already measured
     -- the whole body delta; applying ours too would double the medicine.
