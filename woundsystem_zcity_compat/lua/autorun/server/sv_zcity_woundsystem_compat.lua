@@ -141,16 +141,16 @@ local FALLBACK_HITGROUP = {
     [HITGROUP_RIGHTARM] = "forearm_R",
     [HITGROUP_LEFTLEG] = "crus_L",
     [HITGROUP_RIGHTLEG] = "crus_R",
-    [HITGROUP_GEAR] = "abdomen",
+    [HITGROUP_GEAR] = "pelvis",
     [HITGROUP_GENERIC] = "thorax",
 }
 
 local FALLBACK_PARENT_LIMB = {
     hand_R = "forearm_R", forearm_R = "arm_R", arm_R = "thorax",
     hand_L = "forearm_L", forearm_L = "arm_L", arm_L = "thorax",
-    foot_R = "crus_R", crus_R = "thigh_R", thigh_R = "abdomen",
-    foot_L = "crus_L", crus_L = "thigh_L", thigh_L = "abdomen",
-    neck = "head", head = "thorax", abdomen = "thorax",
+    foot_R = "crus_R", crus_R = "thigh_R", thigh_R = "pelvis",
+    foot_L = "crus_L", crus_L = "thigh_L", thigh_L = "pelvis",
+    neck = "head", head = "thorax", abdomen = "thorax", pelvis = "abdomen",
 }
 
 local FALLBACK_RAGDOLL_BONES = {
@@ -169,7 +169,8 @@ local FALLBACK_RAGDOLL_BONES = {
     { limb = "thigh_L", patterns = { "l_thigh", "l thigh", "left thigh", "l_upperleg", "left upperleg" } },
     { limb = "thigh_R", patterns = { "r_thigh", "r thigh", "right thigh", "r_upperleg", "right upperleg" } },
     { limb = "thorax", patterns = { "spine2", "spine3", "spine4", "chest", "rib", "sternum" } },
-    { limb = "abdomen", patterns = { "pelvis", "spine", "hips", "hip", "spine1" } },
+    { limb = "abdomen", patterns = { "spine1", "stomach", "abdomen" } },
+    { limb = "pelvis", patterns = { "pelvis", "spine", "hips", "hip" } },
 }
 
 local FALLBACK_LIMB_CLAMPS = {

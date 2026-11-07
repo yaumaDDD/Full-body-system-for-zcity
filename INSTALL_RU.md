@@ -60,9 +60,10 @@
 | Нативная мини-игра вправления меньше исходного квадрата C:U | `zc_woundsystem_compat_native_minigame_zoom 0.85` (диапазон `0.4..1.2`) |
 | Кость вправления рядом с суставом и на экране | `zc_woundsystem_compat_dislocation_start 35` (диапазон `10..100`) |
 | Компактная рука одного размера во всех мини-играх | `zc_woundsystem_compat_hand_cursor_scale 0.55`, `..._handanim_scale 1`; единый множитель в C:U/WSZC, миграция revision 6, hitbox/центр/rotation не меняются |
-| Кукла WoundView собрана из 16 пиксельно трассированных интерактивных частей чистого `1435.png` + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, `zc_woundsystem_compat_unitmenu_scale 0.25`; полный black/white POT round-trip = 0 различий, native `woundsys_ui_scale` компенсируется (диапазон `0.1..0.8`) |
+| Кукла WoundView собрана из 17 пиксельно трассированных интерактивных частей чистого `1435.png` + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, `zc_woundsystem_compat_unitmenu_scale 0.25`; полный black/white POT round-trip = 0 различий, native `woundsys_ui_scale` компенсируется (диапазон `0.1..0.8`) |
 | Отдельная шея: hitbox/hover, `Broken neck`, подсказка Skin/Muscle и синхронизация на первой жизни | `org.skull`, `Bip01_Neck1` и `neckartery` относятся к `PlayerLimbs.neck`; head не дублирует перелом. Подсказка: `Neck / Skin: N% / Muscle: N%`; ZCity HUD, таймер и нижние слоты сохранены |
-| Все 651 UI-материалов внутри сборки (без ERROR и ручного копирования) | `woundsystem_zcity_compat/materials/` + зеркало в `casualties_unknown_health_system_beta/materials/`, генератор `tools/pack_ui_materials.py` |
+| Живот и таз — отдельные native части | `abdomen` выше шва `y=520`, `pelvis` ниже; у каждого свой sprite/hitbox/hover/action/net state. `Spine1/Stomach` → abdomen, `Pelvis/Hips` → pelvis. Бинт лечит только выбранную рану; общий `org.pelvis` не дублируется |
+| Все 653 UI-материала внутри сборки (без ERROR и ручного копирования) | `woundsystem_zcity_compat/materials/` + зеркало в `casualties_unknown_health_system_beta/materials/`, генератор `tools/pack_ui_materials.py` |
 | Человеческая рука C:U в мини-играх — ладонь/кулак 512×1260 | `zc_woundsystem_compat_handanim 1`, `..._hide_minigame_hand 0`, общий размер `..._hand_cursor_scale 0.55`; спрайты `wszc/minigame/hand_idle.png` / `hand_click.png` |
 | Зелёные полосы/лёгкие/ЭКГ сканера слева скрыты | `zc_woundsystem_compat_hide_unit_panel 1` (глушатся `DrawTexturedRectUV`, `DrawLine`, `DrawPoly`) |
 | Экран смерти C:U не рисуется, но ЛКМ респавнит | включается вместе с `zc_woundsystem_compat_disable_cu_fx 1`; хук обёрнут, а не удалён |
@@ -72,7 +73,7 @@
 | WSZC мини-игры на весь экран; нативные C:U — умеренно отдалены | `zc_woundsystem_compat_fullscreen_minigame 1`, `zc_woundsystem_compat_fullscreen_native 0`, `zc_woundsystem_compat_native_minigame_zoom 0.85`. Растяжение нативных игр давало огромный обрезанный осколок и уводило нижнюю часть раны за экран |
 | Нет белых пустых слотов и чёрной подложки поверх куклы | `HiddenRegionRaw()` для `DrawOutlinedRect`/`DrawRect`/`RoundedBox`/`DrawLine`/`DrawPoly`; whitelist только для текстур и текста |
 | После «Reset organism» снова можно быстро бегать | `RESET_KEEP` больше не несёт `canmove/stun/consciousness/brain`; `WSZC.ClearMovementPenalties()` снимает штрафы движения во всех трёх путях ресета |
-| Кукла повторяет чистый зелёный эталон `1435.png`, включая обводку и расстановку | `tools/build_unitmenu_materials.py`: SHA-pinned clean reference, 16 независимых анатомических масок, **стандартный чёрный `(0,0,0)`** и фактические белые контуры, включая пальцы/подмышки/швы/стопы. Каждый POT sprite проверяется обратным C:U downsample: **0 различающихся black/white пикселей во всех полных cells**, 0 на границах POT, 9 scanlines точно равны 1435. Старый archive-fit — только fallback. `zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` **только** для `*_fill.png`; `*_edge.png` остаётся под `finalOutline` C:U, hover/hitboxes/dismemberment не изменены |
+| Кукла повторяет чистый зелёный эталон `1435.png`, включая обводку и расстановку | `tools/build_unitmenu_materials.py`: SHA-pinned clean reference, 17 независимых анатомических масок, **стандартный чёрный `(0,0,0)`** и фактические белые контуры, включая пальцы/подмышки/швы/стопы. Каждый POT sprite проверяется обратным C:U downsample: **0 различающихся black/white пикселей во всех полных cells**, 0 на границах POT, 9 scanlines точно равны 1435. Старый archive-fit — только fallback. `zc_woundsystem_compat_unitmenu_tint 1` ставит белый `SetDrawColor` **только** для `*_fill.png`; `*_edge.png` остаётся под `finalOutline` C:U, hover/hitboxes/dismemberment не изменены |
 | Нет ложного `disinfected/processing`, настоящие статусы сохранены | Native `AddHudIcon` пропускает только `Icons.disinfected`; infection/bleed/fracture рисуются штатно, а gameplay `disinfectTime` не обнуляется |
 | Повторный бинт не залипает на частичной/закрытой ране | `BestBandageLimb` читает реальные `organism.wounds`/aftercare и игнорирует stale `isBandaged` и shadow-only bleed. После последнего treatment сервер вызывает `completed`, обычный `onClose/AfterUse`, удаляет slot и overlay |
 | Лишний текст убран, затемнение фона сохранено во всех мини-играх | `zc_woundsystem_compat_hide_minigame_text 1`: `WSZC.InstallMinigameTextFilter()` обнуляет `title/value/guide/panelAlpha` в `Clip.DrawHeader` (иконка остаётся), глушит `Clip.DrawExitGuide` и **сохраняет `Clip.DrawBackdrop`** (затемнение фона), точечно фильтрует chrome-шрифты (`RetroTooltipTitle*`, `RetroTooltipDesc*`, `RetroMinigameGuide*`) **и AED `WoundSystemAEDStatus`** (только пока мини-игра активна). `minigameshrapnel.png` — передний слой раны, **не удаляется**; все игровые спрайты защищены `WSZC.IsMinigameGameplaySprite()`. Уведомления ZCity, статусные надписи C:U (кроме AED), красный death-текст, капли, `Icons.*`, осколки и рука не трогаются; `0` — вернуть как было |
@@ -134,7 +135,7 @@ ZCity сам вызывает `resource.AddWorkshop` при `hg_loadcontent 1`:
 
 **Про C:U — важное исключение.** В исходном ZIP репозитория лежат только Lua,
 3 шрифта и 3 шейдера — `materials/` и `sound/` там нет. Сборка **уже добавила**
-все UI-материалы (651 файл) и в `woundsystem_zcity_compat/materials/`, и в
+все UI-материалы (653 файла) и в `woundsystem_zcity_compat/materials/`, и в
 `casualties_unknown_health_system_beta/materials/`: WoundView, лимбы, иконки,
 экраны и мини-игры больше не показывают ERROR, вручную ничего перекидывать не
 надо, `woundsys_resource_downloads 1` для них не требуется. Остаются только
@@ -204,7 +205,7 @@ ragdoll→standing, `RestoreBones`, `ReconcileSpawnShrapnel`, мини-игры 
 попиксельно: спрайты степеней двойки (C:U мерит `mat:Width()`, а GMod
 округляет PNG до POT), калибровка `S=0.4155`, центр `(682.5,558.2)` по
 `Screenshot_1-10.png`. Равномерное ×1.15 и «~2%» отменены live.
-Изменены размеры/положение 16 лимбов и hitbox'ы; шея добавлена в native C:U состояние.
+Размеры/положение 17 лимбов и hitbox'ы заданы по 1435; шея и таз добавлены в native C:U состояние.
 
 ## №10 (по `Screenshot_3-7.png` / `Screenshot_4-6.png`): доводка куклы, курсор и затемнение
 

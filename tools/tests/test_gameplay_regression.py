@@ -278,7 +278,7 @@ return activeWeaponWorks, pistol._limbs.hand_R.shrapnel == 0 and pistol._limbs.f
 
     placement = lua.execute(r'''
 local ALL = {
-    "head", "neck", "thorax", "abdomen",
+    "head", "neck", "thorax", "abdomen", "pelvis",
     "arm_L", "forearm_L", "hand_L", "arm_R", "forearm_R", "hand_R",
     "thigh_L", "crus_L", "foot_L", "thigh_R", "crus_R", "foot_R",
 }
@@ -325,7 +325,7 @@ for _, id in ipairs(ALL) do
 end
 return shotgunActual, glassOnly, nativeWoundSchema
 ''')
-    check("R29 shotgun stays on each actually hit limb across all 16 C:U limbs", placement[0])
+    check("R29 shotgun stays on each actually hit limb across all 17 C:U limbs", placement[0])
     check("R30 glass alone keeps its hands/feet-only spawn mapping", placement[1])
     check("R31 synthetic shrapnel wounds satisfy native localPos/localAng schema", placement[2])
 
@@ -1501,7 +1501,7 @@ h.InitPlayer = function(target)
     }
 end
 assert(WSZC.InstallNeckState(h))
-h.InitPlayer(ply) -- real exported wrapper: native reset, then sixteenth state
+h.InitPlayer(ply) -- real exported wrapper: native reset, then added neck/pelvis states
 local firstLife = ply._limbs.neck ~= nil
     and hook._t.PlayerSpawn.WSZC_NeckFirstLifeSync ~= nil
     and h.Const.ParentLimb.neck == "head"
@@ -1543,6 +1543,70 @@ return firstLife, separated, routed, headTreatmentIndependent and neckTreatmentW
     check("R66 skull fracture/muscle render on neck only, never duplicated on head", neck_state[1])
     check("R67 Neck1 and neckartery route separately from Head1 wounds", neck_state[2])
     check("R68 neck treatment heals skull; head treatment cannot heal the neck", neck_state[3])
+
+    pelvis_state = lua.execute(r'''
+local ply = MakePlayer()
+local h = WoundSystem.Health
+h.Const = {
+    ParentLimb = {}, LimbToBones = {},
+    ConnectedLimbs = { thorax = { "head", "abdomen" }, abdomen = { "thorax", "thigh_R", "thigh_L" } },
+    NonDismemberableCoreLimbs = { abdomen = true, thorax = true },
+    RagdollDamageBones = {
+        { limb = "thorax", patterns = { "spine2" } },
+        { limb = "abdomen", patterns = { "pelvis", "spine", "spine1" } },
+    },
+}
+h.InitPlayer = function(target)
+    target._limbs = {
+        head = { skin = 100, muscle = 100, shrapnel = 0, bleed = 0, pain = 0 },
+        thorax = { skin = 100, muscle = 100, shrapnel = 0, bleed = 0, pain = 0 },
+        abdomen = { skin = 12, muscle = 34, shrapnel = 0, bleed = 0, pain = 0,
+            customStatuses = { OLD = true } },
+    }
+end
+assert(WSZC.InstallNeckState(h))
+h.InitPlayer(ply)
+local pelvis = ply._limbs.pelvis
+local firstLife = pelvis ~= nil and ply._limbs.neck ~= nil
+    and pelvis.skin == 100 and pelvis.muscle == 100 and pelvis.customStatuses.OLD == nil
+    and h.Const.ParentLimb.pelvis == "abdomen"
+    and h.Const.ParentLimb.thigh_R == "pelvis"
+    and h.Const.NonDismemberableCoreLimbs.pelvis == true
+    and h.Const.ConnectedLimbs.abdomen[2] == "pelvis"
+
+ply.organism.pelvis = 0.4
+ply.organism.wounds = {
+    { 2, Vector(), Angle(), "ValveBiped.Bip01_Spine1", 0 },
+    { 3, Vector(), Angle(), "ValveBiped.Bip01_Pelvis", 0 },
+    { 5, Vector(), Angle(), "ValveBiped.Bip01_Spine2", 0 },
+}
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local bleed = WSZC.LimbBleedMap(ply, ply.organism)
+local routed = bleed.abdomen == 4 and bleed.pelvis == 6 and bleed.thorax == 10
+    and ply._limbs.abdomen.bleed == 4 and ply._limbs.pelvis.bleed == 6
+
+local treated, before, after = WSZC.ApplyBandageToOrganism({
+    ply = ply, limbId = "pelvis", limb = ply._limbs.pelvis,
+}, { effects = { bandageSlowAmount = 2 } }, 1)
+local abdomenWound, thoraxWound
+for _, wound in pairs(ply.organism.wounds) do
+    if wound[4] == "ValveBiped.Bip01_Spine1" then abdomenWound = wound[1] end
+    if wound[4] == "ValveBiped.Bip01_Spine2" then thoraxWound = wound[1] end
+end
+local treatmentSeparated = before == 6 and after == 0 and treated == 6
+    and abdomenWound == 2 and thoraxWound == 5
+
+ply._limbs.pelvis.muscle = 60
+local beforeMedical = WSZC.SnapshotMedical(ply, "pelvis")
+ply._limbs.pelvis.muscle = 80
+WSZC.ApplyMedicalDelta(ply, "pelvis", beforeMedical)
+local oneDelta = math.abs(ply.organism.pelvis - 0.2) < 0.0001
+return firstLife, routed, treatmentSeparated, oneDelta
+''')
+    check("R69 first-life pelvis is fresh, native and parented between abdomen/thighs", pelvis_state[0])
+    check("R70 Spine1/Pelvis/Spine2 wounds route to abdomen/pelvis/thorax exactly", pelvis_state[1])
+    check("R71 pelvis bandage treats only pelvis, never abdomen or thorax wounds", pelvis_state[2])
+    check("R72 pelvis muscle treatment applies ONE org.pelvis delta", pelvis_state[3])
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

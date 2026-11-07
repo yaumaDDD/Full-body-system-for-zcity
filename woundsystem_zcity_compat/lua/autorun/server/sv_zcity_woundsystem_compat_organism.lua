@@ -149,7 +149,11 @@ local LIMB_ORG = {
     head      = { dmg = nil,      amp = "headamputated", dis = nil },
     neck      = { dmg = "skull",  amp = "headamputated", dis = nil },
     thorax    = { dmg = "chest",  amp = nil,              dis = nil },
+    -- ZCity has ONE lower-torso scalar (org.pelvis).  Abdomen and pelvis have
+    -- independent C:U states/actions, while real wounds are routed by bone.
+    -- A single treatment is applied once; the scalar is never added twice.
     abdomen   = { dmg = "pelvis", amp = nil,              dis = nil },
+    pelvis    = { dmg = "pelvis", amp = nil,              dis = nil },
     -- Native AmputateLimb() starts at the FOREARM / CALF, exactly like
     -- WB.ZLimbToWS (larm -> forearm_L, lleg -> crus_L).  The upper arm/thigh
     -- is the remaining stump and must NOT be marked dismembered.  The previous
@@ -200,6 +204,27 @@ function WSZC.EnsureNeckState(ply)
     return true
 end
 
+--- Seventeenth native entry: pelvis has its own hover/action/net state.  It is
+--- a fresh state, not table.Copy(current abdomen damage); ZCity remains the
+--- authority and PushShadow routes each actual wound to exactly one of them.
+function WSZC.EnsurePelvisState(ply)
+    if not IsValid(ply) then return false end
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    if type(limbs) ~= "table" then return false end
+    if type(limbs.pelvis) == "table" then return false end
+
+    local state = table.Copy(WSZC.NeckDefaultState or NECK_DEFAULT_STATE)
+    state.customStatuses = {}
+    if WoundSystem and WoundSystem.Statuses
+        and type(WoundSystem.Statuses.ApplyDefaultState) == "function" then
+        pcall(WoundSystem.Statuses.ApplyDefaultState, state)
+    end
+    limbs.pelvis = state
+    if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, "pelvis", true) end
+    return true
+end
+
 function WSZC.InstallNeckState(h)
     h = h or H()
     if type(h) ~= "table" then return false end
@@ -219,6 +244,7 @@ function WSZC.InstallNeckState(h)
         WSZC._NeckInitWrapper = function(ply)
             local a, b, c = original(ply)
             WSZC.EnsureNeckState(ply)
+            WSZC.EnsurePelvisState(ply)
             return a, b, c
         end
         h.InitPlayer = WSZC._NeckInitWrapper
@@ -228,8 +254,21 @@ function WSZC.InstallNeckState(h)
     if type(const) == "table" then
         const.ParentLimb = const.ParentLimb or {}
         const.ParentLimb.neck = "head"
+        const.ParentLimb.pelvis = "abdomen"
+        const.ParentLimb.thigh_R = "pelvis"
+        const.ParentLimb.thigh_L = "pelvis"
         const.LimbToBones = const.LimbToBones or {}
         const.LimbToBones.neck = { "ValveBiped.Bip01_Neck1", "Bip01 Neck" }
+        const.LimbToBones.abdomen = { "ValveBiped.Bip01_Spine1", "Bip01 Spine1" }
+        const.LimbToBones.pelvis = { "ValveBiped.Bip01_Pelvis", "Bip01 Pelvis" }
+        const.NonDismemberableCoreLimbs = const.NonDismemberableCoreLimbs or {}
+        const.NonDismemberableCoreLimbs.pelvis = true
+        if type(const.ConnectedLimbs) == "table" then
+            const.ConnectedLimbs.abdomen = { "thorax", "pelvis" }
+            const.ConnectedLimbs.pelvis = { "abdomen", "thigh_R", "thigh_L" }
+            const.ConnectedLimbs.thigh_R = { "pelvis", "crus_R" }
+            const.ConnectedLimbs.thigh_L = { "pelvis", "crus_L" }
+        end
         if type(const.LimbToBones.head) == "table"
             and WSZC._NeckLimbBonesTable ~= const.LimbToBones then
             local headBones = const.LimbToBones.head
@@ -253,6 +292,22 @@ function WSZC.InstallNeckState(h)
                 end
             end
             table.insert(ragdollBones, 1, { limb = "neck", patterns = { "neck" } })
+
+            local abdomenIndex, hasPelvis
+            for i, candidate in ipairs(ragdollBones) do
+                if candidate.limb == "abdomen" then
+                    abdomenIndex = i
+                    candidate.patterns = { "spine1", "stomach", "abdomen" }
+                elseif candidate.limb == "pelvis" then
+                    hasPelvis = true
+                    candidate.patterns = { "pelvis", "spine", "hips", "hip" }
+                end
+            end
+            if not hasPelvis then
+                table.insert(ragdollBones, (abdomenIndex or #ragdollBones) + 1, {
+                    limb = "pelvis", patterns = { "pelvis", "spine", "hips", "hip" },
+                })
+            end
             WSZC._NeckRagdollBonesTable = ragdollBones
         end
     end
@@ -263,6 +318,7 @@ function WSZC.InstallNeckState(h)
             timer.Simple(0, function()
                 if not IsValid(ply) then return end
                 WSZC.EnsureNeckState(ply)
+                WSZC.EnsurePelvisState(ply)
                 local restored = false
                 if WSZC.RestoreBones then
                     local ok, result = pcall(WSZC.RestoreBones, ply)
@@ -279,13 +335,15 @@ function WSZC.InstallNeckState(h)
                 end
             end)
             -- A first-life client can finish its own entity initialization
-            -- after the spawn packet.  Re-send neck once it is definitely up.
+            -- after the spawn packet.  Re-send both added states once it is up.
             timer.Simple(1, function()
                 if not IsValid(ply) then return end
                 WSZC.EnsureNeckState(ply)
+                WSZC.EnsurePelvisState(ply)
                 local health = H()
                 if health and health.SendLimbUpdate then
                     pcall(health.SendLimbUpdate, ply, "neck", true)
+                    pcall(health.SendLimbUpdate, ply, "pelvis", true)
                 end
             end)
         end)
@@ -295,11 +353,13 @@ function WSZC.InstallNeckState(h)
         WSZC._NeckInitialNetSent = WSZC._NeckInitialNetSent or {}
         for _, ply in ipairs(player.GetAll()) do
             local created = WSZC.EnsureNeckState(ply)
-            if h.SendLimbUpdate and not created and not WSZC._NeckInitialNetSent[ply] then
+            local createdPelvis = WSZC.EnsurePelvisState(ply)
+            if h.SendLimbUpdate and not WSZC._NeckInitialNetSent[ply] then
                 -- Existing players do not necessarily respawn after addon setup.
-                -- EnsureNeckState sends newly-created states itself; this covers
-                -- a state created during the earlier pre-export install pass.
-                pcall(h.SendLimbUpdate, ply, "neck", true)
+                -- Ensure* sends newly-created states itself; these cover states
+                -- created during an earlier pre-export install pass.
+                if not created then pcall(h.SendLimbUpdate, ply, "neck", true) end
+                if not createdPelvis then pcall(h.SendLimbUpdate, ply, "pelvis", true) end
             end
             if h.SendLimbUpdate then WSZC._NeckInitialNetSent[ply] = true end
         end
@@ -398,6 +458,7 @@ end
 AddHitgroup(HITGROUP_HEAD, "head")
 AddHitgroup(HITGROUP_CHEST, "thorax")
 AddHitgroup(HITGROUP_STOMACH, "abdomen")
+AddHitgroup(HITGROUP_GEAR, "pelvis")
 AddHitgroup(HITGROUP_LEFTARM, "forearm_L")
 AddHitgroup(HITGROUP_RIGHTARM, "forearm_R")
 AddHitgroup(HITGROUP_LEFTLEG, "crus_L")
@@ -443,8 +504,8 @@ local LIMB_ALIAS = {
     head = "head", skull = "head", neck = "neck",
     chest = "thorax", thorax = "thorax", spine2 = "thorax", spine3 = "thorax",
     spine4 = "thorax", rib = "thorax", sternum = "thorax",
-    stomach = "abdomen", abdomen = "abdomen", pelvis = "abdomen",
-    spine = "abdomen", spine1 = "abdomen", hips = "abdomen", hip = "abdomen",
+    stomach = "abdomen", abdomen = "abdomen", spine1 = "abdomen",
+    pelvis = "pelvis", spine = "pelvis", hips = "pelvis", hip = "pelvis",
     larm = "forearm_L", rarm = "forearm_R",
     lleg = "thigh_L", rleg = "thigh_R",
 }
@@ -505,8 +566,10 @@ local function LimbFromBoneName(name)
     if string.find(lower, "head") or string.find(lower, "skull") then return "head" end
     if string.find(lower, "spine2") or string.find(lower, "spine3")
         or string.find(lower, "chest") or string.find(lower, "rib") then return "thorax" end
+    if string.find(lower, "spine1") or string.find(lower, "stomach")
+        or string.find(lower, "abdomen") then return "abdomen" end
     if string.find(lower, "pelvis") or string.find(lower, "spine")
-        or string.find(lower, "hip") then return "abdomen" end
+        or string.find(lower, "hip") then return "pelvis" end
     return NormalizeLimb(lower)
 end
 
@@ -681,7 +744,7 @@ end
 local COMPLICATION_BONES = {
     head = "ValveBiped.Bip01_Head1", neck = "ValveBiped.Bip01_Neck1",
     thorax = "ValveBiped.Bip01_Spine2",
-    abdomen = "ValveBiped.Bip01_Spine1",
+    abdomen = "ValveBiped.Bip01_Spine1", pelvis = "ValveBiped.Bip01_Pelvis",
     arm_L = "ValveBiped.Bip01_L_UpperArm", forearm_L = "ValveBiped.Bip01_L_Forearm",
     hand_L = "ValveBiped.Bip01_L_Hand",
     arm_R = "ValveBiped.Bip01_R_UpperArm", forearm_R = "ValveBiped.Bip01_R_Forearm",
@@ -2159,6 +2222,7 @@ function WSZC.RestoreBones(ply)
     if type(org) ~= "table" then return false end
     local h = H()
     if WSZC.EnsureNeckState then pcall(WSZC.EnsureNeckState, ply) end
+    if WSZC.EnsurePelvisState then pcall(WSZC.EnsurePelvisState, ply) end
     local limbs = h and h.GetLimbs and h.GetLimbs(ply)
     if type(limbs) ~= "table" then return false end
 
@@ -2277,6 +2341,7 @@ local BONE_HITGROUPS = {
     ["ValveBiped.Bip01_Head1"] = HITGROUP_HEAD,
     ["ValveBiped.Bip01_Spine2"] = HITGROUP_CHEST,
     ["ValveBiped.Bip01_Spine1"] = HITGROUP_STOMACH,
+    ["ValveBiped.Bip01_Pelvis"] = HITGROUP_GEAR,
     ["ValveBiped.Bip01_L_Hand"] = HITGROUP_LEFTARM,
     ["ValveBiped.Bip01_R_Hand"] = HITGROUP_RIGHTARM,
     ["ValveBiped.Bip01_L_Foot"] = HITGROUP_LEFTLEG,
@@ -2886,7 +2951,7 @@ local function PushShadow(ply, org)
                 elseif dmg > 0.001 then
                     -- Only limbs the organism actually damaged bleed.  Internal
                     -- bleeding stays in body.internalBleeding and never paints
-                    -- all 16 limbs red.
+                    -- all 17 limbs red.
                     limbBleed = math.Clamp(math.min(bleed * 0.2, dmg * 20), 0, 100)
                 else
                     limbBleed = 0

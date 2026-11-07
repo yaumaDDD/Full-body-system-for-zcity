@@ -13,7 +13,7 @@ build directory:
     notifications / AED status labels / death text / icons all survive,
   * runtime behaviour of the HUD filter, full-screen minigames, hand pivot and
     cursor hiding (lupa / LuaRuntime; skipped if lupa is unavailable),
-  * both ZIPs, the 651-material mirror and MANIFEST sha256.
+  * both ZIPs, the 653-material mirror and MANIFEST sha256.
 
 Usage: python3 tools/tests/test_wszc_regression.py
 """
@@ -211,7 +211,8 @@ check('S33 REFERENCE_BOXES = green reference, independent POT-calibrated limbs',
       "'head':      (688.5, 279.5, 64.3, 83.3)" in generator_s
       and "'neck':      (688.0, 326.5, 79.8, 23.3)" in generator_s
       and "'thorax':    (687.5, 396.5, 119.3, 124.3)" in generator_s
-      and "'abdomen':   (687.0, 520.5, 122.3, 134.3)" in generator_s
+      and "'abdomen':   (687.0, 488.0, 122.3, 68.0)" in generator_s
+      and "'pelvis':    (687.0, 553.0, 122.3, 66.0)" in generator_s
       and "'arm_R':     (594.9, 376.0, 79.8, 62.8)" in generator_s
       and "'arm_L':     (785.6, 378.0, 83.3, 61.3)" in generator_s
       and "'forearm_R': (505.0, 369.0, 106.8, 41.3)" in generator_s
@@ -404,16 +405,27 @@ check('S56 neck is a real client/server limb with tooltip and first-life sync',
       and 'head      = { dmg = nil,      amp = "headamputated", dis = nil },' in organism_s
       and 'neckartery = "neck"' in organism_s
       and 'if string.find(lower, "neck", 1, true) then return "neck" end' in organism_s)
+check('S56b pelvis is a real 17th client/server limb with bone-routed wounds',
+      'local function EnsurePelvisLimb(limbs)' in layout_s
+      and 'local function EnsurePelvisClientState()' in layout_s
+      and 'pelvis = "Pelvis"' in layout_s
+      and 'function WSZC.EnsurePelvisState(ply)' in organism_s
+      and 'const.ParentLimb.pelvis = "abdomen"' in organism_s
+      and 'const.NonDismemberableCoreLimbs.pelvis = true' in organism_s
+      and 'pelvis    = { dmg = "pelvis", amp = nil' in organism_s
+      and 'pelvis = "ValveBiped.Bip01_Pelvis"' in organism_s
+      and 'pelvis = "pelvis", spine = "pelvis", hips = "pelvis", hip = "pelvis"' in organism_s
+      and 'if string.find(lower, "spine1")' in organism_s)
 packer_s = (ROOT / 'tools/pack_ui_materials.py').read_text(encoding='utf-8')
-check('S57 packer regenerates the 16-part doll and keeps generated/source counts separate',
+check('S57 packer regenerates the 17-part doll and keeps generated/source counts separate',
       "subprocess.run(doll_cmd, cwd=ROOT, check=True)" in packer_s
-      and "len(generated) == 37" in packer_s
+      and "len(generated) == 39" in packer_s
       and "wanted in entries or wanted in generated" in packer_s
-      and "len(actual_materials) == 651" in packer_s
-      and "len(limb_pngs) == 32" in packer_s
+      and "len(actual_materials) == 653" in packer_s
+      and "len(limb_pngs) == 34" in packer_s
       and 'HEAD_SPLIT_FRAC' in generator_s
       and 'HEAD_SOURCE_LAYOUT' not in generator_s
-      and len(set(re.findall(r"^    '(\w+)':", generator_s, re.M))) == 16)
+      and len(set(re.findall(r"^    '(\w+)':", generator_s, re.M))) == 17)
 source_archive_hashes = {
     'zcity.zip': 'a122484c29e5afeed7e0eb43a6685c68654fe07ae0a288c0ccc1380a0dc401c4',
     'casualites unknown.zip': '3c77c030cc44a634a0fa588cefaa3204e6b80abcfef215166cfc83dc09a9a786',
@@ -477,7 +489,7 @@ try:
     geom = {m[0]: tuple(m[1:]) for m in re.findall(
         r'(\w+)\s*=\s*\{\s*cx\s*=\s*([\d.]+),\s*cy\s*=\s*([\d.]+),\s*w\s*=\s*(\d+),\s*h\s*=\s*(\d+)',
         geom_text)}
-    assert len(geom) == 16, len(geom)
+    assert len(geom) == 17, len(geom)
     limb_dir = CONN / 'materials/wszc/unitmenu/limbs'
     body = Image.new('L', (1500, 1500), 0)
     edges = Image.new('L', (1500, 1500), 0)
@@ -502,8 +514,8 @@ try:
         elayer.paste(ea, box)
         body = ImageChops.lighter(body, flayer)
         edges = ImageChops.lighter(edges, elayer)
-    check('S17 white outline restored: 16 opaque white _edge.png',
-          edge_boxes == 16 and edge_white > 100 and edges.getbbox() is not None)
+    check('S17 white outline restored: 17 opaque white _edge.png',
+          edge_boxes == 17 and edge_white > 100 and edges.getbbox() is not None)
     # Regression for the live "Lego robot" screenshot: a per-sprite white
     # frame means white pixels touch the rectangular sprite border.  The
     # owner chose an outline that follows EACH limb's shape instead, so the
@@ -527,7 +539,7 @@ try:
     # and must follow its limb's shape rather than a box: white pixels sit in
     # the interior of the sprite, not on its border.
     check('S37 generator emits standard black + shape-following per-limb contours',
-          edge_boxes == 16
+          edge_boxes == 17
           and 'DOLL_RGB = (0, 0, 0)' in generator_s
           and 'EDGE_PAD_MIN = 6' in generator_s
           and 'EDGE_WIDTH = 17' in generator_s
@@ -555,7 +567,7 @@ try:
         geom_text)}
     g = {k: tuple(float(v) for v in vals) for k, vals in geom.items()}
     head_top = g['head'][1] - float(hover['head'][1]) / 2
-    torso_bottom = g['abdomen'][1] + float(hover['abdomen'][1]) / 2
+    torso_bottom = g['pelvis'][1] + float(hover['pelvis'][1]) / 2
     leg_top = g['thigh_R'][1] - float(hover['thigh_R'][1]) / 2
     leg_bottom = g['foot_R'][1] + float(hover['foot_R'][1]) / 2
     torso_h, leg_h = torso_bottom - head_top, leg_bottom - leg_top
@@ -567,7 +579,7 @@ try:
           and leg_h <= 0.80 * torso_h
           and g['thorax'][2] > g['head'][2]
           and g['thigh_R'][2] < g['thorax'][2]
-          and g['abdomen'][3] >= g['thorax'][3]
+          and g['abdomen'][3] + g['pelvis'][3] >= g['thorax'][3]
           and g['forearm_R'][2] > g['arm_R'][2]
           and g['hand_R'][2] < g['forearm_R'][2]
           and g['foot_R'][2] <= g['crus_R'][2]
@@ -580,7 +592,7 @@ try:
                   and int(v[3]) > 0 and int(v[3]) & (int(v[3]) - 1) == 0
                   for v in g.values()))
     check('S44 hover boxes are the visible silhouettes, not the padded POT sprites',
-          len(hover) == 16
+          len(hover) == 17
           and all(int(hover[k][0]) <= int(g[k][2]) and int(hover[k][1]) <= int(g[k][3])
                   for k in hover))
 
@@ -629,11 +641,11 @@ try:
             actual = (left + bbox[0], top + bbox[1], left + bbox[2], top + bbox[3])
             white_errors[limb] = tuple(a - b for a, b in zip(actual, reference_white_hands[limb]))
     worst_black = max(abs(v) for errors in black_errors.values() for v in errors)
-    check('S53 all 16 visible black boxes match the green reference (worst %d px)' % worst_black,
-          len(black_errors) == 16 and worst_black <= 2)
+    check('S53 all 17 visible black boxes match the green reference (worst %d px)' % worst_black,
+          len(black_errors) == 17 and worst_black == 0)
     worst_white = max(abs(v) for errors in white_errors.values() for v in errors)
     check('S53b hand WHITE exteriors also match, including fingers (worst %d px)' % worst_white,
-          len(white_errors) == 2 and worst_white <= 1)
+          len(white_errors) == 2 and worst_white == 0)
 
     def white_runs(y):
         p = rendered.load()
@@ -651,7 +663,7 @@ try:
           white_runs(317) == [[663, 713]]
           and all(not any(b - a > 10 for a, b in white_runs(y)) for y in (315, 316, 318)))
     rp = rendered.load()
-    check('S53d abdomen internal seam is one dominant row at native y=520',
+    check('S53d abdomen/pelvis seam is one dominant row at native y=520',
           rp[687, 520][0] >= 180
           and max(rp[687, 519][0], rp[687, 521][0]) < 150
           and max(rp[687, 518][0], rp[687, 522][0]) < 20)
@@ -733,7 +745,7 @@ try:
           all(im.size == (512, 1260) for im in hand_frames)
           and all(px[3] > 200 and px[0] > px[1] > px[2] for px in grip_pixels))
     mats = [p for p in (CONN / 'materials').rglob('*') if p.is_file()]
-    check('S21 connector ships 651 UI materials', len(mats) == 651)
+    check('S21 connector ships 653 UI materials', len(mats) == 653)
     checksums = (CONN / 'MATERIALS.sha256').read_text(encoding='utf-8').splitlines()
     check('S22 MATERIALS.sha256 has 614 source entries',
           len([l for l in checksums if l.strip() and not l.startswith('#')]) == 614)
@@ -749,12 +761,12 @@ def validate_zips():
         assert z.testzip() is None
         full = {i.filename: z.read(i.filename) for i in z.infolist()}
     conn_files = {p.relative_to(CONN).as_posix(): p.read_bytes() for p in CONN.rglob('*') if p.is_file()}
-    assert len(conn_files) == len(compat) == 666
+    assert len(conn_files) == len(compat) == 668
     assert all(compat['woundsystem_zcity_compat/' + r] == d for r, d in conn_files.items())
     mirror = {n[len('garrysmod/addons/casualties_unknown_health_system_beta/materials/'):]: d
               for n, d in full.items()
               if n.startswith('garrysmod/addons/casualties_unknown_health_system_beta/materials/')}
-    assert len(mirror) == 651
+    assert len(mirror) == 653
     assert all(mirror[r[len('materials/'):]] == d for r, d in conn_files.items() if r.startswith('materials/'))
     assert json.loads(compat['woundsystem_zcity_compat/addon.json'])
     bridge = [n for n in full if n.endswith('woundbridge/sv_woundbridge.lua')]
@@ -771,12 +783,15 @@ def validate_zips():
     assert 'origBoardRect' not in shipped_layout
     assert 'function WSZC.WoundViewEmptyClick' in shipped_layout
     assert 'local function EnsureNeckLimb' in shipped_layout
+    assert 'local function EnsurePelvisLimb' in shipped_layout
     assert 'function WSZC.UnitmenuTooltipLines' in shipped_layout
     assert 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/neck_fill.png' in compat
+    assert 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/pelvis_fill.png' in compat
     assert 'wszc/unitmenu/limbs/neck_edge.png' in mirror
+    assert 'wszc/unitmenu/limbs/pelvis_edge.png' in mirror
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
-    # +2 neck PNGs in the connector and +2 in the C:U material mirror.
-    assert len(full) == 2773
+    # +4 neck/pelvis PNGs in the connector and +4 in the C:U material mirror.
+    assert len(full) == 2777
     declared_total = re.search(r'Всего файлов в архиве:\s*(\d+)', manifest)
     assert declared_total and int(declared_total.group(1)) == len(full)
     return True
@@ -1118,14 +1133,16 @@ end)()
 end)()
 ''')
 
-    rt('R16 geometry table has 16 human-proportioned limbs and a neck joint', '''
+    rt('R16 geometry table has 17 limbs with neck + abdomen/pelvis joints', '''
 (function()
     local n = 0
     for _ in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do n = n + 1 end
     local g = WSZC_UNITMENU_LIMB_GEOMETRY
-    return n == 16 and g.head.cy < g.neck.cy and g.neck.cy < g.thorax.cy
+    return n == 17 and g.head.cy < g.neck.cy and g.neck.cy < g.thorax.cy
        and g.head.hoverW == 155 and g.head.hoverH == 200
        and g.neck.hoverW == 192 and g.neck.hoverH == 56
+       and g.thorax.cy < g.abdomen.cy and g.abdomen.cy < g.pelvis.cy
+       and g.pelvis.cy < g.thigh_R.cy and g.pelvis.hoverH > 0
        and g.thorax.cy < g.thigh_R.cy
        and g.thigh_R.cy < g.crus_R.cy and g.crus_R.cy < g.foot_R.cy
        and g.thorax.w > g.head.w and g.thigh_R.w < g.thorax.w
@@ -1437,7 +1454,7 @@ end)()
     local gh = WSZC_UNITMENU_LIMB_GEOMETRY.head
     local gn = WSZC_UNITMENU_LIMB_GEOMETRY.neck
     local expectedSize, centreOY = WSZC.UnitmenuReferenceDollTransform(k)
-    return #limbs == 16 and head ~= nil and neck ~= nil
+    return #limbs == 17 and head ~= nil and neck ~= nil
        and neck.matM == mats.neck.fill and neck.matO == mats.neck.edge
        and neck.sourceW == gn.hoverW and neck.sourceH == gn.hoverH
        and math.abs(neck.oy - ((gn.cy - 750) * expectedSize + centreOY)) < 0.001
@@ -1450,7 +1467,7 @@ end)()
 end)()
 ''')
 
-    rt('R38 native first-life insertion creates one neck with independent healthy state', '''
+    rt('R38 native first-life insertion creates independent neck + pelvis states', '''
 (function()
     local mats, limbs = {}, {}
     for id, g in pairs(WSZC_UNITMENU_LIMB_GEOMETRY) do
@@ -1458,7 +1475,7 @@ end)()
                      edge = Material("wszc/unitmenu/limbs/" .. id .. "_edge.png"),
                      cx = g.cx, cy = g.cy, w = g.w, h = g.h,
                      hoverW = g.hoverW, hoverH = g.hoverH }
-        if id ~= "neck" then
+        if id ~= "neck" and id ~= "pelvis" then
             limbs[#limbs + 1] = { id = id, matM = Material("cu/m"), matO = Material("cu/o"),
                 ox = 0, oy = 0, size = 2, order = id == "head" and 8 or 5,
                 sourceW = 64, sourceH = 64, texturePadding = 1, flip = true }
@@ -1472,25 +1489,32 @@ end)()
     hook.Add("HUDPaint", "WoundDollAndPanel", CUFactory(GUIState, limbs))
     WoundSystemClientState = { PlayerLimbs = {
         head = { skin = 12, muscle = 34, broken = true, customStatuses = { OLD = true } },
+        abdomen = { skin = 56, muscle = 78, broken = false, customStatuses = { OLD = true } },
     } }
     WSZC.ClearCULimbsCache()
     WSZC.ApplyUnitmenuDoll(limbs, mats, 0.25)
-    local headAt, neckAt = 0, 0
+    local headAt, neckAt, abdomenAt, pelvisAt = 0, 0, 0, 0
     for i, limb in ipairs(limbs) do
         if limb.id == "head" then headAt = i end
         if limb.id == "neck" then neckAt = i end
+        if limb.id == "abdomen" then abdomenAt = i end
+        if limb.id == "pelvis" then pelvisAt = i end
     end
     local state = WoundSystemClientState.PlayerLimbs.neck
-    local created = #limbs == 16 and neckAt == headAt + 1
+    local pelvisState = WoundSystemClientState.PlayerLimbs.pelvis
+    local created = #limbs == 17 and neckAt == headAt + 1 and pelvisAt == abdomenAt + 1
         and GUIState.HoverAnims.neck == 0 and GUIState.LastHoverStates.neck == false
+        and GUIState.HoverAnims.pelvis == 0 and GUIState.LastHoverStates.pelvis == false
         and state and state.skin == 100 and state.muscle == 100
         and state.broken == false and state.customStatuses.OLD == nil
+        and pelvisState and pelvisState.skin == 100 and pelvisState.muscle == 100
+        and pelvisState.customStatuses.OLD == nil
     WSZC.ApplyUnitmenuDoll(limbs, mats, 0.25)
-    local idempotent = #limbs == 16
+    local idempotent = #limbs == 17
     local restored = WSZC.RestoreUnitmenuDoll() and #limbs == 15
     WSZC.ApplyUnitmenuDoll(limbs, mats, 0.25)
     _WSZCTestLimbs, _WSZCTestMats = limbs, mats
-    return created and idempotent and restored and #limbs == 16
+    return created and idempotent and restored and #limbs == 17
 end)()
 ''')
 
@@ -1515,6 +1539,33 @@ end)()
         if call.t == "Muscle: 100%" then drawn.muscle = true end
     end
     return hit and hit.id == "neck" and title == "Neck"
+       and skin == "Skin: 100%" and muscle == "Muscle: 100%"
+       and drawn.title and drawn.skin and drawn.muscle
+end)()
+''')
+
+    rt('R41 Pelvis has its own hitbox, tooltip and native action state', '''
+(function()
+    local pelvis
+    for _, limb in ipairs(_WSZCTestLimbs) do if limb.id == "pelvis" then pelvis = limb end end
+    local scale = ScrH() / 1080
+    local dollScale = 1.5 * scale
+    mouseX = ScrW() / 2 + pelvis.ox * dollScale
+    mouseY = ScrH() / 2 + 20 * scale + pelvis.oy * dollScale
+    local hit = WSZC.UnitmenuHover(mouseX, mouseY)
+    local title, skin, muscle = WSZC.UnitmenuTooltipLines("pelvis", { skin = 100, muscle = 100 })
+    WoundSystemHealthHUDOpen = true
+    textCalls = {}
+    hook._t["PostDrawHUD"]["WSZC_UnitmenuLimbTooltip"]()
+    WoundSystemHealthHUDOpen = false
+    local drawn = { title = false, skin = false, muscle = false }
+    for _, call in ipairs(textCalls) do
+        if call.t == "Pelvis" then drawn.title = true end
+        if call.t == "Skin: 100%" then drawn.skin = true end
+        if call.t == "Muscle: 100%" then drawn.muscle = true end
+    end
+    local state = WoundSystemClientState.PlayerLimbs.pelvis
+    return hit and hit.id == "pelvis" and hit.state == state and title == "Pelvis"
        and skin == "Skin: 100%" and muscle == "Muscle: 100%"
        and drawn.title and drawn.skin and drawn.muscle
 end)()

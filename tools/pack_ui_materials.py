@@ -102,9 +102,9 @@ def main():
     data1 = Path(args[0]).read_bytes() if len(args) > 0 else git_show(ARCHIVE_1)
     data2 = Path(args[1]).read_bytes() if len(args) > 1 else git_show(ARCHIVE_2)
 
-    # Build the CURRENT 16-part doll before the copy/coverage pass.  Otherwise
+    # Build the CURRENT 17-part doll before the copy/coverage pass.  Otherwise
     # this script restored the old 15-part head whenever it was rerun after a
-    # standalone neck build, making the result depend on command order.
+    # standalone neck/pelvis build, making the result depend on command order.
     doll_cmd = [sys.executable, str(ROOT / 'tools/build_unitmenu_materials.py')]
     if args:
         doll_cmd.append(str(Path(args[0]).resolve()))
@@ -156,7 +156,7 @@ def main():
         for folder in ('wszc/unitmenu', 'wszc/minigame')
         for p in (OUT / folder).rglob('*') if p.is_file()
     }
-    assert len(generated) == 37, ('32 limb + 3 status + 2 hand PNGs', len(generated))
+    assert len(generated) == 39, ('34 limb + 3 status + 2 hand PNGs', len(generated))
 
     # ------------------------------------------------------------------ aliases
     refs = referenced_paths(collect_lua_sources())
@@ -216,8 +216,8 @@ def main():
     print('packed', len(entries), 'materials', dict(exts))
     actual_materials = [p for p in OUT.rglob('*') if p.is_file()]
     limb_pngs = [p for p in (OUT / 'wszc/unitmenu/limbs').glob('*.png')]
-    assert len(actual_materials) == 651, ('complete material count', len(actual_materials))
-    assert len(limb_pngs) == 32, ('16 fill + 16 edge sprites', len(limb_pngs))
+    assert len(actual_materials) == 653, ('complete material count', len(actual_materials))
+    assert len(limb_pngs) == 34, ('17 fill + 17 edge sprites', len(limb_pngs))
     print('ALL_LUA_UI_MATERIALS_RESOLVED', len(refs), 'referenced paths')
 
     lines = ['# UI materials bundled into woundsystem_zcity_compat/materials/',

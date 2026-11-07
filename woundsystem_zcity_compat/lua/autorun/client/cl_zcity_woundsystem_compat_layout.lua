@@ -1460,6 +1460,33 @@ local function EnsureNeckClientState()
 end
 WSZC.EnsureNeckClientState = EnsureNeckClientState
 
+--- The source doll has a real abdomen/pelvis seam, but stock C:U merges both
+--- into `abdomen`.  Create a fresh native-compatible pelvis state; never copy
+--- the abdomen's CURRENT wounds into a second injury container.
+local function EnsurePelvisClientState()
+    local states = type(WoundSystemClientState) == "table"
+        and WoundSystemClientState.PlayerLimbs or nil
+    if type(states) ~= "table" then return nil end
+    if type(states.pelvis) == "table" then return states.pelvis end
+
+    local state = type(states.abdomen) == "table" and table.Copy(states.abdomen) or {}
+    state.skin, state.muscle, state.muscleStrength = 100, 100, 1
+    state.pain, state.bleed = 0, 0
+    state.infection, state.infectionSpeed = 0, 0
+    state.shrapnel, state.disinfectTime = 0, 0
+    state.broken, state.dislocated = false, false
+    state.boneHealTimer, state.dislocationTimer = 0, 0
+    state.temperature, state.oxygen, state.stress = 37, 100, 0
+    state.isBandaged, state.hasInjection = false, false
+    state.dismembered, state.furBloodAmount = false, 0
+    state.bandageMinigameSpeedMult = 1
+    state.eyes = 2
+    state.customStatuses = {}
+    states.pelvis = state
+    return state
+end
+WSZC.EnsurePelvisClientState = EnsurePelvisClientState
+
 --- Add neck immediately after head in C:U's OWN Limbs array.  Consequently
 --- all native rendering, fracture icons, action points and net updates use the
 --- same entry; this is not a second doll or a head texture with another label.
@@ -1488,6 +1515,35 @@ local function EnsureNeckLimb(limbs)
     return neck
 end
 WSZC.EnsureNeckLimb = EnsureNeckLimb
+
+--- Insert pelvis immediately after abdomen in the SAME native Limbs array.
+--- Native hover, action points, status icons and net updates therefore use the
+--- new id directly; this is not a decorative overlay or a second doll.
+local function EnsurePelvisLimb(limbs)
+    if type(limbs) ~= "table" then return nil end
+    EnsurePelvisClientState()
+    local abdomen, abdomenIndex, pelvis
+    for i, limb in ipairs(limbs) do
+        if limb.id == "abdomen" then abdomen, abdomenIndex = limb, i end
+        if limb.id == "pelvis" then pelvis = limb end
+    end
+    if pelvis then return pelvis end
+    if not abdomen then return nil end
+
+    local guiState = FindCUGUIState()
+    if not guiState then return nil end
+    guiState.HoverAnims.pelvis = tonumber(guiState.HoverAnims.pelvis) or 0
+    guiState.LastHoverStates.pelvis = guiState.LastHoverStates.pelvis == true
+
+    pelvis = {}
+    for key, value in pairs(abdomen) do pelvis[key] = value end
+    pelvis.id = "pelvis"
+    pelvis._WSZCPelvis = true
+    pelvis._WSZCUnitmenuOriginal = nil
+    table.insert(limbs, abdomenIndex + 1, pelvis)
+    return pelvis
+end
+WSZC.EnsurePelvisLimb = EnsurePelvisLimb
 
 -- Canonical screen geometry measured directly from the owner's 2222.png.
 -- Native C:U applies BOTH dollScale=1.5*UI and our limb.size to sprites and
@@ -1518,6 +1574,7 @@ end
 local function ApplyDoll(limbs, mats, k)
     local dollSize, centreOY = WSZC.UnitmenuReferenceDollTransform(k)
     EnsureNeckLimb(limbs)
+    EnsurePelvisLimb(limbs)
     for _, limb in ipairs(limbs) do
         local g = mats[limb.id]
         if g then
@@ -1550,9 +1607,9 @@ function WSZC.RestoreUnitmenuDoll()
     if not limbs then return false end
     for i = #limbs, 1, -1 do
         local limb = limbs[i]
-        if limb._WSZCNeck then
-            -- Native C:U has no neck material.  Keep PlayerLimbs.neck for net
-            -- state/moodles, but never leave a duplicate head in the old doll.
+        if limb._WSZCNeck or limb._WSZCPelvis then
+            -- Native C:U has no neck/pelvis materials.  Keep their server
+            -- states, but never leave duplicate sprites in the stock doll.
             table.remove(limbs, i)
         else
             local orig = limb._WSZCUnitmenuOriginal
@@ -1571,6 +1628,7 @@ end
 ---------------------------------------------------------------------------
 local UNITMENU_LIMB_NAMES = {
     head = "Head", neck = "Neck", thorax = "Thorax", abdomen = "Abdomen",
+    pelvis = "Pelvis",
     arm_R = "Right upper arm", arm_L = "Left upper arm",
     forearm_R = "Right forearm", forearm_L = "Left forearm",
     hand_R = "Right hand", hand_L = "Left hand",
@@ -2097,9 +2155,10 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
 end)
 
 -- First-life bootstrap: do not wait for a respawn or for the player to open
--- WoundView before neck exists in the client state and native Limbs array.
+-- WoundView before neck/pelvis exist in client state and native Limbs.
 hook.Add("InitPostEntity", "WSZC_UnitmenuNeckFirstLife", function()
     EnsureNeckClientState()
+    EnsurePelvisClientState()
     WSZC.InstallNeckMoodle()
     WSZC.NextUnitmenuInstall = 0
     if not cvUnitmenuDoll:GetBool() then return end
