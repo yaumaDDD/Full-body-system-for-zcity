@@ -51,6 +51,9 @@ with ZipFile(ROOT / "casualites unknown.zip") as archive:
     native_splint_s = archive.read(
         "casualties_unknown_health_system_beta/lua/woundsystem/medical_tools/sh_splint.lua"
     ).decode("utf-8")
+    native_tourniquet_s = archive.read(
+        "casualties_unknown_health_system_beta/lua/woundsystem/medical_tools/sh_tourniquet.lua"
+    ).decode("utf-8")
 
 check("S01 native naloxone dose maps to the authoritative ZCity antagonist",
       "antagonistAmount = 50" in native_items_s
@@ -89,6 +92,12 @@ check("S08 splint keeps native wear and recovery multipliers in organism authori
       and "function WSZC.TickSplints" in organism_s
       and "dt * 0.025" in organism_s and "nativeStep * 1.5" in organism_s
       and "dt * 0.07 * 2" in organism_s)
+check("S09 canonical tourniquet return becomes a timed reusable ZCity SWEP",
+      "ReturnAttachedMedicalItem" in native_health_s and "returnedItemId" in native_health_s
+      and 'WoundSystem.Statuses.Register("TOURNIQUET"' in native_tourniquet_s
+      and "TOURNIQUET_CLOT_TIME = 180" in organism_s
+      and 'pcall(ply.Give, ply, "weapon_tourniquet")' in organism_s
+      and "ReplayRemoveStatus" in organism_s)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -605,6 +614,187 @@ return math.abs(ply.organism.internalBleed - 18.05) < 0.001
     and math.abs(ply.organism.wounds[2][1] - 1.92) < 0.001
 ''')
     check("R25 a timed step includes intervening authoritative damage in its baseline", intervening_damage)
+
+    early_removal = lua.execute(r'''
+function NewTourniquetPatient()
+    local ply = MakePlayer()
+    ply.given, ply.givenClasses = 0, {}
+    ply.Give = function(self, class)
+        self.given = self.given + 1
+        self.givenClasses[class] = (self.givenClasses[class] or 0) + 1
+        return { modeValues = { 0 } }
+    end
+    ply.organism.bleed, ply.organism.rlegartery = 20, 1
+    ply.organism.wounds = {
+        { 4, Vector(), Angle(), "ValveBiped.Bip01_R_Calf", 0 },
+        { 3, Vector(), Angle(), "ValveBiped.Bip01_R_Foot", 0 },
+        { 7, Vector(), Angle(), "ValveBiped.Bip01_L_Hand", 0 },
+    }
+    ply.organism.arterialwounds = {
+        { 6, Vector(), Angle(), "ValveBiped.Bip01_R_Thigh", 0, nil, "rlegartery" },
+    }
+    return ply
+end
+TourniquetPatientFactory = NewTourniquetPatient
+Now = 1000
+local ply = NewTourniquetPatient()
+WSZC.ApplyTourniquetToOrganism({ ply = ply, limbId = "thigh_R" })
+local applied = #ply.organism.arterialwounds == 0 and #ply.organism.wounds == 1
+    and ply.organism.rlegartery == 0 and ply.given == 0
+    and ply._WSZCTourniquetCycles.thigh_R ~= nil
+for _, id in ipairs({ "thigh_R", "crus_R", "foot_R" }) do
+    local state = Limbs[ply][id]
+    state.tourniqueted, state.blockedBleeding = true, true
+    state.customStatuses = { TOURNIQUET = 0.01 }
+end
+-- New damage is not part of the backup and must survive an early removal.
+ply.organism.wounds[#ply.organism.wounds + 1] = {
+    2, Vector(), Angle(), "ValveBiped.Bip01_R_Foot", 0,
+}
+local rag = {
+    tourniquets = {
+        { 1, 1, "ValveBiped.Bip01_R_Thigh" },
+        { 1, 1, "ValveBiped.Bip01_L_Hand" },
+    },
+    SetNetVar = function() end,
+}
+ply.FakeRagdoll = rag
+hg.TourniquetGuys = { ply, rag }
+Now = 1100
+WSZC.TickTourniquets(ply, ply.organism, 0.1)
+local beforeMaturity = ply._WSZCTourniquetCycles.thigh_R.mature ~= true
+local removed = WSZC.RemoveTourniquet(ply, "thigh_R")
+local second = WSZC.RemoveTourniquet(ply, "thigh_R")
+local found = {}
+for _, wound in pairs(ply.organism.wounds) do found[wound[1]] = (found[wound[1]] or 0) + 1 end
+local restored = removed and not second and ply.given == 1
+    and ply.givenClasses.weapon_tourniquet == 1
+    and #ply.organism.arterialwounds == 1 and ply.organism.arterialwounds[1][1] == 6
+    and ply.organism.rlegartery == 1 and found[4] == 1 and found[3] == 1
+    and found[2] == 1 and found[7] == 1
+local function HasBone(ent, bone)
+    for _, marker in ipairs(ent.tourniquets or {}) do
+        if marker[3] == bone then return true end
+    end
+    return false
+end
+local visuals = not HasBone(ply, "ValveBiped.Bip01_R_Thigh")
+    and not HasBone(rag, "ValveBiped.Bip01_R_Thigh")
+    and HasBone(rag, "ValveBiped.Bip01_L_Hand")
+    and hg.TourniquetGuys[1] == rag and #hg.TourniquetGuys == 1
+local statuses = ply._WSZCTourniquetCycles.thigh_R == nil
+for _, id in ipairs({ "thigh_R", "crus_R", "foot_R" }) do
+    local state = Limbs[ply][id]
+    statuses = statuses and state.tourniqueted == false and state.blockedBleeding == false
+        and state.customStatuses.TOURNIQUET == nil
+end
+return applied and beforeMaturity and restored, visuals and statuses
+''')
+    check("R26 early tourniquet removal restores only its wounds and returns one SWEP", early_removal[0])
+    check("R27 removal clears selected player/ragdoll visuals and downstream statuses", early_removal[1])
+
+    mature_reuse = lua.execute(r'''
+local ply = TourniquetPatientFactory()
+ply.messages = 0
+ply.PrintMessage = function(self) self.messages = self.messages + 1 end
+Now = 2000
+WSZC.ApplyTourniquetToOrganism({ ply = ply, limbId = "thigh_R" })
+Limbs[ply].thigh_R.tourniqueted = true
+Limbs[ply].thigh_R.customStatuses = { TOURNIQUET = 0.01 }
+local originalCycle = ply._WSZCTourniquetCycles.thigh_R
+local duplicateTreatment = WSZC.ApplyTourniquetToOrganism({ ply = ply, limbId = "thigh_R" })
+local noOverwrite = duplicateTreatment == 0
+    and ply._WSZCTourniquetCycles.thigh_R == originalCycle and originalCycle.appliedAt == 2000
+Now = 2179.99
+WSZC.TickTourniquets(ply, ply.organism, 0.1)
+local beforeBoundary = ply._WSZCTourniquetCycles.thigh_R.mature ~= true
+Now = 2180
+WSZC.TickTourniquets(ply, ply.organism, 0.1)
+local cycle = ply._WSZCTourniquetCycles.thigh_R
+local matured = noOverwrite and beforeBoundary and cycle.mature == true
+    and cycle.arterial == nil and cycle.ordinary == nil and ply.messages == 1
+local removed = WSZC.RemoveTourniquet(ply, "thigh_R")
+local remainsClosed = removed and #ply.organism.arterialwounds == 0
+    and #ply.organism.wounds == 1 and ply.organism.wounds[1][1] == 7
+    and ply.organism.rlegartery == 0 and ply.given == 1
+local duplicate = WSZC.RemoveTourniquet(ply, "thigh_R")
+-- The returned item can treat a later wound; an early second removal still
+-- restores that new cycle and returns exactly one more SWEP.
+ply.organism.arterialwounds = {
+    { 4, Vector(), Angle(), "ValveBiped.Bip01_R_Thigh", 0, nil, "rlegartery" },
+}
+ply.organism.rlegartery = 1
+Now = 2181
+WSZC.ApplyTourniquetToOrganism({ ply = ply, limbId = "thigh_R" })
+local newCycle = ply._WSZCTourniquetCycles.thigh_R
+local reusable = newCycle ~= nil and newCycle.mature ~= true
+Now = 2182
+local removedAgain = WSZC.RemoveTourniquet(ply, "thigh_R")
+reusable = reusable and removedAgain and ply.given == 2
+    and ply.givenClasses.weapon_tourniquet == 2
+    and #ply.organism.arterialwounds == 1 and ply.organism.arterialwounds[1][1] == 4
+-- No Org Think between application and this click: removal itself must still
+-- enforce the exact 180-second boundary.
+local direct = TourniquetPatientFactory()
+Now = 2500
+WSZC.ApplyTourniquetToOrganism({ ply = direct, limbId = "thigh_R" })
+Now = 2680
+local directRemoved = WSZC.RemoveTourniquet(direct, "thigh_R")
+local noTickMatured = directRemoved and #direct.organism.arterialwounds == 0
+    and #direct.organism.wounds == 1 and direct.organism.rlegartery == 0 and direct.given == 1
+return matured and remainsClosed and not duplicate and noTickMatured, reusable
+''')
+    check("R28 exactly 180 seconds fixes the wound without a duplicate return", mature_reuse[0])
+    check("R29 returned tourniquet can be applied and removed again", mature_reuse[1])
+
+    removal_receiver = lua.execute(r'''
+local nativeCalls = {}
+net.Receivers["WoundSystem_RemoveLimbStatus"] = function(_, ply)
+    local limbId, statusId = net.ReadString(), net.ReadString()
+    nativeCalls[#nativeCalls + 1] = { ply = ply, limbId = limbId, statusId = statusId }
+    return limbId, statusId
+end
+assert(WSZC.InstallTourniquetRemovalBridge())
+local receiver = net.Receivers["WoundSystem_RemoveLimbStatus"]
+local function Send(ply, limbId, statusId)
+    local queue = { limbId, statusId }
+    net.ReadString = function() return table.remove(queue, 1) end
+    return receiver(0, ply)
+end
+AuthorityFlag = true
+Now = 3000
+local ply = TourniquetPatientFactory()
+WSZC.ApplyTourniquetToOrganism({ ply = ply, limbId = "thigh_R" })
+local removed = Send(ply, "thigh_R", "TOURNIQUET")
+local authority = removed and ply.given == 1 and #nativeCalls == 0
+local limb, status = Send(ply, "arm_L", "SPLINTED")
+local splint = limb == "arm_L" and status == "SPLINTED" and #nativeCalls == 1
+    and nativeCalls[1].limbId == "arm_L" and nativeCalls[1].statusId == "SPLINTED"
+local bridgePly = TourniquetPatientFactory()
+WSZC.ApplyTourniquetToOrganism({ ply = bridgePly, limbId = "thigh_R" })
+AuthorityFlag = false
+Send(bridgePly, "thigh_R", "TOURNIQUET")
+AuthorityFlag = true
+local bridge = #nativeCalls == 2 and nativeCalls[2].statusId == "TOURNIQUET"
+    and bridgePly.given == 0 and bridgePly._WSZCTourniquetCycles.thigh_R ~= nil
+return authority and splint, bridge
+''')
+    check("R30 authority receiver handles TOURNIQUET but replays native SPLINTED", removal_receiver[0])
+    check("R31 bridge mode still delegates tourniquet removal to native C:U", removal_receiver[1])
+
+    reset_cycle = lua.execute(r'''
+Now = 4000
+local ply = TourniquetPatientFactory()
+WSZC.ApplyTourniquetToOrganism({ ply = ply, limbId = "thigh_R" })
+Limbs[ply].thigh_R.tourniqueted = true
+Limbs[ply].thigh_R.customStatuses = { TOURNIQUET = 1 }
+WSZC.ClearAllShrapnel(ply, ply.organism)
+return ply._WSZCTourniquetCycles == nil and ply.given == 0
+    and ply.organism.bleed == 0 and #ply.organism.arterialwounds == 0
+    and #ply.tourniquets == 0 and Limbs[ply].thigh_R.tourniqueted == false
+    and Limbs[ply].thigh_R.customStatuses.TOURNIQUET == nil
+''')
+    check("R32 reset clears an active cycle without manufacturing a SWEP", reset_cycle)
 
 failed = [name for name, ok in results if not ok]
 print(f"TEST_OK {len(results) - len(failed)} / {len(results)}")

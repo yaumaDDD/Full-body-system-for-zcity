@@ -1206,6 +1206,7 @@ end
 -- Tourniquet: the ONLY treatment for arterial wounds
 ---------------------------------------------------------------------------
 
+local TOURNIQUET_CLOT_TIME = 180 -- seconds before removal leaves the wound closed
 local TOURNIQUET_DOWNSTREAM = {
     arm_R = { "arm_R", "forearm_R", "hand_R" },
     forearm_R = { "forearm_R", "hand_R" }, hand_R = { "hand_R" },
@@ -1422,11 +1423,27 @@ function WSZC.ApplyTourniquetToOrganism(ctx)
     if not (Authority() and type(org) == "table") then return 0, nil, nil end
 
     local limbId = NormalizeLimb(ctx.limbId) or ctx.limbId
+    -- One physical strap per application site.  Rejecting a second application
+    -- before any mutation prevents both item loss and overwriting the first
+    -- cycle's restorable wound references.  Remove, then reuse the returned
+    -- SWEP if a new wound needs treatment under an existing strap.
+    if ply._WSZCTourniquetCycles and ply._WSZCTourniquetCycles[limbId] then
+        local value = LimbBleedMap(ply, org)[limbId] or 0
+        return 0, value, value
+    end
     local affected = {}
     for _, id in ipairs(TOURNIQUET_DOWNSTREAM[limbId] or { limbId }) do affected[id] = true end
 
     local beforeMap = LimbBleedMap(ply, org)
     local beforeTotal = TotalMappedBleeding(beforeMap)
+    local cycle = {
+        appliedAt = CurTime and CurTime() or 0,
+        duration = TOURNIQUET_CLOT_TIME,
+        affected = affected,
+        arterial = {},
+        ordinary = {},
+        flags = {},
+    }
     local arteries, ordinary = {}, {}
     for _, wound in pairs(org.arterialwounds or {}) do
         if type(wound) == "table" and (tonumber(wound[1]) or 0) > 0
@@ -1450,11 +1467,21 @@ function WSZC.ApplyTourniquetToOrganism(ctx)
 
     if arteries[1] then
         local wound = arteries[1]
+        cycle.arterial[1] = { wound = wound, severity = tonumber(wound[1]) or 0 }
+        if type(wound[7]) == "string" then
+            cycle.flags[wound[7]] = org[wound[7]]
+        end
+        if wound[7] == "arteria" and type(org.o2) == "table" then
+            cycle.o2regen = org.o2.regen
+        end
         wound[1] = 0
         if type(wound[7]) == "string" then org[wound[7]] = 0 end
         if wound[7] == "arteria" and type(org.o2) == "table" then org.o2.regen = 0 end
     end
-    for _, wound in ipairs(ordinary) do wound[1] = 0 end
+    for _, wound in ipairs(ordinary) do
+        cycle.ordinary[#cycle.ordinary + 1] = { wound = wound, severity = tonumber(wound[1]) or 0 }
+        wound[1] = 0
+    end
 
     CompactWoundTable(org.wounds)
     CompactWoundTable(org.arterialwounds)
@@ -1464,6 +1491,10 @@ function WSZC.ApplyTourniquetToOrganism(ctx)
         local value = afterMap[limbId] or 0
         return 0, value, value
     end
+
+    cycle.treated = treated
+    ply._WSZCTourniquetCycles = ply._WSZCTourniquetCycles or {}
+    ply._WSZCTourniquetCycles[limbId] = cycle
 
     org.bleed = math.max((tonumber(org.bleed) or 0) - treated * 0.2, 0)
     local h = H()
@@ -1477,6 +1508,237 @@ function WSZC.ApplyTourniquetToOrganism(ctx)
 
     Debug("tourniquet treated %s/%s: -%.3f bleeding", tostring(ply), tostring(limbId), treated)
     return treated, beforeMap[limbId] or 0, afterMap[limbId] or 0
+end
+
+local function RestoreTourniquetWoundList(wounds, backups)
+    if type(wounds) ~= "table" or type(backups) ~= "table" then return end
+    for _, entry in ipairs(backups) do
+        local wound = entry.wound
+        if type(wound) == "table" then
+            -- Do not erase additional damage that arrived while the strap was
+            -- on.  Restore at least the severity that was merely compressed.
+            wound[1] = math.max(tonumber(wound[1]) or 0, tonumber(entry.severity) or 0)
+            local present = false
+            for _, current in pairs(wounds) do
+                if current == wound then present = true break end
+            end
+            if not present then
+                local last = 0
+                for key in pairs(wounds) do
+                    if type(key) == "number" and key > last then last = key end
+                end
+                wounds[last + 1] = wound
+            end
+        end
+    end
+end
+
+local function RemoveTourniquetVisual(ply, org, limbId)
+    local visualBone = TOURNIQUET_VISUAL_BONES[limbId]
+    local entities = { ply, IsValid(org.owner) and org.owner or nil, ply.FakeRagdoll }
+    if hg and hg.GetCurrentCharacter then
+        local ok, current = pcall(hg.GetCurrentCharacter, ply)
+        if ok then entities[#entities + 1] = current end
+    end
+    local seen = {}
+    for _, ent in ipairs(entities) do
+        if IsValid(ent) and not seen[ent] then
+            seen[ent] = true
+            if type(ent.tourniquets) == "table" then
+                local kept = {}
+                for _, marker in ipairs(ent.tourniquets) do
+                    if type(marker) ~= "table" or marker[3] ~= visualBone then
+                        kept[#kept + 1] = marker
+                    end
+                end
+                ent.tourniquets = kept
+                if ent.SetNetVar then pcall(ent.SetNetVar, ent, "Tourniquets", kept) end
+            end
+        end
+    end
+    if hg and type(hg.TourniquetGuys) == "table" then
+        for i = #hg.TourniquetGuys, 1, -1 do
+            local ent = hg.TourniquetGuys[i]
+            if not IsValid(ent) or type(ent.tourniquets) ~= "table" or #ent.tourniquets == 0 then
+                table.remove(hg.TourniquetGuys, i)
+            end
+        end
+        if SetNetVar then pcall(SetNetVar, "TourniquetGuys", hg.TourniquetGuys) end
+    end
+end
+
+local function MatureTourniquetCycle(cycle, now)
+    if type(cycle) ~= "table" or cycle.mature then return false end
+    now = tonumber(now) or (CurTime and CurTime() or 0)
+    local elapsed = math.max(now - (tonumber(cycle.appliedAt) or now), 0)
+    if elapsed < (tonumber(cycle.duration) or TOURNIQUET_CLOT_TIME) then return false end
+    cycle.mature = true
+    cycle.arterial, cycle.ordinary, cycle.flags = nil, nil, nil
+    cycle.o2regen = nil
+    return true
+end
+
+function WSZC.TickTourniquets(ply, org, dt)
+    if not (Authority() and IsValid(ply) and type(org) == "table") then return false end
+    local cycles = ply._WSZCTourniquetCycles
+    if type(cycles) ~= "table" then return false end
+    local now = CurTime and CurTime() or 0
+    local h = H()
+    local sync = now >= (ply._WSZCNextTourniquetSync or 0)
+    if sync then ply._WSZCNextTourniquetSync = now + 1 end
+    local changed = false
+
+    for limbId, cycle in pairs(cycles) do
+        local elapsed = math.max(now - (tonumber(cycle.appliedAt) or now), 0)
+        local state = h and h.GetLimbState and h.GetLimbState(ply, limbId) or nil
+        if type(state) == "table" then
+            state.customStatuses = state.customStatuses or {}
+            state.customStatuses.TOURNIQUET = math.max(elapsed, 0.01)
+            if sync and h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, false) end
+        end
+        if MatureTourniquetCycle(cycle, now) then
+            changed = true
+            if not cycle.notified and ply.PrintMessage then
+                cycle.notified = true
+                pcall(ply.PrintMessage, ply, HUD_PRINTCENTER or 2,
+                    "Tourniquet: 3 minutes passed - remove and reuse it")
+            end
+        end
+    end
+    return changed
+end
+
+--- Remove the strap and return ONE reusable ZCity SWEP.  Before 180 seconds
+--- this also restores the compressed wounds; after clot time they stay closed.
+function WSZC.RemoveTourniquet(ply, limbId)
+    if not (Authority() and IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
+    local org = ply.organism
+    if type(org) ~= "table" then return false end
+    limbId = NormalizeLimb(limbId) or limbId
+    local cycles = ply._WSZCTourniquetCycles
+    local cycle = cycles and cycles[limbId] or nil
+    if not cycle then
+        local routed = WSZC.TourniquetApplicationSite(ply, limbId)
+        if routed and cycles and cycles[routed] then limbId, cycle = routed, cycles[routed] end
+    end
+    if not limbId then return false end
+
+    local h = H()
+    local state = h and h.GetLimbState and h.GetLimbState(ply, limbId) or nil
+    local active = cycle ~= nil or (type(state) == "table"
+        and (state.tourniqueted == true or (type(state.customStatuses) == "table"
+        and state.customStatuses.TOURNIQUET ~= nil)))
+    if not active then return false end
+
+    -- The click may arrive after 180 s but before the next Org Think.  Decide
+    -- maturity from the authoritative timestamp here as well, never from only
+    -- the last periodic tick.
+    MatureTourniquetCycle(cycle)
+    if cycle and not cycle.mature then
+        RestoreTourniquetWoundList(org.arterialwounds, cycle.arterial)
+        RestoreTourniquetWoundList(org.wounds, cycle.ordinary)
+        for flag, value in pairs(cycle.flags or {}) do org[flag] = value == nil and 1 or value end
+        if cycle.o2regen ~= nil and type(org.o2) == "table" then org.o2.regen = cycle.o2regen end
+        org.bleed = math.Clamp((tonumber(org.bleed) or 0) + (tonumber(cycle.treated) or 0) * 0.2, 0, 200)
+    end
+    if cycles then cycles[limbId] = nil end
+
+    if type(state) == "table" and WoundSystem and WoundSystem.Statuses
+        and type(WoundSystem.Statuses.Clear) == "function" then
+        pcall(WoundSystem.Statuses.Clear, state, "TOURNIQUET")
+    end
+    local affected = cycle and cycle.affected or nil
+    if not affected then
+        affected = {}
+        for _, id in ipairs(TOURNIQUET_DOWNSTREAM[limbId] or { limbId }) do affected[id] = true end
+    end
+    local bleedMap = LimbBleedMap(ply, org)
+    for id in pairs(affected) do
+        local affectedState = h and h.GetLimbState and h.GetLimbState(ply, id) or nil
+        if type(affectedState) == "table" then
+            affectedState.tourniqueted = false
+            affectedState.tourniquetPain = 0
+            affectedState.tourniquetDurability = nil
+            affectedState.tourniquetSourceSlot = nil
+            if not affectedState.isBandaged then affectedState.blockedBleeding = false end
+            affectedState.bleed = bleedMap[id] or 0
+            if type(affectedState.customStatuses) == "table" then
+                affectedState.customStatuses.TOURNIQUET = nil
+            end
+            ply._WSZCExpectedBleed = ply._WSZCExpectedBleed or {}
+            ply._WSZCExpectedBleed[id] = affectedState.bleed
+            if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, id, true) end
+        end
+    end
+    RemoveTourniquetVisual(ply, org, limbId)
+    if ply.SetNetVar then
+        pcall(ply.SetNetVar, ply, "wounds", org.wounds)
+        pcall(ply.SetNetVar, ply, "arterialwounds", org.arterialwounds)
+    end
+    ply.fullsend = true
+
+    -- The native receiver returns into C:U's hidden inventory.  Authority mode
+    -- uses real ZCity SWEPs, so return exactly one weapon_tourniquet instead.
+    if ply.Give then
+        local ok, swep = pcall(ply.Give, ply, "weapon_tourniquet")
+        if not ok then
+            Warn("could not return weapon_tourniquet: " .. tostring(swep))
+        elseif IsValid(swep) and type(swep.modeValues) == "table" then
+            swep.modeValues[1] = 1
+            if swep.SetNetVar then pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues) end
+        end
+    elseif h and type(h.ReturnAttachedMedicalItem) == "function" then
+        pcall(h.ReturnAttachedMedicalItem, ply, "TOURNIQUET", 100, nil)
+    end
+    return true
+end
+
+-- Preserve the original receiver for SPLINTED and for bridge mode.  Net reads
+-- cannot be "unread", so replay the two already captured strings only for the
+-- duration of that synchronous native call.
+local function ReplayRemoveStatus(original, len, ply, limbId, rawStatus)
+    if type(original) ~= "function" then return false end
+    local readString = net.ReadString
+    local values, index = { limbId, rawStatus }, 0
+    net.ReadString = function()
+        index = index + 1
+        return values[index]
+    end
+    local ok, a, b, c = pcall(original, len, ply)
+    net.ReadString = readString
+    if not ok then
+        Warn("native limb-status removal failed: " .. tostring(a))
+        return nil
+    end
+    return a, b, c
+end
+
+function WSZC.InstallTourniquetRemovalBridge()
+    if type(net) ~= "table" or type(net.Receivers) ~= "table" then return false end
+    local name = "WoundSystem_RemoveLimbStatus"
+    local current = net.Receivers[name]
+    if current == WSZC._TourniquetRemovalWrapper then return current ~= nil end
+    local original = current
+    local function wrapped(len, ply)
+        local limbId = net.ReadString()
+        local rawStatus = net.ReadString()
+        local statusId = string.upper(tostring(rawStatus or ""))
+        if WoundSystem and type(WoundSystem.NormalizeItemId) == "function" then
+            local ok, normalized = pcall(WoundSystem.NormalizeItemId, rawStatus)
+            if ok and normalized then statusId = string.upper(tostring(normalized)) end
+        elseif WSZC.NormalizeItemId then
+            local ok, normalized = pcall(WSZC.NormalizeItemId, rawStatus)
+            if ok and normalized then statusId = string.upper(tostring(normalized)) end
+        end
+        if Authority() and statusId == "TOURNIQUET" then
+            return WSZC.RemoveTourniquet(ply, limbId)
+        end
+        return ReplayRemoveStatus(original, len, ply, limbId, rawStatus)
+    end
+    WSZC._OriginalRemoveLimbStatus = original
+    WSZC._TourniquetRemovalWrapper = wrapped
+    net.Receivers[name] = wrapped
+    return true
 end
 
 ---------------------------------------------------------------------------
@@ -3723,6 +3985,7 @@ local function PatchBloodBagTake(wb)
 end
 
 local function InstallMedicalBridge()
+    WSZC.InstallTourniquetRemovalBridge()
     local wb = WB()
     if not (wb and wb.SwepHeal) then return false end
     PatchBodyDrugSpecs(wb)
@@ -3923,6 +4186,8 @@ function WSZC.ClearAllShrapnel(ply, org)
 
     if IsValid(ply) then
         ply._WSZCTimedBodyEffects = nil
+        ply._WSZCTourniquetCycles = nil
+        ply._WSZCNextTourniquetSync = nil
         ply._WSZCNextSplintSync = nil
         if WSZC.StopAllMinigames then WSZC.StopAllMinigames(ply, "zcity_compat_reset", true) end
         local h = H()
@@ -3936,8 +4201,13 @@ function WSZC.ClearAllShrapnel(ply, org)
                     state.broken, state.dislocated = false, false
                     state.isBandaged, state.wszcBandagedShrapnel = false, false
                     state.tourniqueted, state.blockedBleeding = false, false
+                    state.tourniquetPain, state.tourniquetDurability = 0, nil
+                    state.tourniquetSourceSlot = nil
                     state.splinted, state.splintItemId, state.splintSourceSlot = false, nil, nil
-                    if type(state.customStatuses) == "table" then state.customStatuses.SPLINTED = nil end
+                    if type(state.customStatuses) == "table" then
+                        state.customStatuses.SPLINTED = nil
+                        state.customStatuses.TOURNIQUET = nil
+                    end
                     state.bandageSlowAmount = 0
                     state.infection, state.infectionSpeed = 0, 0
                     state.dislocationTimer = 0
@@ -4091,6 +4361,10 @@ function WSZC.InstallResetStructureGuard()
         end
 
         if not down then
+            if IsValid(owner) then
+                owner._WSZCTourniquetCycles = nil
+                owner._WSZCNextTourniquetSync = nil
+            end
             RestoreShrapnelShadow(org)
             -- A genuine standing spawn is a real clear, not a ragdoll
             -- transition.  Cover the same native brokenribs omission here;
@@ -4330,6 +4604,7 @@ function WSZC.InstallOrganismMode()
         if not (IsValid(owner) and owner:IsPlayer() and owner:Alive()) then return end
         if type(org) ~= "table" then return end
 
+        WSZC.TickTourniquets(owner, org, dt)
         WSZC.TickSplints(owner, org, dt)
         WSZC.TickTimedBodyEffects(owner, dt)
         if cvShadow and cvShadow:GetBool() then

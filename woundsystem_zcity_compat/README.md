@@ -47,6 +47,11 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 - отрицательный C:U limb-bleed delta теперь уменьшает сами `org.wounds`, а не
   только временный `org.bleed`; специальные bandage/tourniquet delta по-прежнему
   обнулены и не применяются дважды;
+- многоразовый жгут: 180-секундный цикл фиксации, штатное снятие возвращает один
+  `weapon_tourniquet` и очищает status/visuals. До срока восстанавливаются только
+  сохранённые раны (новые повреждения остаются), после срока раны остаются
+  закрытыми. Повторный клик не дублирует SWEP, активный application site не
+  принимает второй жгут, reset очищает цикл без выдачи предмета;
 - fracture timer соответствует canonical C:U remaining time (`100 → 0`), а
   лечение меняет настоящие limb/neck/chest fields и `brokenribs`. Естественная
   ZCity-регенерация не заменяется второй физиологией. Для `SPLINTED` сохранены
@@ -56,8 +61,9 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 Регрессия `tools/tests/test_medical_regression.py` читает canonical ZCity
 WoundBridge и native C:U definitions прямо из исходных ZIP. Она проверяет
 instant/async `SwepHeal`, настоящий `BloodBagTake`, naloxone, chest drain,
-20 timed steps, fractures/dislocations/splint и отсутствие двойного расхода или
-лечения. Это offline Lua regressions; финальная проверка в живом GMod остаётся
+20 timed steps, fractures/dislocations/splint, ранний/зрелый tourniquet removal,
+повторное использование и native receiver replay, а также отсутствие двойного
+расхода или лечения. Это offline Lua regressions; финальная проверка в живом GMod остаётся
 обязательной для engine/net/ragdoll поведения.
 
 ## Зачем аддон нужен
@@ -107,7 +113,16 @@ instant/async `SwepHeal`, настоящий `BloodBagTake`, naloxone, chest dra
    обычных `org.wounds` на выбранной конечности. Артериальные раны бинт не
    изменяет; их останавливает **только жгут**, который очищает запись
    `org.arterialwounds`, соответствующий artery-флаг и синхронизирует нативные
-   `wounds` / `arterialwounds` / `Tourniquets`. Net-пакет `WSZC_BandageState`
+   `wounds` / `arterialwounds` / `Tourniquets`. Активный жгут хранит отдельный
+   backup обработанных wound entries на `ply._WSZCTourniquetCycles`. Через 180
+   секунд `TickTourniquets()` фиксирует результат и удаляет backup; автоматически
+   статус не снимается. Штатный removal receiver возвращает один
+   `weapon_tourniquet`, удаляет только выбранный visual у player/current ragdoll,
+   очищает downstream flags и повторный клик игнорирует. Раннее снятие
+   восстанавливает сохранённые severity/artery flags без удаления новых ран;
+   зрелое оставляет раны закрытыми. Второй жгут на тот же активный site не
+   расходуется, native `SPLINTED` и authority=0 replay делегируются C:U.
+   Net-пакет `WSZC_BandageState`
    сообщает начальное/текущее обычное кровотечение, фактический процент его
    остановки и отдельный остаток артериального. Мини-игра рисует `STOP N%` и
    кольцо; при открытой артерии капля не скрывается, а после остановки обычных
@@ -375,7 +390,7 @@ ZCity вызывает `WoundSystem.Health.StartExternalMinigame()` только
 | `weapon_medkit_sh` режим `2` | **мгновенно** (MORPHINE oneshot) |
 | `weapon_medkit_sh` режим `3` | **мгновенно** (BLOODCOAGULANT / SALINE vehicle) |
 | `weapon_adrenaline`, `weapon_betablock`, `weapon_mannitol`, `weapon_thiamine` | **мгновенно** (body-эффект / SALINE vehicle) |
-| `weapon_tourniquet` | **мгновенно через физический `WB.SwepHeal`**: прицельная PhysicsBone конечность (включая self-use ragdoll) scoped-маршрутизируется до `H.ApplyItemToBody`; затем реально закрывается ZCity arterial/ordinary wound именно на выбранной ноге/руке, а C:U apply/status выполняется best-effort. Native `false`/Lua-ошибка не отменяет лечение; при отсутствии обработанной раны предмет не расходуется. Визуал ставится на выбранную конечность; synthetic wounds имеют валидные `Vector`/`Angle` для native renderer. Бинт артерии не помогает |
+| `weapon_tourniquet` | **мгновенно через физический `WB.SwepHeal`**: прицельная PhysicsBone конечность (включая self-use ragdoll) scoped-маршрутизируется до `H.ApplyItemToBody`; затем реально закрывается ZCity arterial/ordinary wound именно на выбранной ноге/руке, а C:U apply/status выполняется best-effort. Native `false`/Lua-ошибка не отменяет лечение; при отсутствии обработанной раны предмет не расходуется. Штатное снятие возвращает один многоразовый SWEP и очищает visuals/status; до 180 секунд восстанавливает исходные раны, после — оставляет закрытыми. Повторный клик не дублирует предмет, второй жгут на активную конечность не расходуется. Бинт артерии не помогает |
 | `weapon_painkillers`, `weapon_medkit_sh` режим `4`, blood bag и прочие спецы без `mg` | **мгновенно** (старая ветка `WB.SwepHeal`) |
 
 Для «живых» предметов (`live`) `onProgress` вызывается на каждом wrap / толчке
@@ -886,9 +901,9 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  suites: `tools/tests/test_wszc_regression.py` (**111/111**, включая Lua 11/11,
  CRC/зеркало/манифест и pixel checks), `test_gameplay_regression.py` (**93/93**),
  `test_bandage_regression.py` (**35/35**) и `test_medical_regression.py`
- (**33/33**) — всего **272/272**. Medical-suite отдельно проверяет canonical
+ (**41/41**) — всего **280/280**. Medical-suite отдельно проверяет canonical
  instant/async medicine, timed effects, кровь, грудной дренаж, naloxone, кости,
- вывихи и splint. Скрипт сборки находится в `tools/build_packs.py`. На живом
+ вывихи, splint и полный многоразовый tourniquet lifecycle. Скрипт сборки находится в `tools/build_packs.py`. На живом
  GMod-сервере ассистентом не прогонялось.
  Пользовательские live-скриншоты после `3d7c793` и `e70bfb5` показали, что
  предыдущие headless-тесты не доказывали скрытие в реальном клиенте;
