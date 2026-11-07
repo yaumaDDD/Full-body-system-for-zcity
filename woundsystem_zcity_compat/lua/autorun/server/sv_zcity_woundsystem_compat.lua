@@ -141,20 +141,21 @@ local FALLBACK_HITGROUP = {
     [HITGROUP_RIGHTARM] = "forearm_R",
     [HITGROUP_LEFTLEG] = "crus_L",
     [HITGROUP_RIGHTLEG] = "crus_R",
-    [HITGROUP_GEAR] = "abdomen",
+    [HITGROUP_GEAR] = "pelvis",
     [HITGROUP_GENERIC] = "thorax",
 }
 
 local FALLBACK_PARENT_LIMB = {
     hand_R = "forearm_R", forearm_R = "arm_R", arm_R = "thorax",
     hand_L = "forearm_L", forearm_L = "arm_L", arm_L = "thorax",
-    foot_R = "crus_R", crus_R = "thigh_R", thigh_R = "abdomen",
-    foot_L = "crus_L", crus_L = "thigh_L", thigh_L = "abdomen",
-    head = "thorax", abdomen = "thorax",
+    foot_R = "crus_R", crus_R = "thigh_R", thigh_R = "pelvis",
+    foot_L = "crus_L", crus_L = "thigh_L", thigh_L = "pelvis",
+    neck = "head", head = "thorax", abdomen = "thorax", pelvis = "abdomen",
 }
 
 local FALLBACK_RAGDOLL_BONES = {
-    { limb = "head", patterns = { "head", "neck", "jaw", "face" } },
+    { limb = "neck", patterns = { "neck" } },
+    { limb = "head", patterns = { "head", "jaw", "face" } },
     { limb = "hand_L", patterns = { "l_hand", "l hand", "left hand", "bip01_l_finger", "leftfinger" } },
     { limb = "hand_R", patterns = { "r_hand", "r hand", "right hand", "bip01_r_finger", "rightfinger" } },
     { limb = "forearm_L", patterns = { "l_forearm", "l forearm", "left forearm", "l_lowerarm", "left lowerarm" } },
@@ -168,7 +169,8 @@ local FALLBACK_RAGDOLL_BONES = {
     { limb = "thigh_L", patterns = { "l_thigh", "l thigh", "left thigh", "l_upperleg", "left upperleg" } },
     { limb = "thigh_R", patterns = { "r_thigh", "r thigh", "right thigh", "r_upperleg", "right upperleg" } },
     { limb = "thorax", patterns = { "spine2", "spine3", "spine4", "chest", "rib", "sternum" } },
-    { limb = "abdomen", patterns = { "pelvis", "spine", "hips", "hip", "spine1" } },
+    { limb = "abdomen", patterns = { "spine1", "stomach", "abdomen" } },
+    { limb = "pelvis", patterns = { "pelvis", "spine", "hips", "hip" } },
 }
 
 local FALLBACK_LIMB_CLAMPS = {
@@ -213,6 +215,7 @@ end
 local function FallbackRagdollBoneNameToLimb(boneName)
     boneName = string.lower(tostring(boneName or ""))
     if boneName == "" then return nil end
+    if string.find(boneName, "neck", 1, true) then return "neck" end
     local const = WSZC.Const or {}
     local patterns = const.RagdollDamageBones or FALLBACK_RAGDOLL_BONES
     for _, candidate in ipairs(patterns) do
@@ -656,6 +659,18 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
 
     if not ok then return false, 0 end
 
+    -- C:U's chest drain reduces its own hemothorax scalar.  ZCity's canonical
+    -- equivalent is the needle state: sv_lungs then stops pneumothorax growth
+    -- and drains it over time.  Apply it only AFTER native validation/success,
+    -- never in bridge mode and never when the item was rejected.
+    if itemId == "INJECTION" and WSZC.OrganismAuthority and WSZC.OrganismAuthority() then
+        local org = ply.organism
+        if type(org) == "table" then
+            org.needle = 1
+            ply.fullsend = true
+        end
+    end
+
     if minigame == "bandage" and WSZC.ApplyBandageToOrganism then
         local treatOk, treated, _, afterBleed = pcall(
             WSZC.ApplyBandageToOrganism, ctx, ctx.profile, bandageEffectFraction)
@@ -724,6 +739,7 @@ function WSZC.Setup()
     end
 
     WSZC.H = H
+    if WSZC.InstallNeckState then WSZC.InstallNeckState(H) end
 
     -- A future C:U build may already provide the full bridge API.  Even then,
     -- install our external-minigame implementation: the supplied C:U build has
@@ -833,6 +849,7 @@ function WSZC.Setup()
     H.Const.LimbEffectClamps = H.Const.LimbEffectClamps or FALLBACK_LIMB_CLAMPS
     H.Const.BodyEffectClamps = H.Const.BodyEffectClamps or FALLBACK_BODY_CLAMPS
     H.Const.DrugEffectAliases = H.Const.DrugEffectAliases or FALLBACK_DRUG_ALIASES
+    if WSZC.InstallNeckState then WSZC.InstallNeckState(H) end
 
     -- External-minigame API for ZCity's non-instant medical SWEPs.  The
     -- implementation lives in sv_zcity_woundsystem_compat_minigames.lua and

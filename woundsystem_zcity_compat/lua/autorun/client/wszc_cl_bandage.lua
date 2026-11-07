@@ -618,8 +618,8 @@ local function EnsureOverlay()
         local screenX = cx + (MG.handPos.x * baseScale)
         local screenY = cy - (MG.handPos.y * baseScale)
         
-        -- Human palm/fist on C:U's exact 512x1260 canvas.  Revision 3 keeps
-        -- native scale/pivot/position; only the material is substituted.
+        -- Human palm/fist on C:U's 512x1260 canvas.  Revision 5 uses the
+        -- shared compact scale and anchors the rotated pivot, not its top-left.
         local handScale = CFG.HandCursorScale * ((WSZC and WSZC.HandCursorScale and WSZC.HandCursorScale()) or 1)
         local handDrawW, handDrawH, handPivotX, handPivotY
         if WSZC and WSZC.UnitmenuHandGeometry then
@@ -629,8 +629,14 @@ local function EnsureOverlay()
             handDrawW, handDrawH = SRC_HAND_W * baseScale * handScale, SRC_HAND_H * baseScale * handScale
             handPivotX, handPivotY = 0.4, 0.1
         end
-        local handX = screenX - (handDrawW * handPivotX) + ((DevMinigameCfg.bandageHandOffsetX or 0) * baseScale)
-        local handY = screenY - (handDrawH * handPivotY) + ((DevMinigameCfg.bandageHandOffsetY or 0) * baseScale)
+        -- In the default cursor mode the grip IS the mouse.  C:U's developer
+        -- offsets (100/400) belong only to its optional spring-hand mode;
+        -- applying them here put the palm hundreds of pixels below the cursor.
+        local handTargetX, handTargetY = screenX, screenY
+        if not (WSZC and WSZC.MinigameHandPinned and WSZC.MinigameHandPinned()) then
+            handTargetX = handTargetX + ((DevMinigameCfg.bandageHandOffsetX or 0) * baseScale)
+            handTargetY = handTargetY + ((DevMinigameCfg.bandageHandOffsetY or 0) * baseScale)
+        end
 
         local handMat = (WSZC and WSZC.UnitmenuHandMat and WSZC.UnitmenuHandMat(MG.holdingBandage == true))
             or (MG.holdingBandage and matHandClick or matHandIdle)
@@ -648,11 +654,14 @@ local function EnsureOverlay()
         surface.SetDrawColor(255, gb, gb,
             (WSZC and WSZC.UnitmenuHandAlpha and WSZC.UnitmenuHandAlpha(153)) or 153)
         
-        local cx_hand = handX + (handDrawW * handPivotX)
-        local cy_hand = handY + (handDrawH * handPivotY)
+        local cx_hand, cy_hand = handTargetX, handTargetY
         local angle = HandPhysics.Rotation(MG, (MG.handPos and MG.handPos.x) and (MG.handPos.x * 0.02) or 0)
         if WSZC and WSZC.UnitmenuHandAngle then angle = WSZC.UnitmenuHandAngle(angle) end
-        -- Exact native C:U call: same centre, dimensions, pivot and rotation.
+        if WSZC and WSZC.HandRectAtPivot then
+            cx_hand, cy_hand = WSZC.HandRectAtPivot(
+                handTargetX, handTargetY, handDrawW, handDrawH, angle, handPivotX, handPivotY)
+        end
+        -- Anchor the visible fingertips, including developer offset and rotation.
         surface.DrawTexturedRectRotated(cx_hand, cy_hand, handDrawW, handDrawH, angle)
         if WoundSystem and WoundSystem.MinigameClip then
             WoundSystem.MinigameClip.End(clipActive)
@@ -792,16 +801,22 @@ hook.Add("Think", "WSZC_BandageInput", function()
     local targetScreenX = mx + offsetX
     local targetScreenY = my + offsetY
 
-    -- Use shared hand physics (same as other minigames, matching CAS3)
-    HandPhysics.Step(MG, dt, {
-        pain = painFactor,
-        str = 0,
-        conc = 100,
-        shakeX = 120,
-        shakeY = 40,
-        positionScale = 120,
-        bounds = { 0, ScrW(), 0, ScrH() }
-    })
+    -- Default: the actual cursor drives BOTH the orbit hitbox and the drawn
+    -- grip.  Legacy C:U physics remains available with hand_pin_cursor 0.
+    local pinX = WSZC and WSZC.PinMinigameHandToCursor
+        and WSZC.PinMinigameHandToCursor(MG) or nil
+    local cursorPinned = pinX ~= nil
+    if not cursorPinned then
+        HandPhysics.Step(MG, dt, {
+            pain = painFactor,
+            str = 0,
+            conc = 100,
+            shakeX = 120,
+            shakeY = 40,
+            positionScale = 120,
+            bounds = { 0, ScrW(), 0, ScrH() }
+        })
+    end
 
     -- Convert screen-space to sim-space (centered, y-up)
     MG.handPos.x = (MG.handScreenX - cx) / baseScale
@@ -918,11 +933,10 @@ hook.Add("Think", "WSZC_BandageInput", function()
             net.WriteFloat(MG.unsentDegrees)
             net.WriteUInt(WoundSystem and WSZC.MinigameNextInputSeq and WSZC.MinigameNextInputSeq(MG) or 0, 24)
             net.SendToServer()
-            local slot = MG.slotIdx and WoundSystemInventorySlots and WoundSystemInventorySlots[MG.slotIdx]
-            if MG.mode ~= "unwrap" and slot and slot.type == "tool" then
-                local predictedCost = (MG.unsentDegrees / 360) * GetDurabilityPerWrap()
-                slot.durability = math.max(0, (slot.durability or 0) - predictedCost)
-            end
+            -- Do not predict the old fixed 100/12 C:U cost here.  Native
+            -- ZCity consumption equals the severity actually removed; the
+            -- server's WSZC_MinigameSlot packet is the only correct remainder
+            -- for partial wounds, big bandages and the last physical unit.
             MG.unsentDegrees = 0
             MG.lastSentAt = now
         end
@@ -940,14 +954,20 @@ hook.Add("Think", "WSZC_BandageInput", function()
                 MG.handVelocity.x = MG.handVelocity.x + (normX * (dt * 25))
                 MG.handVelocity.y = MG.handVelocity.y + (normY * (dt * 25))
             end
-            MG.handPos.x = normX * collRadius
-            MG.handPos.y = normY * collRadius
             if not MG.holdingBandage then
                 MG.handVelocity.x = MG.handVelocity.x * 0.9
                 MG.handVelocity.y = MG.handVelocity.y * 0.9
             end
-            MG.handScreenX = cx + (MG.handPos.x * baseScale)
-            MG.handScreenY = cy - (MG.handPos.y * baseScale)
+            -- The old collision clamp moved the rendered hand away from the
+            -- real mouse near the centre.  In cursor mode keep the grip and
+            -- gameplay point exact; angular grabbing does not depend on this
+            -- purely visual/spring collision correction.
+            if not cursorPinned then
+                MG.handPos.x = normX * collRadius
+                MG.handPos.y = normY * collRadius
+                MG.handScreenX = cx + (MG.handPos.x * baseScale)
+                MG.handScreenY = cy - (MG.handPos.y * baseScale)
+            end
         end
     end
 

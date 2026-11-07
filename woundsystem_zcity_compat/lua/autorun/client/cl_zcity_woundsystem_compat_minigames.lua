@@ -88,9 +88,11 @@ local function EnableMinigameClicker()
         pcall(WoundSystem.HealthGUI.SetScreenClickerOwned, true, "wszc_minigame")
     end
     if gui and gui.EnableScreenClicker then gui.EnableScreenClicker(true) end
-    -- SetScreenClickerOwned(true) is refused while IsExternalMenuOpen(), but
-    -- the arrow must still be visible and steerable.
-    if WSZC.RestoreMinigameCursor then WSZC.RestoreMinigameCursor(true) end
+    -- Do NOT unconditionally restore "arrow" here.  This watchdog runs every
+    -- 0.05 s; doing so used to undo BlankMinigameCursor() after the gui wrapper
+    -- had just hidden it, producing the visible arrow flicker over the hand.
+    -- Sync selects blank for a visible hand and arrow only in fallback mode.
+    if WSZC.SyncMinigameCursor then WSZC.SyncMinigameCursor() end
 end
 
 local function DisableMinigameClicker()

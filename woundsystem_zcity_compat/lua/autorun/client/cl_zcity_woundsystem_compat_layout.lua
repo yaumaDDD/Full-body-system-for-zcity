@@ -17,11 +17,11 @@ WSZC._ClientLayoutLoaded = true
 
 local cvFullscreen = CreateClientConVar("zc_woundsystem_compat_fullscreen_minigame", "1", true, false,
     "1 = stretch the bandage / syringe minigames over the whole screen")
-local cvZoom = CreateClientConVar("zc_woundsystem_compat_minigame_zoom", "1", true, false,
+local cvZoom = CreateClientConVar("zc_woundsystem_compat_minigame_zoom", "0.85", true, false,
     "Extra size multiplier for the WSZC minigames (0.7 .. 1.8)", 0.7, 1.8)
 local cvClamp = CreateClientConVar("zc_woundsystem_compat_clamp_adrenaline", "1", true, false,
     "1 = clamp the shadow organism's adrenaline/painkiller so ZCity camera FX stay sane")
-local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_zoom", "1", true, false,
+local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_zoom", "0.85", true, false,
     "Size of native C:U minigames when fullscreen_native is 0 (0.4 .. 1.2)", 0.4, 1.2)
 -- Live regression (Screenshot_2-8): fullscreen_native=1 multiplied Clip.Scale()
 -- by NativeFullscreenK, so a 26x138 shrapnelpiece.png was stretched into a
@@ -31,16 +31,18 @@ local cvNativeZoom = CreateClientConVar("zc_woundsystem_compat_native_minigame_z
 -- two WSZC minigames that were authored for it.
 local cvFullscreenNative = CreateClientConVar("zc_woundsystem_compat_fullscreen_native", "0", true, false,
     "0 = keep native C:U shrapnel / dislocation / AED at their authored 760 px size; 1 = stretch them fullscreen")
-local cvHandScale = CreateClientConVar("zc_woundsystem_compat_hand_cursor_scale", "1", true, false,
-    "Additional WSZC hand scale; 1 = exact native C:U size (0.2 .. 1)", 0.2, 1)
+local cvHandScale = CreateClientConVar("zc_woundsystem_compat_hand_cursor_scale", "0.55", true, false,
+    "Shared minigame hand scale; 0.55 = compact human hand (0.2 .. 1)", 0.2, 1)
 local cvHideMinigameText = CreateClientConVar("zc_woundsystem_compat_hide_minigame_text", "1", true, false,
     "1 = remove every header / instruction / exit-hint text and dark panel in all minigames")
 local cvCloseEmptyClick = CreateClientConVar("zc_woundsystem_compat_close_on_empty_click", "1", true, false,
     "1 = close WoundView when left-clicking an empty area outside the doll, slots and action point")
 
---- Multiplier for the huge C:U hand sprites (512x1260 source images).
+--- Shared visual multiplier for the huge C:U hand sprites (512x1260).
+--- WSZC applies it in HandCursorScale(); the native override applies the SAME
+--- value in HandDrawSize(), so bandage, syringe and extraction stay identical.
 function WSZC.HandCursorScale()
-    return cvHandScale and cvHandScale:GetFloat() or 1
+    return cvHandScale and cvHandScale:GetFloat() or 0.55
 end
 
 --- sh_handphysics.lua adds a pain-driven pseudo-noise offset to the mouse
@@ -342,6 +344,12 @@ function WSZC.ApplyFullscreenClip()
             local base = patchedScaleOriginal()
             if WSZC.MinigameFullscreenNative() and WSZC.NativeMinigameActive() then
                 return base * WSZC.NativeFullscreenK(base)
+            end
+            if WSZC.NativeMinigameActive() and not WSZC.MinigameFullscreenNative() then
+                -- GetRect() above shrinks the clipping frame.  Scale the game
+                -- coordinate system too, otherwise only the border gets smaller
+                -- while sprites and ScreenToSim hitboxes keep the old size.
+                return base * math.Clamp(cvNativeZoom:GetFloat(), 0.4, 1.2)
             end
             return base
         end
@@ -648,6 +656,7 @@ hook.Add("Think", "WSZC_WoundViewEmptyClickClose", function()
 end)
 
 local savedHudFn, hudWrapper
+local cvUnitmenuDoll -- declared below with the other doll convars
 local drawWrappersInstalled = false
 local localeWrapped, directWrapped = false, false
 
@@ -794,12 +803,125 @@ local function InstallDrawWrappers()
 end
 WSZC.InstallCUHudDrawWrappers = InstallDrawWrappers
 
+-- C:U owns disinfectTime as a real infection-resistance timer.  Do not zero
+-- it and do not replace the whole medical icon layer: wrap ONLY the native
+-- AddHudIcon upvalue and skip the single Icons.disinfected entry.  Consequently
+-- the slot is not even appended (other icons keep their native spread), while
+-- server disinfection and infection_up/down/neutral continue unchanged.
+local disinfectedFilterFns = setmetatable({}, { __mode = "k" })
+local disinfectedFilterWrappers = setmetatable({}, { __mode = "k" })
+
+local function IsDisinfectedMaterial(mat, icons)
+    -- Icons is LOCAL in cl_health_gui.lua.  Looking only at _G.Icons made the
+    -- old filter a no-op in the real game even though its synthetic test passed.
+    icons = icons or _G.Icons
+    if type(icons) == "table" and mat == icons.disinfected then return true end
+
+    -- Identity is the primary check.  The exact native path also covers a
+    -- padded/recreated IMaterial and builds where Icons cannot be inspected.
+    local name = MaterialName(mat)
+    if type(name) ~= "string" then return false end
+    name = name:lower():gsub("\\", "/")
+    return name:find("casunknown-images/icons/disinfected", 1, true) ~= nil
+end
+
+local function PatchDisinfectedIcon(fn)
+    if type(fn) ~= "function" or disinfectedFilterFns[fn] then
+        return disinfectedFilterFns[fn] == true
+    end
+    if not (debug and debug.getupvalue and debug.setupvalue) then return false end
+
+    -- Some C:U revisions keep AddHudIcon in a closure below WoundDollAndPanel.
+    -- Walk function upvalues only (never arbitrary tables), inherit the native
+    -- Icons table and retain the old direct-upvalue fast path.
+    local visited = {}
+    local function walk(candidate, depth, inheritedIcons)
+        if type(candidate) ~= "function" or visited[candidate] then return false end
+        visited[candidate] = true
+        if disinfectedFilterFns[candidate] then return true end
+
+        local icons, addIndex, addHudIcon = inheritedIcons, nil, nil
+        for i = 1, 96 do
+            local name, value = debug.getupvalue(candidate, i)
+            if not name then break end
+            if name == "Icons" and type(value) == "table" then
+                icons = value
+            elseif name == "AddHudIcon" and type(value) == "function" then
+                addIndex, addHudIcon = i, value
+            end
+        end
+
+        if addHudIcon then
+            if disinfectedFilterWrappers[addHudIcon] then
+                disinfectedFilterFns[candidate] = true
+                return true
+            end
+            local nativeIcons = icons
+            local wrapped = function(items, mat, ...)
+                if IsDisinfectedMaterial(mat, nativeIcons) then return end
+                return addHudIcon(items, mat, ...)
+            end
+            disinfectedFilterWrappers[wrapped] = true
+            debug.setupvalue(candidate, addIndex, wrapped)
+            disinfectedFilterFns[candidate] = true
+            return true
+        end
+
+        if depth >= 6 then return false end
+        for i = 1, 96 do
+            local name, value = debug.getupvalue(candidate, i)
+            if not name then break end
+            if type(value) == "function" and walk(value, depth + 1, icons) then
+                disinfectedFilterFns[candidate] = true
+                return true
+            end
+        end
+        return false
+    end
+
+    local installed = walk(fn, 0, nil)
+    if installed then disinfectedFilterFns[fn] = true end
+    return installed
+end
+
+function WSZC.InstallDisinfectedIconFilter()
+    local hooks = hook.GetTable and hook.GetTable() or nil
+    local hud = type(hooks) == "table" and hooks.HUDPaint or nil
+    local fn = type(hud) == "table" and hud.WoundDollAndPanel or nil
+    if fn == hudWrapper or type(fn) ~= "function" then fn = savedHudFn end
+    return PatchDisinfectedIcon(fn)
+end
+
+-- A previous HUD/minigame can leave point sampling active.  The generated
+-- contour now carries a small source-alpha fringe; LINEAR sampling resolves it
+-- instead of turning that fringe back into stair steps.  Scope the override to
+-- C:U's native WoundView call and always restore both filter stacks, including
+-- when the native draw errors.
+local function BeginUnitmenuSmoothing()
+    if not cvUnitmenuDoll:GetBool() then return false end
+    local linear = TEXFILTER and TEXFILTER.LINEAR
+    if not linear or not render or not render.PushFilterMag or not render.PushFilterMin
+        or not render.PopFilterMag or not render.PopFilterMin then
+        return false
+    end
+    render.PushFilterMag(linear)
+    render.PushFilterMin(linear)
+    return true
+end
+
+local function EndUnitmenuSmoothing(active)
+    if not active then return end
+    render.PopFilterMin()
+    render.PopFilterMag()
+end
+
 local function InstallHudFilter()
     local hooks = hook.GetTable and hook.GetTable() or nil
     local hud = type(hooks) == "table" and hooks.HUDPaint or nil
     if type(hud) ~= "table" then return false end
     local fn = hud.WoundDollAndPanel
     if type(fn) ~= "function" then return false end
+    PatchDisinfectedIcon(fn == hudWrapper and savedHudFn or fn)
     if fn == hudWrapper then return true end
 
     savedHudFn = fn
@@ -813,7 +935,9 @@ local function InstallHudFilter()
         end
         local prevFiltered = WSZC.CUHudFiltered
         WSZC.CUHudFiltered = true
+        local smoothing = BeginUnitmenuSmoothing()
         local ok, a, b, c = pcall(fn, ...)
+        EndUnitmenuSmoothing(smoothing)
         WSZC.CUHudFiltered = prevFiltered
         if not ok then error(a, 0) end
         return a, b, c
@@ -928,8 +1052,10 @@ end)
 ---------------------------------------------------------------------------
 -- WoundView doll + minigame hand, built from "для переделывания интерфейса.zip"
 ---------------------------------------------------------------------------
--- The repository archive ships 15 pre-positioned 1500x1500 RGBA limb layers
--- (zcity_delta/unitmenu/limbs), three pixel status icons and nine realistic
+-- The repository archive ships 15 pre-positioned 1500x1500 RGBA limb layers;
+-- the generator splits the source head into independent head/neck sprites, so
+-- the runtime doll has 16 interactive parts (zcity_delta/unitmenu/limbs),
+-- three pixel status icons and nine realistic
 -- hand frames (homigrad/handanim).  Stock C:U/ZCity Lua never references them,
 -- so this connector installs them at runtime:
 --   * C:U's `Limbs` upvalue (WoundDollAndPanel) is MUTATED IN PLACE: new
@@ -944,12 +1070,13 @@ end)
 -- The cropped PNGs are generated by tools/build_unitmenu_materials.py and live
 -- in materials/wszc/unitmenu/.  Nothing inside the original ZIPs is modified.
 
-local cvUnitmenuDoll = CreateClientConVar("zc_woundsystem_compat_unitmenu_doll", "1", true, false,
+cvUnitmenuDoll = CreateClientConVar("zc_woundsystem_compat_unitmenu_doll", "1", true, false,
     "1 = rebuild the WoundView doll from the repository unitmenu limb layers")
--- Native Screenshot_1.png geometry is authored at 0.24; 0.25 is the owner's
--- requested "slightly larger" final doll (+4.17% linear, outline included).
+-- 0.25 is the EXACT 2222.png reference at 1365x1079.  The placement helper
+-- below compensates C:U's saved woundsys_ui_scale instead of letting it enlarge
+-- the doll a second time.  Other values remain proportional user overrides.
 local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "0.25", true, false,
-    "Size of the unitmenu doll relative to C:U's dollScale (0.1 .. 0.8)", 0.1, 0.8)
+    "Doll size; 0.25 = exact 2222.png reference (native UI scale compensated)", 0.1, 0.8)
 -- Owner (2026-11-06): restore the C:U hand pointer, but use a real human hand.
 -- tools/build_minigame_hand.py rotates the bundled palm/fist into C:U's
 -- fingertips-up / sleeve-down pose.  The hand keeps C:U HandPhysics inertia,
@@ -957,39 +1084,42 @@ local cvDollScale = CreateClientConVar("zc_woundsystem_compat_unitmenu_scale", "
 local cvHandanim = CreateClientConVar("zc_woundsystem_compat_handanim", "1", true, false,
     "1 = human C:U-style hand; 0 = original C:U hand frames")
 local cvHandanimScale = CreateClientConVar("zc_woundsystem_compat_handanim_scale", "1", true, false,
-    "Additional human hand scale; 1 = exact native C:U size (0.2 .. 1.5)", 0.2, 1.5)
+    "Additional human hand scale; 1 = no extra multiplier beyond shared scale (0.2 .. 1.5)", 0.2, 1.5)
 -- Exact native C:U grip fractions in its original 512x1260 rectangle.
 local cvHandPivotX = CreateClientConVar("zc_woundsystem_compat_hand_pivot_x", "0.4", true, false,
     "Grip point inside the hand sprite, X fraction 0..1", 0, 1)
 local cvHandPivotY = CreateClientConVar("zc_woundsystem_compat_hand_pivot_y", "0.1", true, false,
     "Grip point inside the hand sprite, Y fraction 0..1", 0, 1)
 local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_screen", "0.34", true, false,
-    "Legacy unused option: exact native C:U hand size is not screen-capped")
+    "Legacy unused option: the compact hand is scaled, not screen-capped")
 local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "1", true, false,
     "1 = hide the OS arrow only while the drawn minigame hand is active")
 local cvHideHand = CreateClientConVar("zc_woundsystem_compat_hide_minigame_hand", "0", true, false,
     "1 = hide the hand and use the standard OS arrow instead")
-local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "0", true, false,
-    "1 = bypass C:U hand inertia/pain shake and pin the grip to the real cursor")
+local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "1", true, false,
+    "1 = pin the gameplay hand and its visible grip to the real cursor; 0 = C:U inertia + developer offsets")
 -- Archived 0/1 values from the former no-hand build survive a default change.
 -- Migrate them once; afterwards every convar above remains user-configurable.
 local cvHandModeRevision = CreateClientConVar("zc_woundsystem_compat_hand_mode_revision", "0", true, false,
-    "Internal one-time migration revision for the C:U human hand defaults")
+    "Internal one-time migration revision for hand and minigame layout defaults")
 function WSZC.MigrateHumanHandDefaults()
-    -- Revision 3 removes the old 0.45/0.55 double-shrink and restores C:U's
-    -- exact native pivot.  Reapply the OS-arrow preference too: the hand is
-    -- now drawn every frame at the same position as C:U's original pointer.
-    if cvHandModeRevision:GetFloat() >= 3 then return false end
+    -- Revision 6 makes the hand a real cursor replacement.  Revision 5 only
+    -- corrected the rotated sprite pivot: WSZC still added C:U's 100/400
+    -- developer offset and used spring inertia, so the palm stayed far below
+    -- the mouse in the live bandage screenshot.  Migrate archived revision 5
+    -- once; hand_pin_cursor 0 remains available for the legacy C:U behaviour.
+    if cvHandModeRevision:GetFloat() >= 6 then return false end
     local defaults = {
-        { cvHandScale, 1 }, { cvHandanim, 1 }, { cvHandanimScale, 1 },
+        { cvHandScale, 0.55 }, { cvHandanim, 1 }, { cvHandanimScale, 1 },
         { cvHandPivotX, 0.4 }, { cvHandPivotY, 0.1 },
-        { cvHideCursor, 1 }, { cvHideHand, 0 }, { cvHandPinCursor, 0 },
+        { cvHideCursor, 1 }, { cvHideHand, 0 }, { cvHandPinCursor, 1 },
+        { cvZoom, 0.85 }, { cvNativeZoom, 0.85 },
     }
     for _, entry in ipairs(defaults) do
         local cv, value = entry[1], entry[2]
         if cv.SetFloat then pcall(cv.SetFloat, cv, value) end
     end
-    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 3) end
+    if cvHandModeRevision.SetInt then pcall(cvHandModeRevision.SetInt, cvHandModeRevision, 6) end
     return true
 end
 WSZC.MigrateHumanHandDefaults()
@@ -1024,7 +1154,7 @@ local function BuildUnitmenuMaterials()
             count = count + 1
         end
     end
-    if count < 15 then return nil end
+    if count < 16 then return nil end
     unitmenuMats = built
     return unitmenuMats
 end
@@ -1094,6 +1224,78 @@ function WSZC.UnitmenuHandGeometry(srcW, srcH, scale)
     return (srcW * scale), (srcH * scale), 0.4, 0.1
 end
 
+--- Return a draw centre whose rotated artwork pivot lands exactly on cx/cy.
+--- This is the same local-vector rotation used by C:U DrawPivotedRect():
+--- x*c-y*s, x*s+y*c.  Keeping the centre fixed while shrinking a tall hand
+--- leaves its fingertips far below the cursor, so the pivot must be the anchor.
+function WSZC.HandRectAtPivot(cx, cy, w, h, rot, px, py)
+    px, py = tonumber(px) or 0.4, tonumber(py) or 0.1
+    local lx, ly = (0.5 - px) * w, (0.5 - py) * h
+    local angle = math.rad(tonumber(rot) or 0)
+    local c, s = math.cos(angle), math.sin(angle)
+    return cx + lx * c - ly * s, cy + lx * s + ly * c, w, h
+end
+
+--- Shared by native C:U, WSZC bandage and WSZC syringe.  Pinning only the
+--- sprite is not enough: grab/orbit/injection hitboxes read handScreenX/Y.
+--- Update that gameplay state and clear the spring accumulator/velocity in the
+--- same call, then the visible pivot can use the very same real cursor point.
+function WSZC.MinigameHandPinned()
+    return cvHandPinCursor and cvHandPinCursor:GetBool() or false
+end
+
+function WSZC.PinMinigameHandToCursor(mg)
+    if not WSZC.MinigameHandPinned() or type(mg) ~= "table" then return nil, nil end
+    if type(gui) ~= "table" or type(gui.MousePos) ~= "function" then return nil, nil end
+    local ok, mx, my = pcall(gui.MousePos)
+    if not ok or type(mx) ~= "number" or type(my) ~= "number" then return nil, nil end
+    -- (0,0) is a valid screen corner, not a "mouse unavailable" sentinel.
+    mg.handScreenX, mg.handScreenY = mx, my
+    mg.handScreenVelX, mg.handScreenVelY = 0, 0
+    mg._hp_acc = 0
+    return mx, my
+end
+
+-- Native C:U keeps HandPhysics in a PRIVATE upvalue of each Think hook.  Wrap
+-- that exact Step function: pinning later in Paint alone would still let the
+-- spring/collision position drive extraction/dislocation gameplay for a frame.
+-- The once-a-second installer also covers C:U autorefresh replacing its hooks.
+local NATIVE_HAND_PHYSICS_HOOKS = {
+    "WoundSystem_BandageInput", "WoundSystem_SyringeInput",
+    "WoundSystem_ShrapnelInput", "WoundSystem_DislocationInput",
+    "WoundSystem_AEDInput", "WoundSystem_SelfHarmInput",
+}
+function WSZC.InstallNativeHandPhysicsPin()
+    if type(hook) ~= "table" or type(hook.GetTable) ~= "function" then return false end
+    if not debug or type(debug.getupvalue) ~= "function" then return false end
+    local ok, hooks = pcall(hook.GetTable)
+    if not ok or type(hooks) ~= "table" or type(hooks.Think) ~= "table" then return false end
+    local installed = false
+    for _, hookName in ipairs(NATIVE_HAND_PHYSICS_HOOKS) do
+        local fn = hooks.Think[hookName]
+        if type(fn) == "function" then
+            for i = 1, 80 do
+                local okUp, name, hp = pcall(debug.getupvalue, fn, i)
+                if not okUp or not name then break end
+                if name == "HandPhysics" and type(hp) == "table"
+                    and type(hp.Step) == "function" and not hp._WSZCCursorPinned then
+                    local original = hp.Step
+                    hp.Step = function(mg, dt, opts)
+                        if WSZC.MinigameHandPinned() then
+                            local mx = WSZC.PinMinigameHandToCursor(mg)
+                            if mx ~= nil then return end
+                        end
+                        return original(mg, dt, opts)
+                    end
+                    hp._WSZCCursorPinned = true
+                    installed = true
+                end
+            end
+        end
+    end
+    return installed
+end
+
 function WSZC.UnitmenuHandAlpha(fallback)
     -- With the standard cursor as the pointer there must be NO hand picture
     -- at all.  Returning alpha 0 keeps every C:U/WSZC draw call and hitbox
@@ -1139,6 +1341,55 @@ end
 --- The result is cached: C:U builds `Limbs` once at load time, so re-walking
 --- every frame would be pure overhead.
 local cachedCULimbs
+local cachedCUGUIState
+
+--- GUIState is private too.  The native draw loop calls math.Approach on
+--- HoverAnims[limb.id] for EVERY entry, so inserting neck without initializing
+--- these two tables would turn the first non-hovered frame into a Lua error.
+local function FindCUGUIState()
+    if type(cachedCUGUIState) == "table"
+        and type(cachedCUGUIState.HoverAnims) == "table"
+        and type(cachedCUGUIState.LastHoverStates) == "table" then
+        return cachedCUGUIState
+    end
+    if not (debug and debug.getupvalue and hook and hook.GetTable) then return nil end
+    local seen = {}
+    local function walk(fn, depth)
+        if type(fn) ~= "function" or depth > 4 or seen[fn] then return nil end
+        seen[fn] = true
+        local i = 1
+        while true do
+            local name, value = debug.getupvalue(fn, i)
+            if not name then break end
+            if name == "GUIState" and type(value) == "table"
+                and type(value.HoverAnims) == "table"
+                and type(value.LastHoverStates) == "table" then
+                cachedCUGUIState = value
+                return value
+            end
+            if type(value) == "function" then
+                local found = walk(value, depth + 1)
+                if found then return found end
+            end
+            i = i + 1
+        end
+        return nil
+    end
+    local hud = hook.GetTable().HUDPaint
+    if type(hud) == "table" then
+        if type(hud.WoundDollAndPanel) == "function" then
+            local found = walk(hud.WoundDollAndPanel, 0)
+            if found then return found end
+        end
+        for _, fn in pairs(hud) do
+            local found = walk(fn, 0)
+            if found then return found end
+        end
+    end
+    if type(savedHudFn) == "function" then return walk(savedHudFn, 0) end
+    return nil
+end
+
 local function FindCULimbs()
     if cachedCULimbs and IsCULimbsTable(cachedCULimbs) then return cachedCULimbs end
     if not (debug and debug.getupvalue and hook and hook.GetTable) then return nil end
@@ -1223,11 +1474,154 @@ local function FindCULimbs()
     return nil
 end
 WSZC.FindCULimbs = FindCULimbs
-WSZC.ClearCULimbsCache = function() cachedCULimbs = nil end
+WSZC.ClearCULimbsCache = function()
+    cachedCULimbs = nil
+    cachedCUGUIState = nil
+end
 
 local dollPatched = false
 
+--- Fresh C:U-compatible state for the sixteenth limb.  Copy unknown future
+--- fields from head, but never copy its CURRENT damage into the new neck.
+local function EnsureNeckClientState()
+    local states = type(WoundSystemClientState) == "table"
+        and WoundSystemClientState.PlayerLimbs or nil
+    if type(states) ~= "table" then return nil end
+    if type(states.neck) == "table" then return states.neck end
+
+    local state = type(states.head) == "table" and table.Copy(states.head) or {}
+    state.skin, state.muscle, state.muscleStrength = 100, 100, 1
+    state.pain, state.bleed = 0, 0
+    state.infection, state.infectionSpeed = 0, 0
+    state.shrapnel, state.disinfectTime = 0, 0
+    state.broken, state.dislocated = false, false
+    state.boneHealTimer, state.dislocationTimer = 0, 0
+    state.temperature, state.oxygen, state.stress = 37, 100, 0
+    state.isBandaged, state.hasInjection = false, false
+    state.dismembered, state.furBloodAmount = false, 0
+    state.bandageMinigameSpeedMult = 1
+    state.eyes = 2
+    state.customStatuses = {}
+    states.neck = state
+    return state
+end
+WSZC.EnsureNeckClientState = EnsureNeckClientState
+
+--- The source doll has a real abdomen/pelvis seam, but stock C:U merges both
+--- into `abdomen`.  Create a fresh native-compatible pelvis state; never copy
+--- the abdomen's CURRENT wounds into a second injury container.
+local function EnsurePelvisClientState()
+    local states = type(WoundSystemClientState) == "table"
+        and WoundSystemClientState.PlayerLimbs or nil
+    if type(states) ~= "table" then return nil end
+    if type(states.pelvis) == "table" then return states.pelvis end
+
+    local state = type(states.abdomen) == "table" and table.Copy(states.abdomen) or {}
+    state.skin, state.muscle, state.muscleStrength = 100, 100, 1
+    state.pain, state.bleed = 0, 0
+    state.infection, state.infectionSpeed = 0, 0
+    state.shrapnel, state.disinfectTime = 0, 0
+    state.broken, state.dislocated = false, false
+    state.boneHealTimer, state.dislocationTimer = 0, 0
+    state.temperature, state.oxygen, state.stress = 37, 100, 0
+    state.isBandaged, state.hasInjection = false, false
+    state.dismembered, state.furBloodAmount = false, 0
+    state.bandageMinigameSpeedMult = 1
+    state.eyes = 2
+    state.customStatuses = {}
+    states.pelvis = state
+    return state
+end
+WSZC.EnsurePelvisClientState = EnsurePelvisClientState
+
+--- Add neck immediately after head in C:U's OWN Limbs array.  Consequently
+--- all native rendering, fracture icons, action points and net updates use the
+--- same entry; this is not a second doll or a head texture with another label.
+local function EnsureNeckLimb(limbs)
+    if type(limbs) ~= "table" then return nil end
+    EnsureNeckClientState()
+    local head, headIndex, neck
+    for i, limb in ipairs(limbs) do
+        if limb.id == "head" then head, headIndex = limb, i end
+        if limb.id == "neck" then neck = limb end
+    end
+    if neck then return neck end
+    if not head then return nil end
+
+    local guiState = FindCUGUIState()
+    if not guiState then return nil end
+    guiState.HoverAnims.neck = tonumber(guiState.HoverAnims.neck) or 0
+    guiState.LastHoverStates.neck = guiState.LastHoverStates.neck == true
+
+    neck = {}
+    for key, value in pairs(head) do neck[key] = value end
+    neck.id = "neck"
+    neck._WSZCNeck = true
+    neck._WSZCUnitmenuOriginal = nil
+    table.insert(limbs, headIndex + 1, neck)
+    return neck
+end
+WSZC.EnsureNeckLimb = EnsureNeckLimb
+
+--- Insert pelvis immediately after abdomen in the SAME native Limbs array.
+--- Native hover, action points, status icons and net updates therefore use the
+--- new id directly; this is not a decorative overlay or a second doll.
+local function EnsurePelvisLimb(limbs)
+    if type(limbs) ~= "table" then return nil end
+    EnsurePelvisClientState()
+    local abdomen, abdomenIndex, pelvis
+    for i, limb in ipairs(limbs) do
+        if limb.id == "abdomen" then abdomen, abdomenIndex = limb, i end
+        if limb.id == "pelvis" then pelvis = limb end
+    end
+    if pelvis then return pelvis end
+    if not abdomen then return nil end
+
+    local guiState = FindCUGUIState()
+    if not guiState then return nil end
+    guiState.HoverAnims.pelvis = tonumber(guiState.HoverAnims.pelvis) or 0
+    guiState.LastHoverStates.pelvis = guiState.LastHoverStates.pelvis == true
+
+    pelvis = {}
+    for key, value in pairs(abdomen) do pelvis[key] = value end
+    pelvis.id = "pelvis"
+    pelvis._WSZCPelvis = true
+    pelvis._WSZCUnitmenuOriginal = nil
+    table.insert(limbs, abdomenIndex + 1, pelvis)
+    return pelvis
+end
+WSZC.EnsurePelvisLimb = EnsurePelvisLimb
+
+-- Canonical screen geometry measured directly from the owner's 2222.png.
+-- Native C:U applies BOTH dollScale=1.5*UI and our limb.size to sprites and
+-- offsets.  Passing the convar through unchanged therefore produced S=0.469
+-- on the live 1111.png (UI=1.25) instead of the reference S=0.4155.  Solve
+-- limb.size and a shared oy correction so the final SCREEN transform is fixed:
+--   spriteScale = REF_S * resolutionScale * userMultiplier
+--   centreY     = ScrH()/2 + REF_CY_OFFSET * resolutionScale
+-- This also keeps hitboxes/action points exact because native code reads the
+-- same compensated ox/oy/size values.
+local UnitmenuUIScale
+local REF_DOLL_S, REF_DOLL_CY = 0.4155, 18.7
+local REF_DOLL_HEIGHT, REF_DOLL_CONVAR = 1079, 0.25
+function WSZC.UnitmenuReferenceDollTransform(k)
+    local userMultiplier = math.Clamp((tonumber(k) or REF_DOLL_CONVAR)
+        / REF_DOLL_CONVAR, 0.4, 3.2)
+    local nativeScale = (ScrH() / 1080) * UnitmenuUIScale()
+    local nativeDollScale = 1.5 * nativeScale
+    local resolutionScale = ScrH() / REF_DOLL_HEIGHT
+    local targetScale = REF_DOLL_S * resolutionScale * userMultiplier
+    local targetCY = ScrH() / 2 + REF_DOLL_CY * resolutionScale
+    local nativeCY = ScrH() / 2 + 20 * nativeScale
+    if nativeDollScale <= 0 then return k or REF_DOLL_CONVAR, 0, targetScale, targetCY end
+    return targetScale / nativeDollScale,
+        (targetCY - nativeCY) / nativeDollScale, targetScale, targetCY
+end
+
 local function ApplyDoll(limbs, mats, k)
+    local dollSize, centreOY = WSZC.UnitmenuReferenceDollTransform(k)
+    EnsureNeckLimb(limbs)
+    EnsurePelvisLimb(limbs)
     for _, limb in ipairs(limbs) do
         local g = mats[limb.id]
         if g then
@@ -1241,9 +1635,9 @@ local function ApplyDoll(limbs, mats, k)
             end
             limb.matM = g.fill
             limb.matO = g.edge
-            limb.ox = (g.cx - 750) * k
-            limb.oy = (g.cy - 750) * k
-            limb.size = k
+            limb.ox = (g.cx - 750) * dollSize
+            limb.oy = (g.cy - 750) * dollSize + centreOY
+            limb.size = dollSize
             limb.sourceW = g.hoverW or g.w
             limb.sourceH = g.hoverH or g.h
             limb.texturePadding = 0
@@ -1258,16 +1652,135 @@ WSZC.ApplyUnitmenuDoll = ApplyDoll
 function WSZC.RestoreUnitmenuDoll()
     local limbs = FindCULimbs()
     if not limbs then return false end
-    for _, limb in ipairs(limbs) do
-        local orig = limb._WSZCUnitmenuOriginal
-        if orig then
-            for key, value in pairs(orig) do limb[key] = value end
-            limb._WSZCUnitmenuOriginal = nil
+    for i = #limbs, 1, -1 do
+        local limb = limbs[i]
+        if limb._WSZCNeck or limb._WSZCPelvis then
+            -- Native C:U has no neck/pelvis materials.  Keep their server
+            -- states, but never leave duplicate sprites in the stock doll.
+            table.remove(limbs, i)
+        else
+            local orig = limb._WSZCUnitmenuOriginal
+            if orig then
+                for key, value in pairs(orig) do limb[key] = value end
+                limb._WSZCUnitmenuOriginal = nil
+            end
         end
     end
     dollPatched = false
     return true
 end
+
+---------------------------------------------------------------------------
+-- Source-screenshot limb tooltip (the stock C:U doll has no such hover card).
+---------------------------------------------------------------------------
+local UNITMENU_LIMB_NAMES = {
+    head = "Head", neck = "Neck", thorax = "Thorax", abdomen = "Abdomen",
+    pelvis = "Pelvis",
+    arm_R = "Right upper arm", arm_L = "Left upper arm",
+    forearm_R = "Right forearm", forearm_L = "Left forearm",
+    hand_R = "Right hand", hand_L = "Left hand",
+    thigh_R = "Right thigh", thigh_L = "Left thigh",
+    crus_R = "Right shin", crus_L = "Left shin",
+    foot_R = "Right foot", foot_L = "Left foot",
+}
+
+UnitmenuUIScale = function()
+    local value = 1
+    local cv = GetConVar and GetConVar("woundsys_ui_scale") or nil
+    if cv then value = math.Clamp(cv:GetFloat(), 0.6, 1.6) end
+    if ScrH() <= 600 then return value * 0.72 end
+    if ScrH() <= 768 then return value * 0.86 end
+    return value
+end
+
+--- Reproduce C:U's own rectangle hit test, including its order (a later limb
+--- wins an overlap) and pain shake.  The tooltip therefore names the SAME part
+--- that a click/action point selects, rather than maintaining a second layout.
+function WSZC.UnitmenuHover(mx, my)
+    if type(mx) ~= "number" or type(my) ~= "number" then return nil end
+    local limbs = FindCULimbs()
+    local states = type(WoundSystemClientState) == "table"
+        and WoundSystemClientState.PlayerLimbs or nil
+    if not (limbs and states) then return nil end
+
+    local scale = (ScrH() / 1080) * UnitmenuUIScale()
+    local dollScale = 1.5 * scale
+    local centerX, centerY = ScrW() / 2, ScrH() / 2 + 20 * scale
+    local guiState = FindCUGUIState()
+    local shakes = guiState and guiState.HudLimbShakeScratch or nil
+    local openTime = guiState and guiState.openTime or 0
+    local hovered
+
+    for _, limb in ipairs(limbs) do
+        local state = states[limb.id]
+        local alpha = math.Clamp((CurTime() - (openTime + (limb.order or 0) * 0.03)) * 8, 0, 1)
+        if state and not state.dismembered and alpha > 0 then
+            local scaleMult = dollScale * (limb.size or 1)
+            local shake = shakes and shakes[limb.id] or nil
+            local cx = centerX + limb.ox * dollScale + (shake and shake.x or 0)
+            local cy = centerY + limb.oy * dollScale + (shake and shake.y or 0)
+            local matW = limb.matO and limb.matO.Width and limb.matO:Width() or 0
+            local matH = limb.matO and limb.matO.Height and limb.matO:Height() or 0
+            local w = (limb.sourceW or matW) * scaleMult
+            local h = (limb.sourceH or matH) * scaleMult
+            if mx > cx - w / 2 and mx < cx + w / 2
+                and my > cy - h / 2 and my < cy + h / 2 then
+                hovered = { id = limb.id, state = state, x = cx, y = cy,
+                            w = w, h = h, alpha = alpha }
+            end
+        end
+    end
+    return hovered
+end
+
+function WSZC.UnitmenuTooltipLines(id, state)
+    local title = UNITMENU_LIMB_NAMES[id] or tostring(id or "Limb")
+    local skin = math.Clamp(math.Round(tonumber(state and state.skin) or 0), 0, 100)
+    local muscle = math.Clamp(math.Round(tonumber(state and state.muscle) or 0), 0, 100)
+    return title, string.format("Skin: %d%%", skin), string.format("Muscle: %d%%", muscle)
+end
+
+hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip", function()
+    if WoundSystemHealthHUDOpen ~= true or not cvUnitmenuDoll:GetBool() then return end
+    if WSZC.WSZCMinigameActive() or WSZC.NativeMinigameActive() then return end
+    local ply = LocalPlayer()
+    if IsValid(ply) and ply.Alive and not ply:Alive() then return end
+
+    local mx, my = gui.MousePos()
+    local hovered = WSZC.UnitmenuHover(mx, my)
+    if not hovered then return end
+    local title, skinLine, muscleLine = WSZC.UnitmenuTooltipLines(hovered.id, hovered.state)
+
+    local scale = ScrH() / 1080
+    local font = "ZB_ProotOSMedium"
+    surface.SetFont(font)
+    local titleW = surface.GetTextSize(title)
+    local skinW = surface.GetTextSize(skinLine)
+    local muscleW = surface.GetTextSize(muscleLine)
+    local padX, padTop = 18 * scale, 18 * scale
+    local lineStep = 34 * scale
+    local w = math.max(160 * scale, math.max(titleW, skinW, muscleW) + 2 * padX)
+    local h = 126 * scale
+    local x, y = mx + 28 * scale, my + 20 * scale
+    if x + w > ScrW() - 8 * scale then x = mx - w - 28 * scale end
+    if y + h > ScrH() - 8 * scale then y = ScrH() - h - 8 * scale end
+    x, y = math.max(8 * scale, x), math.max(8 * scale, y)
+
+    -- PostDrawHUD is outside WoundView.  Do not let its hidden-scanner filter
+    -- eat a perfectly valid tooltip when hovering the left arm/hand.
+    local filtered = WSZC.CUHudFiltered
+    WSZC.CUHudFiltered = false
+    surface.SetDrawColor(0, 0, 0, 200 * (hovered.alpha or 1))
+    surface.DrawRect(x, y, w, h)
+    local textColor = Color(255, 255, 255, 255 * (hovered.alpha or 1))
+    draw.SimpleText(title, font, x + padX, y + padTop, textColor,
+        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    draw.SimpleText(skinLine, font, x + padX, y + padTop + lineStep, textColor,
+        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    draw.SimpleText(muscleLine, font, x + padX, y + padTop + lineStep * 2, textColor,
+        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    WSZC.CUHudFiltered = filtered
+end)
 
 local function ApplyUnitmenuIcons()
     local icons = _G.Icons
@@ -1275,10 +1788,9 @@ local function ApplyUnitmenuIcons()
     local built = BuildUnitmenuIcons()
     if not built then return false end
     for key, mat in pairs(built) do icons[key] = mat end
-    -- Covered shrapnel is infected, not "processed/disinfected".  Use C:U's
-    -- own neutral infection material for the former processing slot; the
-    -- server also clears disinfectTime on the affected limb.
-    icons.disinfected = Material("casunknown-images/icons/infection.png", "smooth noclamp")
+    -- Do NOT replace Icons.disinfected with infection.png: that still leaves a
+    -- processing slot on the hand and confuses it with a real infection.  The
+    -- native AddHudIcon filter above removes exactly that one entry instead.
     icons._WSZCUnitmenuPatched = true
     return true
 end
@@ -1388,9 +1900,11 @@ function WSZC.InstallNativeHandOverride()
     end
 
     local function HandDrawSize(w, h)
-        local k = math.Clamp(cvHandanimScale:GetFloat(), 0.2, 1.5)
-        -- Exact C:U geometry by default: k=1 and both source ratios are 1.
-        -- No second 0.55 scale, screen cap or alternate aspect correction.
+        -- The native and WSZC paths must not disagree: both now include the
+        -- shared 0.55 cursor scale exactly once, then the optional human-hand
+        -- multiplier (1 by default).  Only this DRAW rectangle shrinks;
+        -- MG.handDrawW/H and every extraction/dislocation hitbox stay native.
+        local k = math.Clamp(cvHandScale:GetFloat() * cvHandanimScale:GetFloat(), 0.04, 1.5)
         local nw = w * (WSZC.UnitmenuHandSrcW / 512) * k
         local nh = h * (WSZC.UnitmenuHandSrcH / 1260) * k
         return nw, nh
@@ -1417,30 +1931,31 @@ function WSZC.InstallNativeHandOverride()
         if type(gui) ~= "table" or type(gui.MousePos) ~= "function" then return nil, nil end
         local ok, mx, my = pcall(gui.MousePos)
         if not ok or type(mx) ~= "number" or type(my) ~= "number" then return nil, nil end
-        if mx <= 0 and my <= 0 then return nil, nil end
         return mx, my
     end
 
     function WSZC.PinNativeHandToCursor()
-        if not cvHandPinCursor:GetBool() then return nil, nil end
+        if not WSZC.MinigameHandPinned() then return nil, nil end
         local mx, my = WSZC.NativeHandCursorPos()
         if not mx then return nil, nil end
         for _, name in ipairs(NATIVE_HAND_MG) do
             local mg = _G[name]
             if type(mg) == "table" and mg.active == true then
-                mg.handScreenX, mg.handScreenY = mx, my
+                WSZC.PinMinigameHandToCursor(mg)
             end
         end
         return mx, my
     end
 
-    --- Keep C:U's exact draw centre, rectangle and rotation.  Only optional
-    --- pin mode changes the centre; there is NO custom pivot/rotation math.
+    --- handScreenX/Y is C:U's grip point, not its rectangle centre.  Preserve
+    --- that point while applying the one shared scale and exact native rotation.
+    --- Default pin mode changes both gameplay state and target to the cursor.
     function WSZC.HandRectForCursor(cx, cy, w, h, rot)
         local mx, my = WSZC.PinNativeHandToCursor()
         if mx then cx, cy = mx, my end
         local nw, nh = HandDrawSize(w, h)
-        return cx, cy, nw, nh
+        local px, py = HandPivot()
+        return WSZC.HandRectAtPivot(cx, cy, nw, nh, rot, px, py)
     end
 
     surface.DrawTexturedRectRotated = function(x, y, w, h, rot, ...)
@@ -1621,13 +2136,49 @@ local function PatchActionButtonOffset()
 end
 WSZC.PatchActionButtonOffset = PatchActionButtonOffset
 
+--- C:U's stock brokenneck moodle reads head.broken.  The native ZCity skull
+--- fracture is now owned by the independent neck state, so re-register ONLY
+--- that public definition; all other moodles and their layout stay untouched.
+function WSZC.InstallNeckMoodle()
+    local moodles = WoundSystem and WoundSystem.Moodles or nil
+    if type(moodles) ~= "table" or type(moodles.Register) ~= "function" then return false end
+    local current = moodles.DefById and moodles.DefById.brokenneck or nil
+    if current and current._WSZCNeckState then return true end
+    moodles.Register("brokenneck", {
+        icon = "brokenneck",
+        chippedOnly = true,
+        _WSZCNeckState = true,
+        condition = function(ctx)
+            local limbs = ctx and ctx.limbs or nil
+            local state = limbs and (limbs.neck or limbs.head) or nil
+            if not state and type(WoundSystemClientState) == "table"
+                and type(WoundSystemClientState.PlayerLimbs) == "table" then
+                local playerLimbs = WoundSystemClientState.PlayerLimbs
+                state = playerLimbs.neck or playerLimbs.head
+            end
+            if type(state) ~= "table" or not state.broken then return nil end
+            local timerValue = tonumber(state.boneHealTimer) or 0
+            return {
+                intensity = math.Clamp(math.Round(timerValue * 0.03), 0, 3),
+                title = "Broken neck",
+                desc = "The neck is fractured.",
+            }
+        end,
+    })
+    if moodles.RebuildNow then moodles.RebuildNow() end
+    return true
+end
+
 WSZC.NextUnitmenuInstall = 0
 hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     local now = CurTime and CurTime() or 0
     if now < (WSZC.NextUnitmenuInstall or 0) then return end
     WSZC.NextUnitmenuInstall = now + 1
     WSZC.InstallMaterialTracker()
+    if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
+    WSZC.InstallDisinfectedIconFilter()
     PatchActionButtonOffset()
+    WSZC.InstallNeckMoodle()
 
     if cvUnitmenuDoll:GetBool() then
         local mats = BuildUnitmenuMaterials()
@@ -1642,10 +2193,27 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     elseif dollPatched then
         WSZC.RestoreUnitmenuDoll()
     end
+    -- Install the gameplay pin independently of the selected hand artwork.
+    WSZC.InstallNativeHandPhysicsPin()
     -- Install in both modes: substitute the human hand by default, or suppress
     -- every handgrasp* sprite when the player explicitly selects arrow-only.
     if cvHandanim:GetBool() or cvHideHand:GetBool() then
         WSZC.InstallNativeHandOverride()
+    end
+end)
+
+-- First-life bootstrap: do not wait for a respawn or for the player to open
+-- WoundView before neck/pelvis exist in client state and native Limbs.
+hook.Add("InitPostEntity", "WSZC_UnitmenuNeckFirstLife", function()
+    EnsureNeckClientState()
+    EnsurePelvisClientState()
+    WSZC.InstallNeckMoodle()
+    WSZC.NextUnitmenuInstall = 0
+    if not cvUnitmenuDoll:GetBool() then return end
+    local mats, limbs = BuildUnitmenuMaterials(), FindCULimbs()
+    if mats and limbs then
+        ApplyDoll(limbs, mats, math.Clamp(cvDollScale:GetFloat(), 0.1, 0.8))
+        dollPatched = true
     end
 end)
 

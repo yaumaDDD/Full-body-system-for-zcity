@@ -73,6 +73,33 @@ function WSZC.InstallAmputationStatus()
     return true
 end
 
+---------------------------------------------------------------------------
+-- Internal bleeding is a BODY condition, but the owner needs a visible mark
+-- on the abdomen.  Project it into the native status list instead of painting
+-- a second icon layer: C:U handles spread, tooltips, net sync and disappearing
+-- statuses exactly as it does for fractures/infections.
+---------------------------------------------------------------------------
+WSZC.INTERNAL_BLEEDING_STATUS_ID = "WSZC_INTERNAL_BLEEDING"
+
+function WSZC.InstallInternalBleedingStatus()
+    local statuses = WoundSystem and WoundSystem.Statuses
+    if not (type(statuses) == "table" and type(statuses.Register) == "function") then
+        return false
+    end
+    local id = WSZC.INTERNAL_BLEEDING_STATUS_ID
+    if type(statuses.Stored) == "table" and statuses.Stored[id] then return true end
+    statuses.Register(id, {
+        title = "Internal bleeding",
+        desc = "There is internal bleeding in the abdomen. This is not an external limb bleed.",
+        icon = "casunknown-images/moodles/internalbleed_red.png",
+        type = "number",
+        order = -9000,
+        color = { 255, 255, 255 },
+        networkDecimals = 2,
+    })
+    return true
+end
+
 -- Short-lived context flag: `Org Think "Main"`, the ZCity damage hook and the
 -- ragdoll collision hook must see WB.IsBridged() == false so vanilla ZCity
 -- runs.  Medical SWEPs and minigames run OUTSIDE those wrappers and keep
@@ -191,4 +218,5 @@ end
 hook.Add("InitPostEntity", "WSZC_SharedInit", function()
     PatchIsEnabled()
     PatchIsBridged()
+    if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
 end)

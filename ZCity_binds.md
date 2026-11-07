@@ -64,42 +64,68 @@
 запрос поддержки/авиаудара, скан фурри, змейка и т.д.
 
 Мини-игра `FIX DISLOCATION` из WoundView — родная C:U, но компат уменьшает её
-клип (`zc_woundsystem_compat_native_minigame_zoom`, по умолчанию `0.75`) и
+клип (`zc_woundsystem_compat_native_minigame_zoom`, по умолчанию `0.85`) и
 стартовое смещение кости (`zc_woundsystem_compat_dislocation_start`, по
-умолчанию `35`), чтобы кость была на экране и нажималась. Размер спрайта руки
-в мини-играх бинта/шприца — `zc_woundsystem_compat_hand_cursor_scale`.
+умолчанию `35`), чтобы кость была на экране и нажималась. Общий размер спрайта руки
+во всех мини-играх — `zc_woundsystem_compat_hand_cursor_scale` (0.55).
 
 Внешний вид куклы WoundView и руки мини-игр теперь берётся из архива
-`для переделывания интерфейса.zip`: 15 слоёв `zcity_delta/unitmenu/limbs`,
-иконки `status/*` и кадры `homigrad/handanim`. Управление: 
-`zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.24),
-`zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_handanim_scale` (1).
+`для переделывания интерфейса.zip`: 15 исходных слоёв `zcity_delta/unitmenu/limbs`,
+разделённых генератором на 16 интерактивных частей (head + neck), иконки `status/*`
+и кадры `homigrad/handanim`. Управление:
+`zc_woundsystem_compat_unitmenu_doll` (1), `zc_woundsystem_compat_unitmenu_scale` (0.25 =
+точный 2222.png; сохранённый `woundsys_ui_scale` компенсируется),
+`zc_woundsystem_compat_handanim` (1), `zc_woundsystem_compat_hand_cursor_scale` (0.55),
+`zc_woundsystem_compat_handanim_scale` (1, без второго уменьшения).
 Две WSZC мини-игры раскрываются на весь экран: `zc_woundsystem_compat_fullscreen_minigame` (1).
 Нативные C:U shrapnel/dislocation/AED **по умолчанию в авторском размере 760 px**:
-`zc_woundsystem_compat_fullscreen_native` (0), `zc_woundsystem_compat_native_minigame_zoom` (1).
+`zc_woundsystem_compat_fullscreen_native` (0), `zc_woundsystem_compat_native_minigame_zoom` (0.85).
 Растяжение нативных игр ломало рану и растягивало осколок; `1` — вернуть его.
 Клик по пустой области WoundView закрывает окно: `zc_woundsystem_compat_close_on_empty_click` (1).
 Рука мини-игры ставится кончиками пальцев ровно на курсор:
 `zc_woundsystem_compat_hand_pivot_x` (0.4), `..._hand_pivot_y` (0.1),
-Размер и координаты полностью нативные, без дополнительного уменьшения.
-Системный курсор скрывается при каждой отрисовке руки:
+Визуальный размер ×0.55; pivot и rotation нативные, центр вычисляется из повёрнутого pivot, логический hitbox сохраняется.
+Системный курсор скрывается при каждой отрисовке руки и после cursor watchdog:
 `zc_woundsystem_compat_hide_minigame_cursor` (1), откат — 0.
-Человеческая рука использует штатные HandPhysics и поворот C:U:
-`zc_woundsystem_compat_handanim` (1), `..._hand_pin_cursor` (0), точка захвата
+Человеческая рука по умолчанию реально привязана к системному курсору:
+`zc_woundsystem_compat_handanim` (1), `..._hand_pin_cursor` (1). Каждый Think
+`gui.MousePos()`, `handScreenX/Y`, orbit/grab и видимый pivot совпадают; offset
+`100/400`, spring и collision clamp отключены. Значение `0` возвращает HandPhysics
+и developer offsets C:U. Точка захвата
 `..._hand_pivot_x 0.4` / `..._hand_pivot_y 0.1`, системный курсор
 скрыт только во время игры (`..._hide_minigame_cursor 1`). Спрайты:
 `wszc/minigame/hand_idle.png` / `hand_click.png`; arrow-only откат:
-`..._hide_minigame_hand 1`. Кукла расставлена по приложенному
-эталонному фото в **человеческие пропорции** (`HUMAN_LAYOUT`): маленькая голова,
-узкий короткий торс, тонкие руки T-pose, длинные узкие ноги и компактные целые
-стопы — вертикальные швы всех 15 лимбов сняты с нативной куклы `Screenshot_2-10.png`. **Стандартный
-чёрный `(0,0,0)`** вместо отклонённого шиферного `(42,56,60)`. **Обводка по
-форме каждого лимба**: тонкая линия повторяет контур головы/рук/ног (как родные
-`outlines/*`), вписана с отступом `EDGE_PAD_MIN=6`, поэтому ни один белый пиксель не
-касается границы прямоугольного спрайта — «конструктора» и единого `outer_band` нет.
+`..._hide_minigame_hand 1`.
+
+Расход ZCity-бинта соответствует оригинальному `SWEP:Bandage`: физический
+`swep.modeValues[idx]` уменьшается на фактически удалённую severity. Закрытие
+severity 4 стоит 4 заряда и у малого (40), и у большого (150) бинта, а не
+фиксированные `100/12 × def/100`. Остаток предмета ограничивает лечение; пустые
+круги, artery-only и завершающий aftercare при нулевой severity бесплатны.
+Цель бинта выбирается по реальным `organism.wounds`/aftercare, а не по stale
+`isBandaged` или shadow-only bleed; после последнего treatment native-сессия
+завершается `completed`, проходит `onClose/AfterUse` и снимает overlay/slot.
+Ложный `disinfected/processing` скрыт точечно в native `AddHudIcon`, при этом
+infection/bleed/fracture и настоящий `disinfectTime` не затрагиваются.
+
+Кукла расставлена по приложенному зелёному WoundView-эталону `2222.png`:
+16 независимых `REFERENCE_BOXES`, crop-first head/neck и раздельная калибровка
+каждой части. **Стандартный чёрный `(0,0,0)`** сохранён. **Обводка по форме
+каждого лимба** использует `EDGE_WIDTH=17` (3–4 px), для пальцев 11, плюс
+внешний `MaxFilter(9)` на голове/животе/ногах, `EDGE_AA_RADIUS=0.45` и LINEAR
+filtering только на время native WoundView;
+ни один белый пиксель не касается границы прямоугольного спрайта. Neck без blur
+один владеет
+швом `y=317`, abdomen имеет внутренний seam `y=520`; «конструктора» и единого
+`outer_band` нет.
 `..._unitmenu_tint 1` ставит белый `SetDrawColor` только для `*_fill.png`, а
 `*_edge.png` остаётся под штатным `finalOutline` C:U — **реакция на наведение
-не изменена**. Тёмная подложка WoundView отключена
+не изменена**. Шея вставлена в собственные `Limbs`/`PlayerLimbs` C:U сразу после
+головы: это рабочий hitbox, hover и action point, а не отдельный статичный слой.
+Наведение показывает `Neck / Skin: N% / Muscle: N%`; перелом `org.skull` рисуется
+только на шее как `Broken neck`. Первый spawn создаёт и принудительно отправляет
+это состояние клиенту. Родные ZCity HUD, таймер и нижние слоты не подменяются.
+Тёмная подложка WoundView отключена
 (`..._hide_woundview_backdrop 1`); иконки и статус-надписи оставлены как есть.
 Клавиши, хитбоксы лимбов и логика мини-игр не меняются.
 
@@ -117,7 +143,7 @@ chrome-шрифты (`RetroTooltipTitle*`, `RetroTooltipDesc*`,
 капли, белые иконки переломов, осколки и рука **не подавляются**. `0` — вернуть
 исходный текст и панели.
 
-Все материалы интерфейса (649 файлов: `casunknown-images/*`, `woundsystem/*`,
+Все материалы интерфейса (651 файл: `casunknown-images/*`, `woundsystem/*`,
 лимбы C:U, кадры руки, .vtf/.vmt) теперь лежат в
 `woundsystem_zcity_compat/materials/` и продублированы в папку C:U внутри
 full pack. Больше не нужно вручную переносить текстуры из других аддонов или

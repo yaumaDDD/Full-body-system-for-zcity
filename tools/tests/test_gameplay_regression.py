@@ -61,10 +61,12 @@ check("S04 added WoundView cards are rolled back; native geometry remains",
       and "DrawVitalRow" not in layout_s and "LIMB STATUS" not in layout_s
       and "WSZC_UNITMENU_LIMB_GEOMETRY" in layout_s)
 check("S05 bandage budget and ordinary bleed are bounded for a physical roll",
-      'zc_woundsystem_compat_bandage_strength", "2"' in organism_s
+      'zc_woundsystem_compat_bandage_strength", "3"' in organism_s
       and 'zc_woundsystem_compat_bleeding_multiplier", "0.55"' in organism_s
       and "org.bleedingmul = math.min" in organism_s
-      and "+ count * (0.018 + irritation * 0.002) * dt * growth, 0.5, 8)" in organism_s)
+      and "+ count * (0.018 + irritation * 0.002) * dt * growth, 0, 8)" in organism_s
+      and "function WSZC.ShrapnelBandageInProgress" in organism_s
+      and "managedZero" in organism_s)
 check("S06 physical tourniquet treats before native and requires a real wound",
       "directTourniquetTreated" in server_main_s
       and "if authoritativeTourniquet then" in server_main_s
@@ -139,6 +141,11 @@ WSZC = { OrganismAuthority = function() return true end }
 WoundSystem = { Health = { Constants = { ShrapnelPieceCount = 5 } } }
 hg = {}
 math.Clamp = function(v, lo, hi) if v < lo then return lo end; if v > hi then return hi end; return v end
+table.Copy = function(t)
+    local out = {}
+    for k, v in pairs(t or {}) do if type(v) == "table" then out[k] = table.Copy(v) else out[k] = v end end
+    return out
+end
 CreateConVar = function(name, def)
     return { GetBool = function() return def ~= "0" end,
              GetFloat = function() return tonumber(def) or 0 end }
@@ -187,6 +194,7 @@ function MakePlayer()
     ply._limbs.forearm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
     ply._limbs.thorax = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0, infectionSpeed = 0 }
     ply._limbs.head = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0, infectionSpeed = 0 }
+    ply._limbs.neck = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0, infectionSpeed = 0 }
     ply.IsPlayer = function() return true end
     ply.Alive = function() return true end
     ply.Nick = function() return "regression_player" end
@@ -270,7 +278,7 @@ return activeWeaponWorks, pistol._limbs.hand_R.shrapnel == 0 and pistol._limbs.f
 
     placement = lua.execute(r'''
 local ALL = {
-    "head", "thorax", "abdomen",
+    "head", "neck", "thorax", "abdomen", "pelvis",
     "arm_L", "forearm_L", "hand_L", "arm_R", "forearm_R", "hand_R",
     "thigh_L", "crus_L", "foot_L", "thigh_R", "crus_R", "foot_R",
 }
@@ -317,7 +325,7 @@ for _, id in ipairs(ALL) do
 end
 return shotgunActual, glassOnly, nativeWoundSchema
 ''')
-    check("R29 shotgun stays on each actually hit limb across all 15 C:U limbs", placement[0])
+    check("R29 shotgun stays on each actually hit limb across all 17 C:U limbs", placement[0])
     check("R30 glass alone keeps its hands/feet-only spawn mapping", placement[1])
     check("R31 synthetic shrapnel wounds satisfy native localPos/localAng schema", placement[2])
 
@@ -701,6 +709,164 @@ return bandageAllowed, noRegrow, infected, unwrapGate, secondClickNative,
     check("R22 a pellet into an already dressed limb is covered without external bleed", complications[7])
     check("R59 partial extraction can be re-bandaged without curing remaining infection", complications[8])
 
+    timed_bandage = lua.execute(r'''
+-- Real GAUZE: a 100-durability roll, 12 complete turns, one partial effect per
+-- turn.  A second ordinary wound deliberately remains after the shrapnel is
+-- closed: the old code recreated the fragment wound on the very next tick.
+local ply = MakePlayer()
+table.insert(ply.organism.wounds, {
+    12, Vector(0, 0, 0), Angle(0, 0, 0),
+    "ValveBiped.Bip01_R_Hand", CurTime(),
+})
+WSZC.AddShrapnel(ply, "hand_R", 3, "shotgun") -- physical maximum: 5 pieces
+local function TaggedWound()
+    for _, wound in pairs(ply.organism.wounds) do
+        if wound.wszcShrapnel then return wound end
+    end
+end
+local function NativeWound()
+    for _, wound in pairs(ply.organism.wounds) do
+        if not wound.wszcShrapnel and not wound.wszcShrapnelExtraction then return wound end
+    end
+end
+local operator = MakePlayer()
+WSZC.MinigameSessions = {
+    [operator] = {
+        kind = "bandage", mode = "gauze", target = ply,
+        limbId = "hand_R", closed = false,
+    },
+}
+local function NativeRemoveZeroWounds(org)
+    -- Exact native sv_blood behaviour: zero entries do NOT survive for our
+    -- managed-zero table check to find on the next tick.
+    for i = #org.wounds, 1, -1 do
+        if type(org.wounds[i]) == "table" and (tonumber(org.wounds[i][1]) or 0) == 0 then
+            table.remove(org.wounds, i)
+        end
+    end
+end
+local profile = { effects = { bandageSlowAmount = 45 } }
+local perWrap = 100 / 12
+local firstClosed, firstDidNotRespawn = false, false
+for wrap = 1, 12 do
+    WSZC.ApplyBandageToOrganism(
+        { ply = ply, limbId = "hand_R", limb = ply._limbs.hand_R },
+        profile, (perWrap / perWrap) / 12)
+    local tagged, native = TaggedWound(), NativeWound()
+    if wrap == 1 then
+        firstClosed = tagged and tagged[1] == 0
+            and native and native[1] > 0
+            and not WSZC.IsShrapnelBandaged(ply, "hand_R")
+            and ply.organism.wszc_shrapnel_closed.hand_R == true
+        NativeRemoveZeroWounds(ply.organism)
+        WSZC.TickLodgedShrapnel(ply, ply.organism, 0.5)
+        WSZC.TickShrapnelAftercare(ply, ply.organism, 0.5)
+        tagged = TaggedWound()
+        firstDidNotRespawn = (not tagged or tagged[1] == 0)
+            and ply.organism.wszc_shrapnel_closed.hand_R == true
+    else
+        WSZC.TickLodgedShrapnel(ply, ply.organism, 0.5)
+        WSZC.TickShrapnelAftercare(ply, ply.organism, 0.5)
+    end
+    WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+end
+local entry = ply.organism.wszc_bandaged_shrapnel.hand_R
+local completed = firstClosed and firstDidNotRespawn
+    and WSZC.GetBandageBleeding(ply, "hand_R") == 0
+    and WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and ply._limbs.hand_R.shrapnel == 5
+    and (not TaggedWound() or TaggedWound()[1] == 0)
+    and ply.organism.wszc_shrapnel_closed.hand_R == true
+    and entry and entry.infectionAge > 0
+WSZC.MinigameSessions = {}
+
+-- Active treatment freezes NEW fragment growth, not the existing bleed.  Once
+-- the session ends the ordinary lodged-wound simulation resumes normally.
+local waiting = MakePlayer()
+WSZC.AddShrapnel(waiting, "hand_R", 3, "shotgun")
+local waitingWound = WSZC.EnsureLodgedWound(waiting, waiting.organism, "hand_R", 5)
+local severity, pain = waitingWound[1], waiting.organism.avgpain
+WSZC.MinigameSessions = {
+    [operator] = { kind = "bandage", mode = "gauze", target = waiting,
+                   limbId = "hand_R", closed = false },
+}
+for _ = 1, 20 do WSZC.TickLodgedShrapnel(waiting, waiting.organism, 0.5) end
+local grace = waitingWound[1] == severity and waiting.organism.avgpain == pain
+    and WSZC.GetBandageBleeding(waiting, "hand_R") > 0
+WSZC.MinigameSessions = {}
+WSZC.TickLodgedShrapnel(waiting, waiting.organism, 0.5)
+local resumed = waitingWound[1] > severity and waiting.organism.avgpain > pain
+
+-- With no unrelated wound, one complete physical turn now closes even the
+-- maximum initial 5-piece wound; the fragment itself and infection cycle stay.
+local quick = MakePlayer()
+WSZC.AddShrapnel(quick, "hand_R", 3, "shotgun")
+WSZC.ApplyBandageToOrganism(
+    { ply = quick, limbId = "hand_R", limb = quick._limbs.hand_R },
+    profile, 1 / 12)
+local oneTurn = WSZC.GetBandageBleeding(quick, "hand_R") == 0
+    and WSZC.IsShrapnelBandaged(quick, "hand_R")
+    and quick._limbs.hand_R.shrapnel == 5
+
+-- The SAME native table.remove race exists for aftercare.  Close its small
+-- wound while a larger ordinary wound remains, delete zero entries exactly as
+-- sv_blood does, and verify that only pain/age (not external bleed) continues.
+local after = MakePlayer()
+table.insert(after.organism.wounds, {
+    20, Vector(0, 0, 0), Angle(0, 0, 0),
+    "ValveBiped.Bip01_R_Hand", CurTime(),
+})
+WSZC.StartShrapnelAftercare(after, after.organism, "hand_R", 1)
+WSZC.ApplyBandageToOrganism(
+    { ply = after, limbId = "hand_R", limb = after._limbs.hand_R }, profile, 1 / 12)
+local aftercareMarker = after.organism.wszc_shrapnel_aftercare_closed
+    and after.organism.wszc_shrapnel_aftercare_closed.hand_R == true
+NativeRemoveZeroWounds(after.organism)
+WSZC.TickShrapnelAftercare(after, after.organism, 0.5)
+local extractionReopened, ordinaryLeft = false, false
+for _, wound in pairs(after.organism.wounds) do
+    if wound.wszcShrapnelExtraction and (tonumber(wound[1]) or 0) > 0 then
+        extractionReopened = true
+    elseif not wound.wszcShrapnelExtraction and (tonumber(wound[1]) or 0) > 0 then
+        ordinaryLeft = true
+    end
+end
+local aftercareStable = aftercareMarker and not extractionReopened and ordinaryLeft
+    and WSZC.ShrapnelAftercarePending(after, "hand_R")
+    and after.organism.wszc_shrapnel_aftercare_closed.hand_R == true
+
+-- A clot marker must never suppress a NEW pellet on a limb whose shrapnel was
+-- closed but whose unrelated native wound keeps it out of the covered state.
+local reinjured = MakePlayer()
+table.insert(reinjured.organism.wounds, {
+    20, Vector(0, 0, 0), Angle(0, 0, 0),
+    "ValveBiped.Bip01_R_Hand", CurTime(),
+})
+WSZC.AddShrapnel(reinjured, "hand_R", 1, "shotgun") -- 3 pieces
+WSZC.ApplyBandageToOrganism(
+    { ply = reinjured, limbId = "hand_R", limb = reinjured._limbs.hand_R }, profile, 1 / 12)
+local closedNotCovered = reinjured.organism.wszc_shrapnel_closed.hand_R == true
+    and not WSZC.IsShrapnelBandaged(reinjured, "hand_R")
+-- Keep the clot record but remove the physical dressing; otherwise the stock
+-- rule for a pellet into an ALREADY DRESSED limb correctly covers the new hit.
+reinjured.bandaged_limbs = {}
+reinjured._limbs.hand_R.isBandaged = false
+WSZC.AddShrapnel(reinjured, "hand_R", 1, "shotgun") -- 5 pieces, NEW injury
+local reopenedSeverity = 0
+for _, wound in pairs(reinjured.organism.wounds) do
+    if wound.wszcShrapnel then reopenedSeverity = math.max(reopenedSeverity, wound[1]) end
+end
+local newHitOpens = closedNotCovered and reinjured._limbs.hand_R.shrapnel == 5
+    and math.abs(reopenedSeverity - 4) < 0.001
+    and reinjured.organism.wszc_shrapnel_closed.hand_R ~= true
+return completed, grace and resumed, oneTurn, aftercareStable, newHitOpens
+''')
+    check("R60 timed GAUZE wraps close mixed shrapnel bleeding without wound respawn", timed_bandage[0])
+    check("R61 active bandaging pauses only new shrapnel growth, then ticks resume", timed_bandage[1])
+    check("R62 one real GAUZE turn can close the maximum initial shrapnel wound", timed_bandage[2])
+    check("R63 native zero-wound removal cannot reopen partially dressed aftercare", timed_bandage[3])
+    check("R64 a new pellet reopens a previously clotted but uncovered shrapnel wound", timed_bandage[4])
+
     infection_timeline = lua.execute(r'''
 local ply = MakePlayer()
 ply._alive = true
@@ -758,8 +924,10 @@ return treated == 0
     and ply._limbs.hand_R.infection == 0
 ''')
     check("R58 final dressing completes aftercare even if extraction bleeding clotted", zero_aftercare)
-    check("S16 covered-shrapnel UI replaces processing with stock infection",
-          'icons.disinfected = Material("casunknown-images/icons/infection.png"' in layout_s
+    check("S16 processing icon is filtered alone; infection and disinfect mechanics survive",
+          "function WSZC.InstallDisinfectedIconFilter()" in layout_s
+          and "mat == icons.disinfected" in layout_s
+          and 'icons.disinfected = Material("casunknown-images/icons/infection.png"' not in layout_s
           and "state.disinfectTime = 0" in organism_s
           and "state.infectionSpeed = 0" in organism_s)
 
@@ -1276,16 +1444,24 @@ ply.organism.arterialwounds = {
     { 5, Vector(), Angle(), "ValveBiped.Bip01_R_UpperArm", 0, Vector(), "rarmartery" },
     { 40, Vector(), Angle(), "ValveBiped.Bip01_L_Thigh", 0, Vector(), "llegartery" },
 }
+-- A dressed hand still has a REAL ordinary wound; the much larger thigh bleed
+-- is artery-only shadow presentation and must not steal the bandage target.
+ply._limbs.hand_R = { bleed = 25, isBandaged = true, dismembered = false }
+ply.organism.wounds = {
+    { 4, Vector(), Angle(), "ValveBiped.Bip01_R_Hand", 0 },
+}
 local BestLimb = function() return "native_bandage_site" end
 local NativeSwepHeal = function(target, spec, preferred)
     return BestLimb(target, spec, preferred)
 end
 local patched = WSZC.PatchTourniquetBestLimb(NativeSwepHeal)
 local tourniquet = NativeSwepHeal(ply, { kind = "apply", item = "TOURNIQUET", pick = "extremity" })
-local bandage = NativeSwepHeal(ply, { kind = "bandage", item = "GAUZE" })
-return patched and tourniquet == "arm_R" and bandage == "native_bandage_site"
+local bandage = NativeSwepHeal(ply, { kind = "bandage", item = "GAUZE" }, "hand_R")
+local arteryOnly = NativeSwepHeal(ply, { kind = "bandage", item = "GAUZE" }, "thigh_L")
+return patched and tourniquet == "arm_R" and bandage == "hand_R"
+    and arteryOnly == "hand_R" -- never the phantom 100-bleed artery-only thigh
 ''')
-    check("R49 installed BestLimb upvalue prioritizes only tourniquet, never bandage", selector_upvalue)
+    check("R49 installed BestLimb uses real tourniquet/bandage targets despite stale shadow flags", selector_upvalue)
 
     status_client = LuaRuntime(unpack_returned_tuples=True)
     status_client.execute(r'''
@@ -1306,6 +1482,206 @@ return #active == 2 and active[1].id == "WSZC_AMPUTATION" and active[2].id == "T
     and active[1].data.icon == "casunknown-images/moodles/amputation.png"
 ''')
     check("R50 native Statuses.GetActive draws amputation before tourniquet/bleed statuses", native_status_order)
+
+    internal_registration = shared_s.split('WSZC.INTERNAL_BLEEDING_STATUS_ID =', 1)[1].split('-- Short-lived context flag:', 1)[0]
+    status_client.execute('WSZC.INTERNAL_BLEEDING_STATUS_ID =' + internal_registration)
+    native_internal_icon = status_client.execute(r'''
+assert(WSZC.InstallInternalBleedingStatus())
+local state = { customStatuses = { WSZC_INTERNAL_BLEEDING = 6.25 } }
+local active = WoundSystem.Statuses.GetActive(state)
+local ok = #active == 1 and active[1].id == "WSZC_INTERNAL_BLEEDING"
+    and active[1].data.icon == "casunknown-images/moodles/internalbleed_red.png"
+    and active[1].data.type == "number" and active[1].data.order == -9000
+state.customStatuses.WSZC_INTERNAL_BLEEDING = 0
+return ok and #WoundSystem.Statuses.GetActive(state) == 0
+''')
+    check("R43 native client status resolves the red internal-bleed icon only above zero", native_internal_icon)
+
+    neck_state = lua.execute(r'''
+local ply = MakePlayer()
+local h = WoundSystem.Health
+h.Const = {
+    ParentLimb = {},
+    LimbToBones = { head = { "ValveBiped.Bip01_Head1", "ValveBiped.Bip01_Neck1" } },
+    RagdollDamageBones = {
+        { limb = "head", patterns = { "head", "neck", "jaw" } },
+        { limb = "thorax", patterns = { "spine2" } },
+    },
+}
+h.InitPlayer = function(target)
+    target._limbs = {
+        head = { skin = 100, muscle = 100, broken = true, boneHealTimer = 15,
+            dislocated = false, dislocationTimer = 0, shrapnel = 0, bleed = 0, pain = 0 },
+    }
+end
+assert(WSZC.InstallNeckState(h))
+h.InitPlayer(ply) -- real exported wrapper: native reset, then added neck/pelvis states
+local firstLife = ply._limbs.neck ~= nil
+    and hook._t.PlayerSpawn.WSZC_NeckFirstLifeSync ~= nil
+    and h.Const.ParentLimb.neck == "head"
+    and h.Const.RagdollDamageBones[1].limb == "neck"
+    and #h.Const.LimbToBones.head == 1
+
+ply.organism.skull = 1
+ply.organism.wounds = {
+    { 2, Vector(), Angle(), "ValveBiped.Bip01_Neck1", 0 },
+    { 3, Vector(), Angle(), "ValveBiped.Bip01_Head1", 0 },
+}
+ply.organism.arterialwounds = {
+    { 4, Vector(), Angle(), "ValveBiped.Bip01_Neck1", 0, Vector(), "neckartery" },
+}
+assert(WSZC.RestoreBones(ply))
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local separated = ply._limbs.neck.broken == true and ply._limbs.head.broken == false
+    and ply._limbs.neck.muscle == 0 and ply._limbs.head.muscle == 100
+    and ply._limbs.neck.boneHealTimer == 100 and ply._limbs.head.boneHealTimer == 0
+local bleed = WSZC.LimbBleedMap(ply, ply.organism)
+local routed = bleed.neck == 16 and bleed.head == 6
+
+-- A head-only muscle heal must NOT heal the neck's native fracture field.
+ply._limbs.head.muscle = 0
+local beforeHead = WSZC.SnapshotMedical(ply, "head")
+ply.organism.skull = 1
+ply._limbs.head.muscle = 100
+WSZC.ApplyMedicalDelta(ply, "head", beforeHead)
+local headTreatmentIndependent = ply.organism.skull == 1
+
+ply._limbs.neck.muscle = 0
+local beforeNeck = WSZC.SnapshotMedical(ply, "neck")
+ply._limbs.neck.muscle = 100
+WSZC.ApplyMedicalDelta(ply, "neck", beforeNeck)
+local neckTreatmentWorks = math.abs(ply.organism.skull) < 0.0001
+return firstLife, separated, routed, headTreatmentIndependent and neckTreatmentWorks
+''')
+    check("R65 first-life InitPlayer creates and synchronizes one real neck state", neck_state[0])
+    check("R66 skull fracture/muscle render on neck only, never duplicated on head", neck_state[1])
+    check("R67 Neck1 and neckartery route separately from Head1 wounds", neck_state[2])
+    check("R68 neck treatment heals skull; head treatment cannot heal the neck", neck_state[3])
+
+    pelvis_state = lua.execute(r'''
+local ply = MakePlayer()
+local h = WoundSystem.Health
+h.Const = {
+    ParentLimb = {}, LimbToBones = {},
+    ConnectedLimbs = { thorax = { "head", "abdomen" }, abdomen = { "thorax", "thigh_R", "thigh_L" } },
+    NonDismemberableCoreLimbs = { abdomen = true, thorax = true },
+    RagdollDamageBones = {
+        { limb = "thorax", patterns = { "spine2" } },
+        { limb = "abdomen", patterns = { "pelvis", "spine", "spine1" } },
+    },
+}
+h.InitPlayer = function(target)
+    target._limbs = {
+        head = { skin = 100, muscle = 100, shrapnel = 0, bleed = 0, pain = 0 },
+        thorax = { skin = 100, muscle = 100, shrapnel = 0, bleed = 0, pain = 0 },
+        abdomen = { skin = 12, muscle = 34, shrapnel = 0, bleed = 0, pain = 0,
+            customStatuses = { OLD = true } },
+    }
+end
+assert(WSZC.InstallNeckState(h))
+h.InitPlayer(ply)
+local pelvis = ply._limbs.pelvis
+local firstLife = pelvis ~= nil and ply._limbs.neck ~= nil
+    and pelvis.skin == 100 and pelvis.muscle == 100 and pelvis.customStatuses.OLD == nil
+    and h.Const.ParentLimb.pelvis == "abdomen"
+    and h.Const.ParentLimb.thigh_R == "pelvis"
+    and h.Const.NonDismemberableCoreLimbs.pelvis == true
+    and h.Const.ConnectedLimbs.abdomen[2] == "pelvis"
+
+ply.organism.pelvis = 0.4
+ply.organism.wounds = {
+    { 2, Vector(), Angle(), "ValveBiped.Bip01_Spine1", 0 },
+    { 3, Vector(), Angle(), "ValveBiped.Bip01_Pelvis", 0 },
+    { 5, Vector(), Angle(), "ValveBiped.Bip01_Spine2", 0 },
+}
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local bleed = WSZC.LimbBleedMap(ply, ply.organism)
+local routed = bleed.abdomen == 4 and bleed.pelvis == 6 and bleed.thorax == 10
+    and ply._limbs.abdomen.bleed == 4 and ply._limbs.pelvis.bleed == 6
+
+local treated, before, after = WSZC.ApplyBandageToOrganism({
+    ply = ply, limbId = "pelvis", limb = ply._limbs.pelvis,
+}, { effects = { bandageSlowAmount = 2 } }, 1)
+local abdomenWound, thoraxWound
+for _, wound in pairs(ply.organism.wounds) do
+    if wound[4] == "ValveBiped.Bip01_Spine1" then abdomenWound = wound[1] end
+    if wound[4] == "ValveBiped.Bip01_Spine2" then thoraxWound = wound[1] end
+end
+local treatmentSeparated = before == 6 and after == 0 and treated == 6
+    and abdomenWound == 2 and thoraxWound == 5
+
+ply._limbs.pelvis.muscle = 60
+local beforeMedical = WSZC.SnapshotMedical(ply, "pelvis")
+ply._limbs.pelvis.muscle = 80
+WSZC.ApplyMedicalDelta(ply, "pelvis", beforeMedical)
+local oneDelta = math.abs(ply.organism.pelvis - 0.2) < 0.0001
+return firstLife, routed, treatmentSeparated, oneDelta
+''')
+    check("R69 first-life pelvis is fresh, native and parented between abdomen/thighs", pelvis_state[0])
+    check("R70 Spine1/Pelvis/Spine2 wounds route to abdomen/pelvis/thorax exactly", pelvis_state[1])
+    check("R71 pelvis bandage treats only pelvis, never abdomen or thorax wounds", pelvis_state[2])
+    check("R72 pelvis muscle treatment applies ONE org.pelvis delta", pelvis_state[3])
+
+    # Load the real native status registry and the shared connector definition
+    # into the server runtime, then exercise the full organism -> shadow path.
+    lua.execute('string.Trim = function(value) return value end')
+    lua.execute(limb_statuses_s)
+    lua.execute('WSZC.INTERNAL_BLEEDING_STATUS_ID =' + internal_registration)
+    internal_bleeding_shadow = lua.execute(r'''
+assert(WSZC.InstallInternalBleedingStatus())
+local ply = MakePlayer()
+ply._limbs.abdomen = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    infection = 3, infectionSpeed = 1, disinfectTime = 120,
+    customStatuses = { KEEP_ME = true } }
+ply._limbs.pelvis = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    customStatuses = {} }
+ply.organism.internalBleed = 7.25
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local id = WSZC.INTERNAL_BLEEDING_STATUS_ID
+local abdomen, pelvis = ply._limbs.abdomen, ply._limbs.pelvis
+local active = WoundSystem.Statuses.GetActive(abdomen)
+local present = abdomen.customStatuses[id] == 7.25
+    and ply._body.internalBleeding == 7.25 and abdomen.bleed == 0
+    and #active == 1 and active[1].data.icon == "casunknown-images/moodles/internalbleed_red.png"
+local abdomenOnly = pelvis.customStatuses[id] == nil
+    and ply._limbs.thorax.customStatuses == nil
+local mechanicsUntouched = abdomen.disinfectTime == 120
+    and abdomen.infection == 3 and abdomen.infectionSpeed == 1
+    and abdomen.customStatuses.KEEP_ME == true
+
+-- Exercise C:U's actual status wire format, not a second hand-written copy.
+local wire, readAt = {}, 0
+local function push(value) wire[#wire + 1] = value end
+local function pop()
+    readAt = readAt + 1
+    return wire[readAt]
+end
+local oldNet = net
+net = { WriteUInt = push, WriteString = push, WriteFloat = push, WriteBool = push,
+    ReadUInt = pop, ReadString = pop, ReadFloat = pop, ReadBool = pop }
+SERVER, CLIENT = true, false
+WoundSystem.Statuses.WriteNet(abdomen)
+local received = {}
+SERVER, CLIENT = false, true
+WoundSystem.Statuses.ReadNet(received)
+SERVER, CLIENT = true, false
+net = oldNet
+local networked = received.customStatuses[id] == 7.25
+    and #WoundSystem.Statuses.GetActive(received) == 1
+
+ply.organism.internalBleed = 0
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local cleared = abdomen.customStatuses[id] == nil
+    and pelvis.customStatuses[id] == nil and ply._body.internalBleeding == 0
+    and #WoundSystem.Statuses.GetActive(abdomen) == 0
+    and abdomen.customStatuses.KEEP_ME == true
+return present, abdomenOnly and mechanicsUntouched, cleared, networked
+''')
+    check("R73 real org.internalBleed creates the native red abdomen marker, not external bleed", internal_bleeding_shadow[0])
+    check("R74 internal marker is abdomen-only and preserves disinfection/infection/custom statuses", internal_bleeding_shadow[1])
+    check("R75 stopping internal bleeding clears the marker and native status", internal_bleeding_shadow[2])
+    check("R76 native WriteNet/ReadNet round-trip carries the abdomen marker to the client", internal_bleeding_shadow[3])
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

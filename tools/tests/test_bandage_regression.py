@@ -49,13 +49,14 @@ check("S03 progress is measured from real initial/current bleeding",
       and "initialBleed = initialBleed" in minigames_s
       and "(initial - current) / initial" in minigames_s
       and "SendBandageState(ply, session)" in minigames_s)
-check("S04 client buffers state and draws explicit STOP percent",
+check("S04 client buffers state/STOP percent and never predicts fixed C:U cost",
       "WSZC.PendingBandageState" in client_minigames_s
       and "ApplyBleedState" in client_minigames_s
       and '"STOP " .. tostring(percent) .. "%"' in bandage_s
       and '"TOURNIQUET"' in bandage_s
       and "DrawProgressRing" in bandage_s
-      and "bleed = MG.bleedCurrent + artery" in bandage_s)
+      and "bleed = MG.bleedCurrent + artery" in bandage_s
+      and "predictedCost" not in bandage_s)
 check("S05 reverse unwrap has independent angular progress and no item cost",
       'net.WriteString("unwrap")' in minigames_s
       and 'session.mode == "unwrap"' in minigames_s
@@ -63,7 +64,7 @@ check("S05 reverse unwrap has independent angular progress and no item cost",
       and 'MG.mode == "unwrap"' in bandage_s
       and 'MG.totalDegreesUnwrapped' in bandage_s
       and 'MG.lastUnwrapActionAngle' in bandage_s
-      and 'MG.mode ~= "unwrap" and slot' in bandage_s
+      and 'return -- no durability, bleeding treatment or foreign onProgress' in minigames_s
       and '"UNWRAP " .. tostring(percent) .. "%"' in bandage_s
       and 'matInfection' in bandage_s)
 
@@ -118,10 +119,10 @@ local ctx = { ply = ply, limbId = "thigh_R", limb = limb }
 local profile = { effects = { bandageSlowAmount = 45 } }
 local amount, before, after = WSZC.ApplyBandageToOrganism(ctx, profile, 1 / 12)
 local oneWrap = math.abs(before - 26) < 0.001
-    and math.abs(after - 18.5) < 0.001
-    and math.abs(amount - 7.5) < 0.001
-    and math.abs(ply.organism.bleed - 8.5) < 0.001
-    and math.abs(ply.organism.wounds[1][1] - 6.25) < 0.001
+    and math.abs(after - 14.75) < 0.001
+    and math.abs(amount - 11.25) < 0.001
+    and math.abs(ply.organism.bleed - 7.75) < 0.001
+    and math.abs(ply.organism.wounds[1][1] - 4.375) < 0.001
     and ply.organism.wounds[2][1] == 7
     and ply.organism.arterialwounds[1][1] == 2
     and netvars.bandaged_limbs["ValveBiped.Bip01_R_Thigh"] == true
@@ -182,6 +183,50 @@ return arteryClosed, downstreamClosed
     check("R05 tourniquet really closes artery and syncs native markers", tourniquet[0])
     check("R06 tourniquet closes ordinary downstream wounds only", tourniquet[1])
 
+    amputated_bandage = lua.execute(r'''
+local netvars = {}
+local ply = {
+    SetNetVar = function(self, key, value) netvars[key] = value end,
+    _limbs = {
+        arm_R = { bleed = 14, isBandaged = false, dismembered = false },
+        forearm_R = { bleed = 14, dismembered = true },
+        hand_R = { bleed = 14, dismembered = true },
+        thigh_L = { bleed = 100, dismembered = false },
+    },
+}
+ply.organism = {
+    owner = ply, bleed = 20, rarmamputated = true, rarmartery = 1,
+    wounds = {
+        { 4, nil, nil, "ValveBiped.Bip01_R_Forearm", 0 },
+    },
+    arterialwounds = {
+        { 2, nil, nil, "ValveBiped.Bip01_R_Forearm", 0, nil, "rarmartery" },
+    },
+}
+WoundSystem.Health.GetLimbs = function(target) return target._limbs end
+WoundSystem.Health.GetLimbState = function(target, id)
+    return target._limbs[id]
+end
+local routed = WSZC.GetBandageBleeding(ply, "arm_R") == 8
+    and WSZC.GetArterialBleeding(ply, "arm_R") == 6
+    and WSZC.BestBandageLimb(ply, "forearm_R") == "arm_R"
+local amount, before, after = WSZC.ApplyBandageToOrganism({
+    ply = ply, limbId = "arm_R", limb = ply._limbs.arm_R,
+}, { effects = { bandageSlowAmount = 45 } }, 1)
+local treated = math.abs(amount - 8) < 0.001 and math.abs(before - 14) < 0.001
+    and math.abs(after - 6) < 0.001
+    and WSZC.GetBandageBleeding(ply, "arm_R") == 0
+    and WSZC.GetArterialBleeding(ply, "arm_R") == 6
+    and #ply.organism.wounds == 0 and #ply.organism.arterialwounds == 1
+    and ply.organism.arterialwounds[1][1] == 2 and ply.organism.rarmartery == 1
+    and math.abs(ply.organism.bleed - 18.4) < 0.001
+    and ply._limbs.arm_R.bleed == 6 and ply._limbs.arm_R.isBandaged == false
+    and WSZC.BestBandageLimb(ply, "forearm_R") == nil
+return routed, treated
+''')
+    check("R26 confirmed amputation routes bandage selection and progress to the stump", amputated_bandage[0])
+    check("R27 stump bandage treats the real distal wound without clearing its artery", amputated_bandage[1])
+
     # ----------------------------------------------------- server progress --
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(r'''
@@ -201,6 +246,19 @@ CreateConVar = function() return { GetBool = function() return true end } end
 GetConVar = function() return nil end
 FindMetaTable = function() return nil end
 CurTime = function() return 100 end
+include = function() end
+player = { GetAll = function() return {} end }
+game = { GetAmmoName = function() return "9mm" end }
+isnumber = function(v) return type(v) == "number" end
+isvector = function(v) return type(v) == "table" and v._isVector == true end
+Vector = function(x, y, z)
+    local v = { x = x or 0, y = y or 0, z = z or 0, _isVector = true }
+    v.GetNegated = function(self) return Vector(-self.x, -self.y, -self.z) end
+    return v
+end
+Angle = function(p, y, r) return { p = p or 0, y = y or 0, r = r or 0 } end
+vector_origin = Vector(0, 0, 0)
+angle_zero = Angle(0, 0, 0)
 IsValid = function(v) return v ~= nil and v ~= false end
 util = { AddNetworkString = function() end }
 hook = { Add = function() end, Remove = function() end }
@@ -217,6 +275,18 @@ net = {
     ReadFloat = function() local v = readQueue[1]; table.remove(readQueue, 1); return v end,
     ReadString = function() local v = readQueue[1]; table.remove(readQueue, 1); return v end,
 }
+''')
+    lua.execute(organism_s)
+    lua.execute(r'''
+WSZC.RealApplyBandageToOrganism = WSZC.ApplyBandageToOrganism
+WSZC.RealTickLodgedShrapnel = WSZC.TickLodgedShrapnel
+WSZC.RealTickShrapnelAftercare = WSZC.TickShrapnelAftercare
+WSZC.RealTickBandagedShrapnel = WSZC.TickBandagedShrapnel
+WSZC.RealIsShrapnelBandaged = WSZC.IsShrapnelBandaged
+WSZC.RealGetBandageBleeding = WSZC.GetBandageBleeding
+WSZC.RealAddShrapnel = WSZC.AddShrapnel
+WSZC.GetBandageBleeding = function(ply) return ply._bleed end
+WSZC.GetArterialBleeding = function(ply) return ply._arterial or 0 end
 ''')
     lua.execute(minigames_s)
     progress = lua.execute(r'''
@@ -267,6 +337,252 @@ return stateOk, session.deferredUsed == 40
 ''')
     check("R07 artery-only state remains visible and requests tourniquet", arteryState[0])
     check("R08 artery-only bandage input consumes no durability", arteryState[1])
+
+    real_input = lua.execute(r'''
+WSZC.MinigameSessions = {}
+WSZC.GetBandageBleeding = WSZC.RealGetBandageBleeding
+WSZC.IsShrapnelBandaged = WSZC.RealIsShrapnelBandaged
+WoundSystem.Health.Constants.ShrapnelPieceCount = 5
+WoundSystem.Health.GetLimbs = function(ply) return ply._limbs end
+WoundSystem.Health.GetLimbState = function(ply, id) return ply._limbs[id] end
+WoundSystem.Health.GetBody = function(ply) return ply._body end
+WoundSystem.Health.SendLimbUpdate = function() end
+WoundSystem.Health.SendCardioUpdate = function() end
+local function Patient()
+    local ply = {
+        _limbs = {
+            hand_R = { shrapnel = 0, bleed = 0, pain = 0, infection = 0,
+                       infectionSpeed = 0, muscle = 100, skin = 100 },
+            thorax = { infection = 0, infectionSpeed = 0 },
+            head = { infection = 0, infectionSpeed = 0 },
+        },
+        _body = {},
+        IsPlayer = function() return true end, Alive = function() return true end,
+        SetNetVar = function() end,
+    }
+    ply.organism = { owner = ply, consciousness = 1, blood = 5000, bleed = 0,
+        pain = 0, avgpain = 0, painadd = 0, wounds = {}, arterialwounds = {} }
+    return ply
+end
+local patient = Patient()
+WSZC.RealAddShrapnel(patient, "hand_R", 3, "shotgun")
+local operator = Patient()
+local perWrap = 100 / 12
+WSZC.BandageProfile = function()
+    return { durabilityPerWrap = perWrap, effectDivisor = 12,
+             effects = { bandageSlowAmount = 45 } }
+end
+local session = {
+    id = 88, kind = "bandage", itemId = "GAUZE", limbId = "hand_R",
+    owner = operator, target = patient, startAmount = 100, deferredUsed = 0,
+    initialBleed = WSZC.RealGetBandageBleeding(patient, "hand_R"),
+    live = true, lastAckSeq = 0,
+    onProgress = function(_, _, cost)
+        WSZC.RealApplyBandageToOrganism(
+            { ply = patient, limbId = "hand_R", limb = patient._limbs.hand_R },
+            { effects = { bandageSlowAmount = 45 } }, (cost / perWrap) / 12)
+    end,
+}
+WSZC.MinigameSessions[operator] = session
+for _ = 1, 12 do
+    sent, readQueue = {}, { 88, 360 }
+    receivers["WSZC_BandageInput"](0, operator)
+    WSZC.RealTickLodgedShrapnel(patient, patient.organism, 0.5)
+    WSZC.RealTickShrapnelAftercare(patient, patient.organism, 0.5)
+    WSZC.RealTickBandagedShrapnel(patient, patient.organism, 0.5)
+end
+local infection = patient.organism.wszc_bandaged_shrapnel.hand_R
+local oneRealTurn = patient._limbs.hand_R.shrapnel == 5
+    and WSZC.RealGetBandageBleeding(patient, "hand_R") == 0
+    and WSZC.RealIsShrapnelBandaged(patient, "hand_R")
+    and math.abs(session.deferredUsed - perWrap) < 0.001
+    and infection and infection.infectionAge > 0
+
+-- A clotted extraction wound still requires the FINAL dressing.  The zero-
+-- bleed fast path must not discard this input (artery-only remains covered by
+-- R08 above and still spends nothing).
+WSZC.MinigameSessions = {}
+local finalPatient = Patient()
+finalPatient.organism.wszc_shrapnel_aftercare = {
+    hand_R = { awaitingBandage = true, age = 1, baseSeverity = 0.3 },
+}
+finalPatient.organism.wounds = {{
+    0, Vector(0, 0, 0), Angle(0, 0, 0), "ValveBiped.Bip01_R_Hand", CurTime(),
+    wszcShrapnelExtraction = "WSZC_SHRAPNEL_EXTRACTION", wszcLimb = "hand_R",
+}}
+local finalSession = {
+    id = 89, kind = "bandage", itemId = "GAUZE", limbId = "hand_R",
+    owner = operator, target = finalPatient, startAmount = 100, deferredUsed = 0,
+    initialBleed = 0, live = true, lastAckSeq = 0,
+    onProgress = function(_, _, cost)
+        WSZC.RealApplyBandageToOrganism(
+            { ply = finalPatient, limbId = "hand_R", limb = finalPatient._limbs.hand_R },
+            { effects = { bandageSlowAmount = 45 } }, (cost / perWrap) / 12)
+    end,
+}
+WSZC.MinigameSessions[operator] = finalSession
+local wasPending = WSZC.ShrapnelAftercarePending(finalPatient, "hand_R")
+sent, readQueue = {}, { 89, 360 }
+receivers["WSZC_BandageInput"](0, operator)
+local extractionLeft = false
+for _, wound in pairs(finalPatient.organism.wounds) do
+    if wound.wszcShrapnelExtraction then extractionLeft = true end
+end
+local finalDressing = wasPending
+    and not WSZC.ShrapnelAftercarePending(finalPatient, "hand_R")
+    and not extractionLeft and math.abs(finalSession.deferredUsed - perWrap) < 0.001
+BandagePatientFactory = Patient
+BandageNativePerWrap = perWrap
+return oneRealTurn, finalDressing
+''')
+    check("R15 real server GAUZE input stops max shrapnel in one turn without reroll", real_input[0])
+    check("R16 real server input accepts the required zero-bleed aftercare dressing", real_input[1])
+
+    native_cost = lua.execute(r'''
+WSZC.MinigameSessions = {}
+local Patient, perWrap = BandagePatientFactory, BandageNativePerWrap
+WSZC.H.ApplyItemToBody = function(target, itemId, limbId, amount)
+    WSZC.RealApplyBandageToOrganism(
+        { ply = target, limbId = limbId, limb = target._limbs[limbId] },
+        { effects = { bandageSlowAmount = 45 } }, amount / (perWrap * 12))
+    return true, amount
+end
+local function NewSwep(def)
+    return { modeValues = { def }, modeValuesdef = { { def, true } }, _net = {},
+        SetNetVar = function(self, key, value) self._net[key] = value end }
+end
+local function NewNativeSession(id, patient, swep, def, startAmount)
+    local operator = Patient()
+    local appliedLive, progressCalls = 0, 0
+    local progress = function()
+        progressCalls = progressCalls + 1
+        appliedLive = appliedLive + 1
+    end
+    local appliedLiveIdx
+    for i = 1, 20 do
+        local name = debug.getupvalue(progress, i)
+        if not name then break end
+        if name == "appliedLive" then appliedLiveIdx = i break end
+    end
+    local session = {
+        id = id, kind = "bandage", itemId = "GAUZE", limbId = "hand_R",
+        owner = operator, target = patient, startAmount = startAmount,
+        deferredUsed = 0, initialBleed = WSZC.RealGetBandageBleeding(patient, "hand_R"),
+        live = true, lastAckSeq = 0, onProgress = progress, onClose = function() end,
+        nativeBandage = { swep = swep, idx = 1, def = def, maxDur = 100,
+                          appliedLiveIdx = appliedLiveIdx },
+        _calls = function() return progressCalls end,
+        _applied = function()
+            for i = 1, 20 do
+                local name, value = debug.getupvalue(progress, i)
+                if not name then break end
+                if name == "appliedLive" then return value end
+            end
+        end,
+    }
+    WSZC.MinigameSessions[operator] = session
+    return session, operator
+end
+NativeBandageSessionFactory = NewNativeSession
+NativeBandageSwepFactory = NewSwep
+
+local smallPatient = Patient()
+WSZC.RealAddShrapnel(smallPatient, "hand_R", 3, "shotgun") -- five pieces, severity 4
+local smallSwep = NewSwep(40)
+local operator = Patient()
+local spec = { mg = { kind = "bandage" }, kind = "item", item = "GAUZE" }
+local swep, idx, target = smallSwep, 1, smallPatient
+local live, oneDose, maxDur, appliedLive, progressCalls = true, false, 100, 0, 0
+local data = { kind = "bandage", itemId = "GAUZE", limbId = "hand_R", amount = 100 }
+-- Reproduce WB.StartMinigame's shared-upvalue closure shape: every native
+-- value is genuinely captured, and appliedLive is shared with onClose.
+data.onProgress = function()
+    progressCalls = progressCalls + 1
+    if live and not oneDose and IsValid(swep) and IsValid(target) then
+        local _ = spec.item .. tostring(idx) .. tostring(maxDur)
+        appliedLive = appliedLive + 1
+    end
+end
+data.onClose = function()
+    local _ = spec.item .. tostring(idx) .. tostring(maxDur) .. tostring(appliedLive)
+    if not IsValid(swep) or not IsValid(target) or not live or oneDose then return end
+end
+WSZC.Ready = true
+WSZC.BridgeEnabled = function() return true end
+WoundSystem.Items = {
+    Get = function() return { max = 100, title = "Dressing", use = { bandage = {} } } end,
+    GetMax = function() return 100 end,
+}
+WSZC.MinigameSessions = {}
+local started = WSZC.StartExternalMinigameImpl(operator, data)
+local small = WSZC.MinigameSessions[operator]
+sent, readQueue = {}, { small and small.id or 0, 360 }
+if small then receivers["WSZC_BandageInput"](0, operator) end
+local appliedValue = 0
+for i = 1, 20 do
+    local name, value = debug.getupvalue(data.onProgress, i)
+    if not name then break end
+    if name == "appliedLive" then appliedValue = value end
+end
+local smallOK = started and small and small.nativeBandage
+    and small.nativeBandage.swep == smallSwep and small.nativeBandage.def == 40
+    and smallSwep.modeValues[1] == 36
+    and math.abs(small.deferredUsed - 10) < 0.001
+    and progressCalls == 0 and math.abs(appliedValue - 10) < 0.001
+    and WSZC.RealGetBandageBleeding(smallPatient, "hand_R") == 0
+    and smallSwep._net.modeValues == smallSwep.modeValues
+
+WSZC.MinigameSessions = {}
+local bigPatient = Patient()
+WSZC.RealAddShrapnel(bigPatient, "hand_R", 3, "shotgun")
+local bigSwep = NewSwep(150)
+local big = NativeBandageSessionFactory(102, bigPatient, bigSwep, 150, 100)
+sent, readQueue = {}, { 102, 360 }
+receivers["WSZC_BandageInput"](0, big.owner)
+local bigOK = bigSwep.modeValues[1] == 146
+    and math.abs(big.deferredUsed - (4 * 100 / 150)) < 0.001
+    and big._calls() == 0 and WSZC.RealGetBandageBleeding(bigPatient, "hand_R") == 0
+return smallOK, bigOK
+''')
+    check("R18 native 40-unit bandage spends exactly four severity, with no double consume", native_cost[0])
+    check("R19 native 150-unit big bandage spends the same four severity, not C:U percent", native_cost[1])
+
+    native_edge = lua.execute(r'''
+WSZC.MinigameSessions = {}
+local Patient = BandagePatientFactory
+local patient = Patient()
+WSZC.RealAddShrapnel(patient, "hand_R", 3, "shotgun") -- severity 4, only 1 unit left
+local swep = NativeBandageSwepFactory(40)
+swep.modeValues[1] = 1
+local session = NativeBandageSessionFactory(103, patient, swep, 40, 2.5)
+sent, readQueue = {}, { 103, 360 }
+receivers["WSZC_BandageInput"](0, session.owner)
+local capped = swep.modeValues[1] == 0
+    and math.abs(session.deferredUsed - 2.5) < 0.001
+    and math.abs(WSZC.RealGetBandageBleeding(patient, "hand_R") - 6) < 0.001
+    and WSZC.MinigameSessions[session.owner] == nil and session._calls() == 0
+
+WSZC.MinigameSessions = {}
+local finalPatient = Patient()
+finalPatient.organism.wszc_shrapnel_aftercare = {
+    hand_R = { awaitingBandage = true, age = 1, baseSeverity = 0.3 },
+}
+finalPatient.organism.wounds = {{
+    0, Vector(0, 0, 0), Angle(0, 0, 0), "ValveBiped.Bip01_R_Hand", CurTime(),
+    wszcShrapnelExtraction = "WSZC_SHRAPNEL_EXTRACTION", wszcLimb = "hand_R",
+}}
+local finalSwep = NativeBandageSwepFactory(40)
+local finalSession = NativeBandageSessionFactory(104, finalPatient, finalSwep, 40, 100)
+sent, readQueue = {}, { 104, 360 }
+receivers["WSZC_BandageInput"](0, finalSession.owner)
+local aftercareFree = finalSwep.modeValues[1] == 40
+    and finalSession.deferredUsed == 0 and finalSession._calls() == 0
+    and math.abs(finalSession._applied() - 0.02) < 0.001
+    and not WSZC.ShrapnelAftercarePending(finalPatient, "hand_R")
+return capped, aftercareFree
+''')
+    check("R20 nearly empty ZCity bandage cannot overheal beyond its last severity unit", native_edge[0])
+    check("R21 native zero-severity aftercare completes without spending a clean item", native_edge[1])
 
     unwrap = lua.execute(r'''
 WSZC.MinigameSessions = {}
@@ -322,6 +638,10 @@ return startedOK, halfOK, completeOK
     check("R10 180 reverse degrees keep the dressing on and spend no item", unwrap[1])
     check("R11 360 reverse degrees unwrap exactly once and close the session", unwrap[2])
 
+    # Keep the authoritative server runtime for the final client->net->server
+    # end-to-end regression below.
+    server_lua = lua
+
     # ---------------------------------------------------------- client UI --
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(r'''
@@ -330,11 +650,18 @@ WSZC = {
     MinigameScale = function() return 1 end,
     MinigameFullscreen = function() return false end,
     ApplyFullscreenClip = function() end,
+    HandRectAtPivot = function(cx, cy, w, h, rot, px, py)
+        local lx, ly = (0.5 - px) * w, (0.5 - py) * h
+        local a = math.rad(rot or 0)
+        local c, s = math.cos(a), math.sin(a)
+        return cx + lx * c - ly * s, cy + lx * s + ly * c, w, h
+    end,
 }
 WoundSystem = {
     MinigameClip = {
         Begin = function() return false end, End = function() end,
         DrawBackdrop = function() end, MarkOpened = function() end,
+        DrawHeader = function() end, DrawExitGuide = function() end,
     },
     Items = { Get = function()
         return { max = 100, title = "Dressing", use = { bandage = {} } }
@@ -343,6 +670,7 @@ WoundSystem = {
 WoundSystemInventorySlots = { [6] = { type = "tool", toolName = "GAUZE", durability = 100 } }
 WoundSystemMedToolConfig = { GAUZE = { max = 100 } }
 WoundSystemClientState = { PlayerLimbs = {} }
+DevMinigameCfg = {}
 math.Clamp = function(v, lo, hi) if v < lo then return lo end; if v > hi then return hi end; return v end
 math.Round = function(v) return math.floor(v + 0.5) end
 math.atan2 = function(y, x) return math.atan(y, x) end
@@ -381,7 +709,9 @@ surface = {
     SetMaterial = function(m) surfaceCalls[#surfaceCalls + 1] = { kind = "mat", path = m._path } end,
     SetDrawColor = function() end,
     DrawTexturedRect = function() end, DrawTexturedRectUV = function() end,
-    DrawTexturedRectRotated = function() end,
+    DrawTexturedRectRotated = function(x, y, w, h, rot)
+        surfaceCalls[#surfaceCalls + 1] = { kind = "rot", x = x, y = y, w = w, h = h, rot = rot }
+    end,
     PlaySound = function() end,
     DrawPoly = function() surfaceCalls[#surfaceCalls + 1] = { kind = "poly" } end,
 }
@@ -443,6 +773,108 @@ return first, stopped and not bloodIcon, needsTourniquet and arteryIcon
     check("R10 ordinary 100% is complete and the blood drop disappears", ui[1])
     check("R11 remaining artery keeps drop and shows TOURNIQUET", ui[2])
 
+    hand_pivot = lua.execute(r'''
+local mg = WSZCBandageMinigame
+mg.active = true
+mg.handPos = { x = 0, y = 0 }
+local devCfg
+for i = 1, 60 do
+    local name, value = debug.getupvalue(mg.overlay.PaintOver, i)
+    if not name then break end
+    if name == "DevMinigameCfg" then devCfg = value break end
+end
+devCfg.bandageHandOffsetX = 20
+devCfg.bandageHandOffsetY = -30
+WSZC.UnitmenuHandAngle = function() return 37 end
+surfaceCalls = {}
+mg.overlay.PaintOver(mg.overlay, 1000, 1000)
+local call
+for _, candidate in ipairs(surfaceCalls) do
+    if candidate.kind == "rot" then call = candidate end
+end
+WSZC.UnitmenuHandAngle = nil
+if not call then return false end
+local a = math.rad(call.rot)
+local co, si = math.cos(a), math.sin(a)
+local ox, oy = (0.4 - 0.5) * call.w, (0.1 - 0.5) * call.h
+local gripX = call.x + ox * co - oy * si
+local gripY = call.y + ox * si + oy * co
+-- BaseScale is the mocked CFG.ScaleMultiplier = 1.7.
+local targetX, targetY = 500 + 20 * 1.7, 500 - 30 * 1.7
+return call.rot == 37 and math.abs(gripX - targetX) < 0.001
+    and math.abs(gripY - targetY) < 0.001
+''')
+    check("R17 legacy unpinned WSZC hand keeps C:U offset and rotated pivot", hand_pivot)
+
+    pinned_hand = lua.execute(r'''
+local mg = WSZCBandageMinigame
+WSZC.MinigameHandPinned = function() return true end
+mg.active = true
+mg.handPos = { x = 0, y = 0 }
+local devCfg
+for i = 1, 60 do
+    local name, value = debug.getupvalue(mg.overlay.PaintOver, i)
+    if not name then break end
+    if name == "DevMinigameCfg" then devCfg = value break end
+end
+devCfg.bandageHandOffsetX = 100
+devCfg.bandageHandOffsetY = 400
+WSZC.UnitmenuHandAngle = function() return 37 end
+surfaceCalls = {}
+mg.overlay.PaintOver(mg.overlay, 1000, 1000)
+local call
+for _, candidate in ipairs(surfaceCalls) do
+    if candidate.kind == "rot" then call = candidate end
+end
+WSZC.UnitmenuHandAngle = nil
+WSZC.MinigameHandPinned = nil
+if not call then return false end
+local a = math.rad(call.rot)
+local co, si = math.cos(a), math.sin(a)
+local ox, oy = (0.4 - 0.5) * call.w, (0.1 - 0.5) * call.h
+local gripX = call.x + ox * co - oy * si
+local gripY = call.y + ox * si + oy * co
+return call.rot == 37 and math.abs(gripX - 500) < 0.001
+    and math.abs(gripY - 500) < 0.001
+''')
+    check("R22 pinned WSZC hand ignores the 100/400 offset at arbitrary rotation", pinned_hand)
+
+    pinned_think = lua.execute(r'''
+local mg = WSZCBandageMinigame
+local think = hook._t.WSZC_BandageInput
+local hp
+for i = 1, 80 do
+    local name, value = debug.getupvalue(think, i)
+    if not name then break end
+    if name == "HandPhysics" then hp = value break end
+end
+local oldStep = hp.Step
+local physicsCalls = 0
+hp.Step = function(mg)
+    physicsCalls = physicsCalls + 1
+    mg.handScreenX, mg.handScreenY = 0, 0
+end
+WSZC.MinigameHandPinned = function() return true end
+WSZC.PinMinigameHandToCursor = function(mg)
+    local mx, my = gui.MousePos()
+    mg.handScreenX, mg.handScreenY = mx, my
+    mg.handScreenVelX, mg.handScreenVelY = 0, 0
+    mg._hp_acc = 0
+    return mx, my
+end
+mg.OpenFromServer({ sessionId = 88, limbId = "hand_R", mode = "gauze", slotIdx = 6 })
+mg.handScreenVelX, mg.handScreenVelY, mg._hp_acc = 8, -4, 3
+think() -- cursor is (500,500), inside the old collision radius
+local exact = physicsCalls == 0 and mg.handScreenX == 500 and mg.handScreenY == 500
+    and mg.handPos.x == 0 and mg.handPos.y == 0
+    and mg.handScreenVelX == 0 and mg.handScreenVelY == 0 and mg._hp_acc == 0
+hp.Step = oldStep
+WSZC.MinigameHandPinned = nil
+WSZC.PinMinigameHandToCursor = nil
+return exact
+''')
+    check("R23 real WSZC Think bypasses spring and centre collision in cursor mode", pinned_think)
+
     client_unwrap = lua.execute(r'''
 local mg = WSZCBandageMinigame
 local think = hook._t.WSZC_BandageInput
@@ -484,6 +916,107 @@ return forwardDegrees == 0, reverseDegrees >= 360, unwrapLabel and infectionIcon
     check("R12 forward wrapping motion does not count as reverse unwrapping", client_unwrap[0])
     check("R13 a reverse circle accumulates 360 degrees in the real client Think", client_unwrap[1])
     check("R14 completed unwrap shows UNWRAP percent and standard infection icon", client_unwrap[2])
+
+    # --------------------------------------- real client -> net -> server ---
+    client_circle = lua.execute(r'''
+local mg = WSZCBandageMinigame
+local think = hook._t.WSZC_BandageInput
+local clock = 200
+CurTime = function() return clock end
+WSZC.MinigameHUDOpen = true
+WSZC.MinigameHandPinned = function() return true end
+WSZC.PinMinigameHandToCursor = function(mg)
+    local mx, my = gui.MousePos()
+    mg.handScreenX, mg.handScreenY = mx, my
+    mg.handScreenVelX, mg.handScreenVelY = 0, 0
+    mg._hp_acc = 0
+    return mx, my
+end
+
+ClientWire, wire = {}, nil
+net.Start = function(name) wire = { name = name, writes = {} } end
+net.WriteUInt = function(value) wire.writes[#wire.writes + 1] = { "uint", value } end
+net.WriteFloat = function(value) wire.writes[#wire.writes + 1] = { "float", value } end
+net.WriteString = function(value) wire.writes[#wire.writes + 1] = { "string", value } end
+net.SendToServer = function()
+    ClientWire[#ClientWire + 1] = wire
+    wire = nil
+end
+
+local function place(physicalAngle)
+    local rad = math.rad(physicalAngle)
+    local scale = 1.7 -- mocked 1000x1000, fullscreen off => CFG 1.7
+    local x = 500 + math.sin(rad) * 260 * scale
+    local y = 500 - math.cos(rad) * 260 * scale
+    gui.MousePos = function() return x, y end
+end
+
+mouseDown = false
+place(0)
+mg.OpenFromServer({ sessionId = 105, limbId = "hand_R", mode = "gauze", slotIdx = 6 })
+think()
+mouseDown = true
+think()
+local grabbed = mg.holdingBandage
+for angle = 5, 360, 5 do
+    clock = clock + 0.02
+    place(angle)
+    think()
+end
+clock = clock + 0.2
+think() -- flush the final partial network batch
+
+ClientWireDegrees, ClientWireSessions = {}, {}
+local sum = 0
+for _, message in ipairs(ClientWire) do
+    if message.name == "WSZC_BandageInput" then
+        local degrees = message.writes[2][2]
+        ClientWireDegrees[#ClientWireDegrees + 1] = degrees
+        ClientWireSessions[#ClientWireSessions + 1] = message.writes[1][2]
+        sum = sum + degrees
+    end
+end
+ClientCircleOK = grabbed and mg.totalDegreesWrapped >= 360 and sum >= 360
+    and #ClientWireDegrees > 0
+for _, sessionId in ipairs(ClientWireSessions) do
+    if sessionId ~= 105 then ClientCircleOK = false end
+end
+return ClientCircleOK, mg.totalDegreesWrapped, sum, #ClientWireDegrees
+''')
+    check("R24 real clockwise client circle emits 360 degrees for the native session", client_circle[0])
+
+    degrees = [float(v) for v in lua.execute('return ClientWireDegrees').values()]
+    lua_degrees = ', '.join('%.9g' % value for value in degrees)
+    end_to_end = server_lua.execute(r'''
+WSZC.MinigameSessions = {}
+local Patient = BandagePatientFactory
+local patient = Patient()
+WSZC.RealAddShrapnel(patient, "hand_R", 3, "shotgun") -- severity 4 / bleed 8
+local swep = NativeBandageSwepFactory(40)
+local session = NativeBandageSessionFactory(105, patient, swep, 40, 100)
+NativeCloseReason = nil
+session.onClose = function(_, _, reason) NativeCloseReason = reason end
+sent = {}
+for _, degrees in ipairs(CLIENT_DEGREES) do
+    readQueue = { 105, degrees }
+    receivers["WSZC_BandageInput"](0, session.owner)
+end
+local closePacket, slotClose = false, false
+for _, message in ipairs(sent) do
+    if message.name == "WSZC_BandageClose" and message.writes[2][2] == "completed" then
+        closePacket = true
+    end
+    if message.name == "WSZC_MinigameClose" then slotClose = true end
+end
+return WSZC.RealGetBandageBleeding(patient, "hand_R") == 0
+    and swep.modeValues[1] == 36
+    and math.abs(session.deferredUsed - 10) < 0.001
+    and session._calls() == 0 -- no second native onProgress consumption
+    and session._applied() >= 0.02
+    and WSZC.MinigameSessions[session.owner] == nil
+    and NativeCloseReason == "completed" and closePacket and slotClose
+'''.replace('CLIENT_DEGREES', '{ ' + lua_degrees + ' }'))
+    check("R25 client packets really close the wound, spend four units and complete/close server session", end_to_end)
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

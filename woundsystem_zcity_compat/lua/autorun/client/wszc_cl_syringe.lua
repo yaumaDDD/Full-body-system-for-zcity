@@ -250,8 +250,11 @@ local function UpdateHandDrawPosition()
     -- pivot, idle/hold angles and HandPhysics instead of flattening rotation.
     local handPivotX = MG._unitmenuPivotX or MiniNumber("handPivotX", DEFAULT_MINIGAME.handPivotX)
     local handPivotY = MG._unitmenuPivotY or MiniNumber("handPivotY", DEFAULT_MINIGAME.handPivotY)
-    local handOffsetX = MiniNumber("handOffsetX", DEFAULT_MINIGAME.handOffsetX) * scale
-    local handOffsetY = MiniNumber("handOffsetY", DEFAULT_MINIGAME.handOffsetY) * scale
+    local handOffsetX, handOffsetY = 0, 0
+    if not (WSZC and WSZC.MinigameHandPinned and WSZC.MinigameHandPinned()) then
+        handOffsetX = MiniNumber("handOffsetX", DEFAULT_MINIGAME.handOffsetX) * scale
+        handOffsetY = MiniNumber("handOffsetY", DEFAULT_MINIGAME.handOffsetY) * scale
+    end
 
     MG.handPivotScreenX = MG.handScreenX + handOffsetX
     MG.handPivotScreenY = MG.handScreenY + handOffsetY
@@ -720,15 +723,20 @@ hook.Add("Think", "WSZC_SyringeInput", function()
     local str = stats and stats.STR or 0
     local conc = stats and stats.consciousness or 100
 
-    HandPhysics.Step(MG, dt, {
-        pain = painFactor,
-        str = str,
-        conc = conc,
-        shakeX = MiniNumber("painShakeX", DEFAULT_MINIGAME.painShakeX),
-        shakeY = MiniNumber("painShakeY", DEFAULT_MINIGAME.painShakeY),
-        maxLength = MiniNumber({"handMaxLength", "maxLength"}, 75),
-        bounds = { 0, ScrW(), 0, ScrH() }
-    })
+    local pinX = WSZC and WSZC.PinMinigameHandToCursor
+        and WSZC.PinMinigameHandToCursor(MG) or nil
+    local cursorPinned = pinX ~= nil
+    if not cursorPinned then
+        HandPhysics.Step(MG, dt, {
+            pain = painFactor,
+            str = str,
+            conc = conc,
+            shakeX = MiniNumber("painShakeX", DEFAULT_MINIGAME.painShakeX),
+            shakeY = MiniNumber("painShakeY", DEFAULT_MINIGAME.painShakeY),
+            maxLength = MiniNumber({"handMaxLength", "maxLength"}, 75),
+            bounds = { 0, ScrW(), 0, ScrH() }
+        })
+    end
 
     MG.handX, MG.handY = ScreenToSim(MG.handScreenX, MG.handScreenY)
     UpdateHandDrawPosition()
@@ -811,7 +819,8 @@ hook.Add("Think", "WSZC_SyringeInput", function()
         if MG.syringeY < stopY then
             MG.syringeY = stopY
             local sx, sy = SimToScreen(MG.syringeX - MG.holdOffsetX, MG.syringeY - MG.holdOffsetY)
-            MG.handScreenY = sy
+            -- Depth may clamp the TOOL, never the real cursor replacement.
+            if not cursorPinned then MG.handScreenY = sy end
             UpdateHandDrawPosition()
             if (MG.handScreenVelY or 0) > 0 then
                 MG.handScreenVelY = 0
