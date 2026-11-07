@@ -2817,6 +2817,7 @@ local function RestoreShrapnelSoon(ply)
     -- transition, NOT a respawn.  Without the marker GMod's undefined hook
     -- order could clear the organism shadow before we re-attach it.
     ply._WSZCRagdollTransitionUntil = (CurTime and CurTime() or 0) + 5
+    ply._WSZCSpawnKind = "ragdoll"
     timer.Simple(0, function()
         WSZC.RestoreShrapnel(ply)
         WSZC.RestoreBones(ply)
@@ -2833,6 +2834,17 @@ hook.Add("Fake", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(p
 hook.Add("Fake Up", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
 hook.Add("FakeUp", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
 hook.Add("HG_OnWakeOtrub", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
+
+-- PlayerDeath always precedes ZCity's PostPlayerDeath organism copy/Clear.
+-- Do not erase the injuries here (the corpse still needs them); only retire
+-- transition markers so a fast respawn cannot inherit a five-second FakeUp
+-- preservation window from the previous life.
+hook.Add("PlayerDeath", "WSZC_RagdollTransitionDeath", function(ply)
+    if not IsValid(ply) then return end
+    ply._WSZCRagdollTransitionUntil = nil
+    ply._WSZCShrapnelCarry = nil
+    ply._WSZCSpawnKind = "genuine"
+end)
 
 ---------------------------------------------------------------------------
 -- Damage-derived shrapnel (gunshot / blast), moved out of C:U
@@ -3370,6 +3382,17 @@ local function PushShadow(ply, org)
     -- Capture this BEFORE PullShrapnel() refreshes ply._WSZCLimbsRef: a new
     -- C:U PlayerLimbs table means ragdoll/spawn, not a real reduction.
     local newLimbTable = (ply._WSZCLimbsRef ~= limbs)
+
+    -- sh_inertia.lua gives a non-nil wsmovemult priority over ALL vanilla
+    -- immobilization/leg/pain/shock multipliers.  WB.Sync used to write that
+    -- C:U value, but organism-authoritative PushShadow deliberately replaces
+    -- WB.Sync.  A stale value therefore disables exactly the vanilla slowdown
+    -- this mode relies on.  Remove it and force one full organism update.
+    if org.wsmovemult ~= nil then
+        org.wsmovemult = nil
+        org._wbSentMove, org._wbNextMoveSend = nil, nil
+        ply.fullsend = true
+    end
 
     local now = CurTime and CurTime() or 0
     if (ply._WSZCShadowNext or 0) > now then return end
@@ -3914,12 +3937,107 @@ local function CaptureRawDamage(ent, dmginfo)
     -- limb.  InjectAfterZCityDamage runs immediately after those writes.
 end
 
+--- Vanilla ZCity explicitly zeroes dmgHurt/instaPain/immobilization for
+--- DMG_CRUSH + DMG_FALL.  In organism-authoritative mode WB.ApplyFall is a
+--- deliberate no-op, so without this mirror a survivable standing landing can
+--- produce neither muscle damage nor the expected temporary slowdown.
+---
+--- Use C:U's own fall-speed/impact-force contract, but write ONLY the aggregate
+--- muscle/pain/shock delta into the authoritative ZCity organism.  Do not run
+--- C:U HandleDamage here: that would create a second health simulation and can
+--- duplicate fractures/bleeding already produced by ZCity.  Ragdoll landings
+--- stay on the existing velocityDamage/collision path.
+WSZC.FallHandled = WSZC.FallHandled or setmetatable({}, { __mode = "k" })
+function WSZC.ApplyStandingFall(ply, dmginfo, rawDamage)
+    if not (Authority() and IsValid(ply) and ply:IsPlayer() and dmginfo) then return false end
+    if type(dmginfo.IsFallDamage) ~= "function" or not dmginfo:IsFallDamage() then return false end
+    if WSZC.FallHandled[dmginfo] then return false end
+    if not ply:Alive() or IsValid(ply.FakeRagdoll) then return false end
+    local org = ply.organism
+    if type(org) ~= "table" or org.alive == false or org.godmode then return false end
+    if ply.Health and ply:Health() <= 0 then return false end
+
+    WSZC.FallHandled[dmginfo] = true
+    local h = H()
+    local damage = tonumber(rawDamage)
+    if damage == nil and dmginfo.GetDamage then
+        local ok, value = pcall(dmginfo.GetDamage, dmginfo)
+        if ok then damage = tonumber(value) end
+    end
+    damage = damage or 0
+
+    local speed
+    if h and type(h.GetRecentFallSpeed) == "function" then
+        local ok, value = pcall(h.GetRecentFallSpeed, ply, damage)
+        if ok then speed = tonumber(value) end
+    end
+    speed = speed or (damage > 0 and (damage * 3.96 + 526.5) or 0)
+
+    local body = h and h.GetBody and h.GetBody(ply) or nil
+    local jump = type(body) == "table" and (tonumber(body.jumpSpeed) or 6.5) or 6.5
+    local force
+    if h and type(h.FallSpeedToImpactForce) == "function" then
+        local ok, value = pcall(h.FallSpeedToImpactForce, speed)
+        if ok then force = tonumber(value) end
+    end
+    force = force or math.max((speed - 420) / 60, 0)
+    if ply._woundSystemLastFallOnFloater then force = force * 0.5 end
+    if force <= jump then return false end
+
+    -- Native C:U hits both feet and adds both shins above jumpSpeed * 1.8.
+    -- Three C:U limb segments share one ZCity leg scalar.  Aggregate first so
+    -- the same scalar is never accidentally applied once per PushShadow limb.
+    local segmentsPerLeg = force > jump * 1.8 and 2 or 1
+    local affectedSides = 0
+    for _, side in ipairs({
+        { damage = "lleg", amputated = "llegamputated" },
+        { damage = "rleg", amputated = "rlegamputated" },
+    }) do
+        if org[side.amputated] ~= true then
+            local delta = force * 0.33 * segmentsPerLeg / 100
+            org[side.damage] = math.Clamp((tonumber(org[side.damage]) or 0) + delta, 0, 1)
+            affectedSides = affectedSides + 1
+        end
+    end
+    if affectedSides == 0 then return false end
+
+    local segments = segmentsPerLeg * affectedSides
+    local muscleDamage = force * 0.33 * segments
+    org.painadd = math.max((tonumber(org.painadd) or 0) + force * 0.4 * segments * 0.25, 0)
+    org.shock = math.Clamp((tonumber(org.shock) or 0) + force * 0.05 * segments * 0.7, 0, 70)
+    if type(org.adrenaline) == "number" then
+        org.adrenaline = math.Clamp(org.adrenaline + force * 0.075 * segments * 0.02, 0, 2)
+    end
+    -- This is the temporary component.  ZCity's sv_pain/organism thinkers
+    -- decay immobilization naturally; persistent slowdown comes from the leg
+    -- muscle damage above.  Cap at the same native damage-hook maximum (30).
+    org.immobilization = math.min((tonumber(org.immobilization) or 0)
+        + math.min(muscleDamage * 1.5, 30), 30)
+    org.lasthit = CurTime and CurTime() or 0
+    -- Even with the HUD shadow disabled, never let the old C:U movement
+    -- override bypass the freshly applied vanilla immobilization/leg damage.
+    org.wsmovemult, org._wbSentMove, org._wbNextMoveSend = nil, nil, nil
+    ply.fullsend = true
+
+    if hg.send_organism then pcall(hg.send_organism, org, ply) end
+    if hg.send_bareinfo then pcall(hg.send_bareinfo, org) end
+    if cvShadow and cvShadow:GetBool() then
+        ply._WSZCShadowNext = 0
+        local ok, err = pcall(PushShadow, ply, org)
+        if not ok then Warn("standing fall shadow failed: " .. tostring(err)) end
+    end
+    Debug("standing fall: speed=%.2f force=%.2f segments=%d immobilization=%.2f",
+        speed, force, segments, tonumber(org.immobilization) or 0)
+    return true
+end
+
 local function InjectAfterZCityDamage(ent, dmginfo)
     if not (Authority() and IsValid(ent) and dmginfo) then return end
     -- PostEntityTakeDamage is not guaranteed when homigrad-damage returns true
     -- (its normal player/ragdoll path).  Inject here as well; ShrapnelHandled
     -- de-duplicates the public post hook and nested player -> ragdoll damage.
     WSZC.InjectDamageShrapnel(ent, dmginfo, nil)
+    WSZC.ApplyStandingFall(ent, dmginfo, WSZC.RawDamage[dmginfo])
 end
 
 -- Plain no-op replacements for the ZCity bridge entry points.  With these in
@@ -4255,6 +4373,7 @@ function WSZC.ClearAllShrapnel(ply, org)
         org.pain, org.avgpain, org.painadd = 0, 0, 0
         org.shock, org.hurt, org.hurtadd = 0, 0, 0
         org.immobilization, org.disorientation = 0, 0
+        org.wsmovemult, org._wbSentMove, org._wbNextMoveSend = nil, nil, nil
         org.dmgstack, org.LodgedEntities = {}, nil
         for _, flag in ipairs({ "arteria", "rarmartery", "larmartery",
             "rlegartery", "llegartery", "spineartery", "neckartery" }) do
@@ -4421,9 +4540,18 @@ function WSZC.InstallResetStructureGuard()
         local owner = org.owner
         local explicit = IsExplicitReset(owner)
         local fakeUpSpawn = not explicit and OverrideSpawn == true
-        local down = fakeUpSpawn or (IsValid(owner) and IsValid(owner.FakeRagdoll))
-            or org.otrub == true or org.fake == true
-        local snap = SnapshotZCityStructure(org, not explicit)
+        local genuineSpawn = IsValid(owner) and (owner._WSZCGenuineSpawnDepth or 0) > 0
+        local deadOwner = IsValid(owner) and owner.IsPlayer and owner:IsPlayer() and not owner:Alive()
+        -- otrub/fake are INJURY flags, not proof of FakeUp: they routinely
+        -- survive until PostPlayerDeath/PlayerSpawn.  Only a genuine spawn
+        -- context or a dead player may force the full new-life clear.  A direct
+        -- Clear on a living ragdoll outside Player Spawn keeps its old down
+        -- structure, preserving the existing admin/third-party behaviour.
+        local down = not genuineSpawn and not deadOwner and (fakeUpSpawn
+            or (IsValid(owner) and IsValid(owner.FakeRagdoll))
+            or org.otrub == true or org.fake == true)
+        local preserveTransition = not explicit and not genuineSpawn and not deadOwner
+        local snap = SnapshotZCityStructure(org, preserveTransition)
         local ragdollSnap = fakeUpSpawn and SnapshotRagdollOrganism(org) or nil
         CarryShrapnelShadow(owner, org)
         local a, b, c = originalClear(org, ...)
@@ -4442,6 +4570,22 @@ function WSZC.InstallResetStructureGuard()
             if IsValid(owner) then
                 owner._WSZCTourniquetCycles = nil
                 owner._WSZCNextTourniquetSync = nil
+                if genuineSpawn or deadOwner then
+                    owner._WSZCRagdollTransitionUntil = nil
+                    owner._WSZCShrapnelCarry = nil
+                end
+            end
+            if genuineSpawn and owner._WSZCSpawnCleanupAt ~= (CurTime and CurTime() or 0) then
+                -- Native Org Clear does not know connector-owned shrapnel,
+                -- tourniquet/minigame or timed-effect fields.  Clear those too,
+                -- otherwise the next NEW PlayerLimbs table can restore the old
+                -- life even after every native limb scalar was reset.
+                --
+                -- Do this on RESPAWN, not PostPlayerDeath: ZCity shallow-copies
+                -- organism tables into its death ragdoll before calling Clear,
+                -- so removing wound rows at death could also edit the corpse.
+                owner._WSZCSpawnCleanupAt = CurTime and CurTime() or 0
+                WSZC.ClearAllShrapnel(owner, org)
             end
             RestoreShrapnelShadow(org)
             -- A genuine standing spawn is a real clear, not a ragdoll
@@ -4594,7 +4738,111 @@ function WSZC.InstallResetStructureGuard()
     return true
 end
 
+---------------------------------------------------------------------------
+-- Spawn context and accepted native dislocation completion
+---------------------------------------------------------------------------
+
+local spawnContextByKey, spawnContextFns = {}, setmetatable({}, { __mode = "k" })
+
+--- Wrap the actual ZCity clear hook, not PlayerSpawn's undefined registration
+--- order.  A living unconscious player and a genuine respawn can have exactly
+--- the same otrub/fake flags; only this call context distinguishes them.
+function WSZC.InstallSpawnContextGuard()
+    if type(hook) ~= "table" or type(hook.GetTable) ~= "function" then return false end
+    local installedAny = false
+    for _, event in ipairs({ "Player Spawn", "PlayerSpawn" }) do
+        local hooks = hook.GetTable()[event]
+        local current = hooks and hooks["homigrad-organism"]
+        if type(current) == "function" and spawnContextByKey[event] ~= current
+            and not spawnContextFns[current] then
+            local original = current
+            local function wrapped(ply, ...)
+                -- FakeUp's internal ply:Spawn() is protected by ZCity's own
+                -- OverrideSpawn.  It must never be labelled a new life.
+                if not Authority() or OverrideSpawn == true or not IsValid(ply) then
+                    if IsValid(ply) and OverrideSpawn == true then
+                        ply._WSZCSpawnKind = "ragdoll"
+                    end
+                    return original(ply, ...)
+                end
+                ply._WSZCSpawnKind = "genuine"
+                ply._WSZCRagdollTransitionUntil = nil
+                ply._WSZCShrapnelCarry = nil
+                ply._WSZCGenuineSpawnDepth = (ply._WSZCGenuineSpawnDepth or 0) + 1
+                local a, b, c, d = pcall(original, ply, ...)
+                ply._WSZCGenuineSpawnDepth = math.max((ply._WSZCGenuineSpawnDepth or 1) - 1, 0)
+                if not a then error(b, 0) end
+                return b, c, d
+            end
+            spawnContextFns[wrapped] = true
+            spawnContextByKey[event] = wrapped
+            hook.Add(event, "homigrad-organism", wrapped)
+            installedAny = true
+        elseif type(current) == "function" then
+            installedAny = true
+        end
+    end
+    return installedAny
+end
+
+local nativeDislocationWrapper
+function WSZC.InstallNativeDislocationBridge()
+    if type(net) ~= "table" or type(net.Receivers) ~= "table" then return false end
+    local current = net.Receivers.WoundSystem_DislocationInput
+    if type(current) ~= "function" then return false end
+    if current == nativeDislocationWrapper then return true end
+
+    local original = current
+    nativeDislocationWrapper = function(len, ply, ...)
+        if not (Authority() and IsValid(ply)) then return original(len, ply, ...) end
+        local h = H()
+        local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+        local wasDislocated = {}
+        if type(limbs) == "table" then
+            for limbId, map in pairs(LIMB_ORG) do
+                local state = limbs[limbId]
+                if map.dis and type(state) == "table" and state.dislocated == true then
+                    wasDislocated[limbId] = true
+                end
+            end
+        end
+
+        local a, b, c, d = original(len, ply, ...)
+        if type(limbs) ~= "table" or type(ply.organism) ~= "table" then return a, b, c, d end
+
+        local changed = false
+        for limbId in pairs(wasDislocated) do
+            local state = limbs[limbId]
+            local map = LIMB_ORG[limbId]
+            -- The native receiver is the sole authority here.  Client-side
+            -- boneDrawX/Y never enters this decision: only an actual server
+            -- true -> false transition (its < SuccessTimer branch) can commit.
+            if map and map.dis and type(state) == "table" and state.dislocated ~= true
+                and ply.organism[map.dis] == true then
+                ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
+                ply._WSZCExpectedDislocation[limbId] = true
+                if WSZC.SyncDislocation(ply, ply.organism, limbs, false) then
+                    changed = true
+                end
+            end
+        end
+        if changed then
+            -- Close the race with RestoreBones()/spawn timers and make the
+            -- completed reduction visible immediately instead of 250 ms later.
+            ply.fullsend = true
+            ply._WSZCShadowNext = 0
+            if hg.send_organism then pcall(hg.send_organism, ply.organism, ply) end
+            if hg.send_bareinfo then pcall(hg.send_bareinfo, ply.organism) end
+            if cvShadow and cvShadow:GetBool() then pcall(PushShadow, ply, ply.organism) end
+        end
+        return a, b, c, d
+    end
+    net.Receivers.WoundSystem_DislocationInput = nativeDislocationWrapper
+    return true
+end
+
 local function InstallVanillaHooks()
+    WSZC.InstallSpawnContextGuard()
     -- Org Think "Main": without this wrapper the hook returns early through
     -- WB.Think() and every vanilla ZCity organ module (and Organs+) is skipped.
     WrapHook("Org Think", "Main")
@@ -4669,6 +4917,10 @@ function WSZC.InstallOrganismMode()
     Stub("Amputate", false)
 
     InstallVanillaHooks()
+    -- One receiver wrapper per native/autorefresh generation.  The ordinary
+    -- 4 Hz SyncDislocation remains a fallback if a third party replaces it;
+    -- do not stack a new receiver around remote guards every reapply pass.
+    WSZC.InstallNativeDislocationBridge()
     InstallShadowBridge()
     InstallMedicalBridge()
     DisableCUPhysiology()
@@ -4727,7 +4979,7 @@ function WSZC.InstallOrganismMode()
     -- restore a persisted limb table on a map change without InitPlayer(),
     -- so a plain respawn must still clear C:U's limbs - but a ragdoll
     -- transition must instead PUSH the surviving organism shadow back in.
-    local function ReconcileSpawnShrapnel(ply)
+    local function ReconcileSpawnShrapnel(ply, delayed)
         if not (Authority() and IsValid(ply)) then return end
         local org = ply.organism
         local h = H()
@@ -4743,19 +4995,31 @@ function WSZC.InstallOrganismMode()
         -- guarantee hook order, so it also covers a PlayerSpawn that arrives
         -- before the organism shadow was re-attached.
         local now = CurTime and CurTime() or 0
-        local transitioning = (ply._WSZCRagdollTransitionUntil or 0) > now
+        local genuine = ply._WSZCSpawnKind == "genuine"
+        local transitioning = not genuine and (ply._WSZCRagdollTransitionUntil or 0) > now
 
-        if preserved or transitioning then
+        -- A positive shrapnel count alone is NOT a ragdoll-transition proof:
+        -- native Org Clear knows nothing about these custom fields, so they can
+        -- still be present when a previous life reaches PlayerSpawn.  Once the
+        -- death/spawn context says genuine, never restore that old life.
+        if not genuine and (preserved or transitioning) then
             WSZC.RestoreShrapnel(ply)
             WSZC.RestoreBones(ply)
             if type(limbs) == "table" then ply._WSZCLimbsRef = limbs end
             return
         end
 
-        -- Genuine respawn / map change: no fragments in the authoritative
-        -- organism, so make sure C:U's persisted limb table cannot resurrect
-        -- them.  Do NOT nil the organism fields here - hg.organism.Clear()
-        -- already did that, and RESET_KEEP now preserves them for ragdolls.
+        -- Genuine respawn / map change.  Normally the wrapped native Clear has
+        -- already reset the connector.  Repeat that cleanup as a compatibility
+        -- fallback when it has not run yet.  The DELAYED call must always do
+        -- one final reset: C:U LoadPlayerPersistData mutates the SAME limb
+        -- table from another PlayerSpawn hook, so table identity/CurTime cannot
+        -- prove that a late restore did not reintroduce the previous life.
+        if genuine and (delayed == true or ply._WSZCSpawnCleanupAt ~= now) then
+            ply._WSZCSpawnCleanupAt = now
+            WSZC.ClearAllShrapnel(ply, org)
+            limbs = h and h.GetLimbs and h.GetLimbs(ply) or limbs
+        end
         if type(limbs) ~= "table" then return end
         for limbId, state in pairs(limbs) do
             if type(state) == "table" and (tonumber(state.shrapnel) or 0) > 0 then
@@ -4763,13 +5027,18 @@ function WSZC.InstallOrganismMode()
                 if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
             end
         end
+        -- The table is now known and clean.  Without this, SyncShrapnel would
+        -- interpret its first sight as a ragdoll reset and restore from org.
+        ply._WSZCLimbsRef = limbs
     end
     WSZC.ReconcileSpawnShrapnel = ReconcileSpawnShrapnel
 
     hook.Add("PlayerSpawn", "WSZC_OrganismSpawn", function(ply)
         if not Authority() then return end
-        ReconcileSpawnShrapnel(ply)
-        timer.Simple(0, function() ReconcileSpawnShrapnel(ply) end)
+        ReconcileSpawnShrapnel(ply, false)
+        timer.Simple(0, function()
+            if IsValid(ply) then ReconcileSpawnShrapnel(ply, true) end
+        end)
     end)
 
     -- Re-apply: other addons (or a woundsys_enabled toggle) may re-register

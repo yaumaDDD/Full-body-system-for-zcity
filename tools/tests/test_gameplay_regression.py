@@ -1683,6 +1683,211 @@ return present, abdomenOnly and mechanicsUntouched, cleared, networked
     check("R75 stopping internal bleeding clears the marker and native status", internal_bleeding_shadow[2])
     check("R76 native WriteNet/ReadNet round-trip carries the abdomen marker to the client", internal_bleeding_shadow[3])
 
+    standing_fall = lua.execute(r'''
+if type(WSZC.ApplyStandingFall) ~= "function" then return false, false, false end
+local ply = MakePlayer()
+local org = ply.organism
+org.lleg, org.rleg, org.immobilization = 0, 0, 0
+org.painadd, org.shock, org.adrenaline, org.alive = 0, 0, 0, true
+org.wsmovemult = 0.02 -- stale C:U override would bypass every vanilla slowdown term
+ply._body.jumpSpeed = 6.5
+for _, id in ipairs({ "foot_L", "foot_R", "crus_L", "crus_R", "thigh_L", "thigh_R" }) do
+    ply._limbs[id] = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+end
+WoundSystem.Health.GetRecentFallSpeed = function() return 900 end
+WoundSystem.Health.FallSpeedToImpactForce = function(speed)
+    return math.max((speed - 420) / 60, 0)
+end
+local function FallDamage()
+    return { IsFallDamage = function() return true end, GetDamage = function() return 30 end }
+end
+local dmg = FallDamage()
+local handled = WSZC.ApplyStandingFall(ply, dmg, 30)
+local injured = handled == true and org.lleg > 0 and org.rleg > 0
+    and org.immobilization > 0 and org.painadd > 0 and org.wsmovemult == nil
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, org)
+local shadowMatches = ply._limbs.foot_L.muscle < 100 and ply._limbs.foot_R.muscle < 100
+
+local rag = MakePlayer()
+rag.organism.lleg, rag.organism.rleg, rag.organism.immobilization = 0, 0, 0
+rag.FakeRagdoll = {}
+local ragHandled = WSZC.ApplyStandingFall(rag, FallDamage(), 30)
+local noDouble = ragHandled == false and rag.organism.lleg == 0
+    and rag.organism.rleg == 0 and rag.organism.immobilization == 0
+
+local low = MakePlayer()
+low.organism.lleg, low.organism.rleg, low.organism.immobilization = 0, 0, 0
+low._body.jumpSpeed = 6.5
+WoundSystem.Health.GetRecentFallSpeed = function() return 600 end
+local lowHandled = WSZC.ApplyStandingFall(low, FallDamage(), 0)
+local lowSafe = lowHandled == false and low.organism.lleg == 0
+    and low.organism.rleg == 0 and low.organism.immobilization == 0
+return injured and shadowMatches, noDouble, lowSafe
+''')
+    check("R77 nonfatal standing fall damages authoritative legs and adds temporary slowdown", standing_fall[0])
+    check("R78 standing-fall mirror never double-hits an existing fake ragdoll", standing_fall[1])
+    check("R79 sub-threshold landing remains free of artificial muscle damage", standing_fall[2])
+
+    fatal_fall = lua.execute(r'''
+local p = MakePlayer()
+p.Alive = function() return false end
+p.organism.lleg, p.organism.rleg, p.organism.immobilization = 0, 0, 0
+local dmg = { IsFallDamage = function() return true end, GetDamage = function() return 100 end }
+return WSZC.ApplyStandingFall(p, dmg, 100) == false
+    and p.organism.lleg == 0 and p.organism.rleg == 0 and p.organism.immobilization == 0
+''')
+    check("R87 fatal fall receives no post-mortem standing-leg mirror", fatal_fall)
+
+    genuine_life = lua.execute(r'''
+if type(WSZC.InstallSpawnContextGuard) ~= "function" then return false, false end
+local function InjuredPlayer()
+    local p = MakePlayer()
+    p._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 30, skin = 100,
+        dislocated = true, dislocationTimer = 35 }
+    p.organism.otrub, p.organism.fake = true, true
+    p.organism.rarm, p.organism.rarmdislocation = 0.7, true
+    p.organism.wounds = { { 7 } }
+    p.organism.wszc_shrapnel = { arm_R = 3 }
+    p._limbs.arm_R.shrapnel = 3
+    p.FakeRagdoll = {}
+    return p
+end
+hook.Add("Player Spawn", "homigrad-organism", function(p)
+    hg.organism.Clear(p.organism)
+end)
+WSZC.InstallSpawnContextGuard()
+
+local dead = InjuredPlayer()
+dead._WSZCRagdollTransitionUntil = CurTime() + 5
+dead.Alive = function() return false end
+local death = hook._t.PlayerDeath and hook._t.PlayerDeath.WSZC_RagdollTransitionDeath
+if death then death(dead) end
+dead.Alive = function() return true end
+OverrideSpawn = nil
+hook._t["Player Spawn"]["homigrad-organism"](dead)
+WSZC.ReconcileSpawnShrapnel(dead)
+dead._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(dead, dead.organism)
+local clean = (tonumber(dead.organism.rarm) or 0) == 0
+    and dead.organism.rarmdislocation ~= true
+    and #dead.organism.wounds == 0
+    and (dead.organism.wszc_shrapnel == nil or (dead.organism.wszc_shrapnel.arm_R or 0) == 0)
+    and (dead._limbs.arm_R.shrapnel or 0) == 0
+    and dead._limbs.arm_R.dislocated ~= true
+
+local standing = InjuredPlayer()
+OverrideSpawn = true
+hook._t["Player Spawn"]["homigrad-organism"](standing)
+OverrideSpawn = nil
+local fakeUpKept = standing.organism.rarm == 0.7
+    and standing.organism.rarmdislocation == true
+    and #standing.organism.wounds >= 1 and standing.organism.wounds[1][1] == 7
+    and standing.organism.wszc_shrapnel.arm_R == 3
+return clean, fakeUpKept
+''')
+    check("R80 genuine death/respawn clears organism and connector injuries despite stale down flags", genuine_life[0])
+    check("R81 the same native spawn hook still preserves the complete organism during FakeUp", genuine_life[1])
+
+    corpse_life = lua.execute(r'''
+local p = MakePlayer()
+WSZC.AddShrapnel(p, "hand_R", 1, "shotgun")
+local corpse = {}
+for key, value in pairs(p.organism) do corpse[key] = value end -- native table.Merge is shallow
+local woundCount = #corpse.wounds
+local death = hook._t.PlayerDeath and hook._t.PlayerDeath.WSZC_RagdollTransitionDeath
+if death then death(p) end
+p.Alive = function() return false end
+hg.organism.Clear(p.organism)
+local tagged = false
+for _, wound in pairs(corpse.wounds) do if wound.wszcShrapnel then tagged = true end end
+local corpseKept = #corpse.wounds == woundCount and tagged
+    and corpse.wszc_shrapnel.hand_R == 3
+p.Alive = function() return true end
+OverrideSpawn = nil
+hook._t["Player Spawn"]["homigrad-organism"](p)
+local newLifeClean = (p.organism.wszc_shrapnel == nil
+    or (p.organism.wszc_shrapnel.hand_R or 0) == 0)
+    and #p.organism.wounds == 0
+return corpseKept, newLifeClean
+''')
+    check("R84 PostPlayerDeath clear does not erase shallow-copied corpse wounds", corpse_life[0])
+    check("R85 the following genuine spawn still removes the previous life's connector state", corpse_life[1])
+
+    reconcile_fallback = lua.execute(r'''
+local p = MakePlayer()
+p.organism.wszc_shrapnel = { hand_R = 3 }
+p.organism.wounds = { { 4, wszcShrapnel = true } }
+p._limbs.hand_R.shrapnel = 3
+p._WSZCSpawnKind = "genuine"
+p._WSZCSpawnCleanupAt = nil
+WSZC.ReconcileSpawnShrapnel(p)
+local clean = (p.organism.wszc_shrapnel == nil
+    or (p.organism.wszc_shrapnel.hand_R or 0) == 0)
+    and p._limbs.hand_R.shrapnel == 0 and #p.organism.wounds == 0
+local knownCleanTable = p._WSZCLimbsRef == p._limbs
+-- The following ordinary shadow pass must not interpret this as a ragdoll
+-- table replacement and restore the previous life again.
+p._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(p, p.organism)
+return clean and knownCleanTable and p._limbs.hand_R.shrapnel == 0
+''')
+    check("R86 genuine Reconcile is a self-sufficient fallback against shrapnel resurrection", reconcile_fallback)
+
+    delayed_respawn = lua.execute(r'''
+local p = MakePlayer()
+p._WSZCSpawnKind = "genuine"
+p._WSZCSpawnCleanupAt = nil
+local closes = 0
+WSZC.StopAllMinigames = function() closes = closes + 1 return true end
+WSZC.ReconcileSpawnShrapnel(p, false)
+-- C:U LoadPlayerPersistData merges old values into THIS SAME limb table from
+-- a later PlayerSpawn hook.  Identity and the CurTime cleanup marker stay put.
+p._limbs.hand_R.shrapnel = 3
+p._limbs.hand_R.dislocated = true
+p.organism.wszc_shrapnel = { hand_R = 3 }
+WSZC.ReconcileSpawnShrapnel(p, true)
+return closes == 2 and p._limbs.hand_R.shrapnel == 0
+    and p._limbs.hand_R.dislocated == false
+    and (p.organism.wszc_shrapnel == nil or (p.organism.wszc_shrapnel.hand_R or 0) == 0)
+    and p._WSZCLimbsRef == p._limbs
+''')
+    check("R88 delayed genuine reset clears a late same-table C:U persist restore", delayed_respawn)
+
+    native_reduction = lua.execute(r'''
+if type(WSZC.InstallNativeDislocationBridge) ~= "function" then return false, false end
+local oldNet = net
+net = { Receivers = {} }
+local p = MakePlayer()
+p._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    dislocated = true, dislocationTimer = 20 }
+p.organism.rarmdislocation = true
+p._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(p, p.organism)
+net.Receivers.WoundSystem_DislocationInput = function()
+    -- This mock represents ONLY the native server's already accepted success
+    -- transition (session timer < native threshold), not a client prediction.
+    p._limbs.arm_R.dislocated = false
+    p._limbs.arm_R.dislocationTimer = 0
+end
+WSZC.InstallNativeDislocationBridge()
+net.Receivers.WoundSystem_DislocationInput(0, p)
+local committed = p.organism.rarmdislocation == false
+
+local missed = MakePlayer()
+missed._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    dislocated = true, dislocationTimer = 20 }
+missed.organism.rarmdislocation = true
+net.Receivers.WoundSystem_DislocationInput = function() end
+WSZC.InstallNativeDislocationBridge()
+net.Receivers.WoundSystem_DislocationInput(0, missed)
+local missKept = missed.organism.rarmdislocation == true
+net = oldNet
+return committed, missKept
+''')
+    check("R82 accepted native dislocation success commits to ZCity immediately", native_reduction[0])
+    check("R83 unsuccessful native dislocation input cannot clear the ZCity injury", native_reduction[1])
+
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))
 sys.exit(0 if passed == len(results) else 1)
