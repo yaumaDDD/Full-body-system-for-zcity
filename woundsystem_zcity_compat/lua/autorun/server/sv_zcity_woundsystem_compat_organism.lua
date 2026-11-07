@@ -422,6 +422,36 @@ local function SyncAmputationShadow(org, limbs)
 end
 WSZC.SyncAmputationShadow = SyncAmputationShadow
 
+-- Cardio/internal bleeding is an organism-wide value in ZCity.  Keep it in
+-- that model and expose a single native C:U status on abdomen; do NOT turn it
+-- into state.bleed (which would create a fake external haemorrhage) and do not
+-- duplicate the marker on pelvis.
+function WSZC.SyncInternalBleedingShadow(org, limbs)
+    if type(org) ~= "table" or type(limbs) ~= "table" then return false end
+    if not (WSZC.InstallInternalBleedingStatus and WSZC.InstallInternalBleedingStatus()) then
+        return false
+    end
+
+    local state = limbs.abdomen
+    if type(state) ~= "table" then return false end
+    local id = WSZC.INTERNAL_BLEEDING_STATUS_ID
+    local amount = math.max(0, tonumber(org.internalBleed) or 0)
+    local current = state.customStatuses and state.customStatuses[id] or nil
+
+    if amount <= 0 then
+        if current == nil then return false end
+        state.customStatuses[id] = nil
+        return true
+    end
+
+    state.customStatuses = state.customStatuses or {}
+    if type(current) == "number" and math.abs(current - amount) <= 0.01 then
+        return false
+    end
+    state.customStatuses[id] = amount
+    return true
+end
+
 -- Owner (2026-11-05): "переломы должны создавать только в одной точке тоесть
 -- по середине ноги или руки там же три лимба а вывих на один лимб выше".
 -- ZCity keeps ONE flag for a whole arm/leg (org.larm / org.rarm / org.lleg /
@@ -2230,6 +2260,7 @@ function WSZC.RestoreBones(ply)
     -- native amputation anatomy together with fractures/dislocations on every
     -- ragdoll transition instead of waiting for the next 4 Hz shadow pass.
     SyncAmputationShadow(org, limbs)
+    if WSZC.SyncInternalBleedingShadow then WSZC.SyncInternalBleedingShadow(org, limbs) end
     ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
     for limbId, map in pairs(LIMB_ORG) do
         local state = limbs[limbId]
@@ -2860,6 +2891,7 @@ local function PushShadow(ply, org)
     if (ply._WSZCShadowNext or 0) > now then return end
     ply._WSZCShadowNext = now + 0.25 -- 4 Hz is plenty for a HUD
     local amputationDirty = SyncAmputationShadow(org, limbs)
+    local internalBleedingDirty = WSZC.SyncInternalBleedingShadow(org, limbs)
 
     local bodyChanged = false
     local dirtyLimbs = {}
@@ -2940,8 +2972,8 @@ local function PushShadow(ply, org)
                 limbChanged = SetIfChanged(state, key, value) or limbChanged
             end
             -- `shrapnel`, `isBandaged`, `hasInjection` and the minigames'
-            -- custom statuses stay C:U-owned.  SyncAmputationShadow() touches
-            -- ONLY WSZC_AMPUTATION and never clears the other status keys.
+            -- custom statuses stay C:U-owned.  The shadow helpers touch only
+            -- WSZC_AMPUTATION / WSZC_INTERNAL_BLEEDING and preserve the rest.
             local limbBleed
             if woundMap then
                 local fromWounds = woundMap[limbId] or 0
@@ -3010,6 +3042,7 @@ local function PushShadow(ply, org)
     if bodyChanged and h.SendCardioUpdate then pcall(h.SendCardioUpdate, ply, true) end
     if h.SendLimbUpdate then
         for limbId in pairs(amputationDirty) do dirtyLimbs[limbId] = true end
+        if internalBleedingDirty then dirtyLimbs.abdomen = true end
         for limbId in pairs(dirtyLimbs) do pcall(h.SendLimbUpdate, ply, limbId, false) end
     end
 end

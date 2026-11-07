@@ -1483,6 +1483,20 @@ return #active == 2 and active[1].id == "WSZC_AMPUTATION" and active[2].id == "T
 ''')
     check("R50 native Statuses.GetActive draws amputation before tourniquet/bleed statuses", native_status_order)
 
+    internal_registration = shared_s.split('WSZC.INTERNAL_BLEEDING_STATUS_ID =', 1)[1].split('-- Short-lived context flag:', 1)[0]
+    status_client.execute('WSZC.INTERNAL_BLEEDING_STATUS_ID =' + internal_registration)
+    native_internal_icon = status_client.execute(r'''
+assert(WSZC.InstallInternalBleedingStatus())
+local state = { customStatuses = { WSZC_INTERNAL_BLEEDING = 6.25 } }
+local active = WoundSystem.Statuses.GetActive(state)
+local ok = #active == 1 and active[1].id == "WSZC_INTERNAL_BLEEDING"
+    and active[1].data.icon == "casunknown-images/moodles/internalbleed_red.png"
+    and active[1].data.type == "number" and active[1].data.order == -9000
+state.customStatuses.WSZC_INTERNAL_BLEEDING = 0
+return ok and #WoundSystem.Statuses.GetActive(state) == 0
+''')
+    check("R43 native client status resolves the red internal-bleed icon only above zero", native_internal_icon)
+
     neck_state = lua.execute(r'''
 local ply = MakePlayer()
 local h = WoundSystem.Health
@@ -1607,6 +1621,67 @@ return firstLife, routed, treatmentSeparated, oneDelta
     check("R70 Spine1/Pelvis/Spine2 wounds route to abdomen/pelvis/thorax exactly", pelvis_state[1])
     check("R71 pelvis bandage treats only pelvis, never abdomen or thorax wounds", pelvis_state[2])
     check("R72 pelvis muscle treatment applies ONE org.pelvis delta", pelvis_state[3])
+
+    # Load the real native status registry and the shared connector definition
+    # into the server runtime, then exercise the full organism -> shadow path.
+    lua.execute('string.Trim = function(value) return value end')
+    lua.execute(limb_statuses_s)
+    lua.execute('WSZC.INTERNAL_BLEEDING_STATUS_ID =' + internal_registration)
+    internal_bleeding_shadow = lua.execute(r'''
+assert(WSZC.InstallInternalBleedingStatus())
+local ply = MakePlayer()
+ply._limbs.abdomen = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    infection = 3, infectionSpeed = 1, disinfectTime = 120,
+    customStatuses = { KEEP_ME = true } }
+ply._limbs.pelvis = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    customStatuses = {} }
+ply.organism.internalBleed = 7.25
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local id = WSZC.INTERNAL_BLEEDING_STATUS_ID
+local abdomen, pelvis = ply._limbs.abdomen, ply._limbs.pelvis
+local active = WoundSystem.Statuses.GetActive(abdomen)
+local present = abdomen.customStatuses[id] == 7.25
+    and ply._body.internalBleeding == 7.25 and abdomen.bleed == 0
+    and #active == 1 and active[1].data.icon == "casunknown-images/moodles/internalbleed_red.png"
+local abdomenOnly = pelvis.customStatuses[id] == nil
+    and ply._limbs.thorax.customStatuses == nil
+local mechanicsUntouched = abdomen.disinfectTime == 120
+    and abdomen.infection == 3 and abdomen.infectionSpeed == 1
+    and abdomen.customStatuses.KEEP_ME == true
+
+-- Exercise C:U's actual status wire format, not a second hand-written copy.
+local wire, readAt = {}, 0
+local function push(value) wire[#wire + 1] = value end
+local function pop()
+    readAt = readAt + 1
+    return wire[readAt]
+end
+local oldNet = net
+net = { WriteUInt = push, WriteString = push, WriteFloat = push, WriteBool = push,
+    ReadUInt = pop, ReadString = pop, ReadFloat = pop, ReadBool = pop }
+SERVER, CLIENT = true, false
+WoundSystem.Statuses.WriteNet(abdomen)
+local received = {}
+SERVER, CLIENT = false, true
+WoundSystem.Statuses.ReadNet(received)
+SERVER, CLIENT = true, false
+net = oldNet
+local networked = received.customStatuses[id] == 7.25
+    and #WoundSystem.Statuses.GetActive(received) == 1
+
+ply.organism.internalBleed = 0
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local cleared = abdomen.customStatuses[id] == nil
+    and pelvis.customStatuses[id] == nil and ply._body.internalBleeding == 0
+    and #WoundSystem.Statuses.GetActive(abdomen) == 0
+    and abdomen.customStatuses.KEEP_ME == true
+return present, abdomenOnly and mechanicsUntouched, cleared, networked
+''')
+    check("R73 real org.internalBleed creates the native red abdomen marker, not external bleed", internal_bleeding_shadow[0])
+    check("R74 internal marker is abdomen-only and preserves disinfection/infection/custom statuses", internal_bleeding_shadow[1])
+    check("R75 stopping internal bleeding clears the marker and native status", internal_bleeding_shadow[2])
+    check("R76 native WriteNet/ReadNet round-trip carries the abdomen marker to the client", internal_bleeding_shadow[3])
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

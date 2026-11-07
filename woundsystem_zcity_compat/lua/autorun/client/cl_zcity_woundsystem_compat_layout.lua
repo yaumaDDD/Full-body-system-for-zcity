@@ -810,31 +810,78 @@ WSZC.InstallCUHudDrawWrappers = InstallDrawWrappers
 -- server disinfection and infection_up/down/neutral continue unchanged.
 local disinfectedFilterFns = setmetatable({}, { __mode = "k" })
 local disinfectedFilterWrappers = setmetatable({}, { __mode = "k" })
+
+local function IsDisinfectedMaterial(mat, icons)
+    -- Icons is LOCAL in cl_health_gui.lua.  Looking only at _G.Icons made the
+    -- old filter a no-op in the real game even though its synthetic test passed.
+    icons = icons or _G.Icons
+    if type(icons) == "table" and mat == icons.disinfected then return true end
+
+    -- Identity is the primary check.  The exact native path also covers a
+    -- padded/recreated IMaterial and builds where Icons cannot be inspected.
+    local name = MaterialName(mat)
+    if type(name) ~= "string" then return false end
+    name = name:lower():gsub("\\", "/")
+    return name:find("casunknown-images/icons/disinfected", 1, true) ~= nil
+end
+
 local function PatchDisinfectedIcon(fn)
     if type(fn) ~= "function" or disinfectedFilterFns[fn] then
         return disinfectedFilterFns[fn] == true
     end
     if not (debug and debug.getupvalue and debug.setupvalue) then return false end
-    for i = 1, 96 do
-        local name, addHudIcon = debug.getupvalue(fn, i)
-        if not name then break end
-        if name == "AddHudIcon" and type(addHudIcon) == "function" then
+
+    -- Some C:U revisions keep AddHudIcon in a closure below WoundDollAndPanel.
+    -- Walk function upvalues only (never arbitrary tables), inherit the native
+    -- Icons table and retain the old direct-upvalue fast path.
+    local visited = {}
+    local function walk(candidate, depth, inheritedIcons)
+        if type(candidate) ~= "function" or visited[candidate] then return false end
+        visited[candidate] = true
+        if disinfectedFilterFns[candidate] then return true end
+
+        local icons, addIndex, addHudIcon = inheritedIcons, nil, nil
+        for i = 1, 96 do
+            local name, value = debug.getupvalue(candidate, i)
+            if not name then break end
+            if name == "Icons" and type(value) == "table" then
+                icons = value
+            elseif name == "AddHudIcon" and type(value) == "function" then
+                addIndex, addHudIcon = i, value
+            end
+        end
+
+        if addHudIcon then
             if disinfectedFilterWrappers[addHudIcon] then
-                disinfectedFilterFns[fn] = true
+                disinfectedFilterFns[candidate] = true
                 return true
             end
+            local nativeIcons = icons
             local wrapped = function(items, mat, ...)
-                local icons = _G.Icons
-                if type(icons) == "table" and mat == icons.disinfected then return end
+                if IsDisinfectedMaterial(mat, nativeIcons) then return end
                 return addHudIcon(items, mat, ...)
             end
             disinfectedFilterWrappers[wrapped] = true
-            disinfectedFilterFns[fn] = true
-            debug.setupvalue(fn, i, wrapped)
+            debug.setupvalue(candidate, addIndex, wrapped)
+            disinfectedFilterFns[candidate] = true
             return true
         end
+
+        if depth >= 6 then return false end
+        for i = 1, 96 do
+            local name, value = debug.getupvalue(candidate, i)
+            if not name then break end
+            if type(value) == "function" and walk(value, depth + 1, icons) then
+                disinfectedFilterFns[candidate] = true
+                return true
+            end
+        end
+        return false
     end
-    return false
+
+    local installed = walk(fn, 0, nil)
+    if installed then disinfectedFilterFns[fn] = true end
+    return installed
 end
 
 function WSZC.InstallDisinfectedIconFilter()
@@ -2128,6 +2175,7 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     if now < (WSZC.NextUnitmenuInstall or 0) then return end
     WSZC.NextUnitmenuInstall = now + 1
     WSZC.InstallMaterialTracker()
+    if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
     WSZC.InstallDisinfectedIconFilter()
     PatchActionButtonOffset()
     WSZC.InstallNeckMoodle()

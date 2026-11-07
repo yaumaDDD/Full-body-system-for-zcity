@@ -1818,6 +1818,46 @@ end)()
 end)()
 ''')
 
+    # Live C:U keeps Icons in a local upvalue, not in _G.  Exercise that exact
+    # load shape and put AddHudIcon one closure below WoundDollAndPanel.
+    rt('R42 local/nested Icons and exact material path both filter only disinfect', '''
+(function()
+    local nativeItems = {}
+    local Icons = {
+        disinfected = Material("native/local_disinfected"),
+        shrapnel = Material("casunknown-images/icons/shrapnel.png"),
+        infection_up = Material("casunknown-images/icons/infectionup.png"),
+    }
+    local function AddHudIcon(items, mat) table.insert(items, mat) end
+    local function DrawNativeIcons()
+        AddHudIcon(nativeItems, Icons.disinfected)
+        AddHudIcon(nativeItems, Icons.shrapnel)
+        AddHudIcon(nativeItems, Icons.infection_up)
+    end
+    local function NativeWoundView() DrawNativeIcons() end
+    hook.Add("HUDPaint", "WoundDollAndPanel", NativeWoundView)
+    _G.Icons = nil
+    local installed = WSZC.InstallDisinfectedIconFilter()
+    NativeWoundView()
+    local localIconsOK = installed == true and #nativeItems == 2
+        and nativeItems[1] == Icons.shrapnel
+        and nativeItems[2] == Icons.infection_up
+
+    -- No Icons upvalue/global at all: the exact C:U path is the final fallback.
+    local pathItems = {}
+    local function AddHudIcon(items, mat) table.insert(items, mat) end
+    local fracture = Material("casunknown-images/icons/fracturedbone.png")
+    local function PathNativeWoundView()
+        AddHudIcon(pathItems, Material("casunknown-images/icons/disinfected.png"))
+        AddHudIcon(pathItems, fracture)
+    end
+    hook.Add("HUDPaint", "WoundDollAndPanel", PathNativeWoundView)
+    local pathInstalled = WSZC.InstallDisinfectedIconFilter()
+    PathNativeWoundView()
+    return localIconsOK and pathInstalled and #pathItems == 1 and pathItems[1] == fracture
+end)()
+''')
+
     rt('R40 2222 screen scale/centre are invariant under native UI scale', '''
 (function()
     local oldW, oldH, oldGetConVar = ScrW, ScrH, GetConVar
