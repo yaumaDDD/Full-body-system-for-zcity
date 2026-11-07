@@ -7,6 +7,7 @@ No check in this suite is evidence of a live two-client GMod acceptance test.
 """
 from pathlib import Path
 from zipfile import ZipFile
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +20,7 @@ REMOTE = CONN / "lua/autorun/client/cl_zcity_woundsystem_compat_remote.lua"
 ORGANISM = CONN / "lua/autorun/server/sv_zcity_woundsystem_compat_organism.lua"
 BANDAGE = CONN / "lua/autorun/client/wszc_cl_bandage.lua"
 SYRINGE = CONN / "lua/autorun/client/wszc_cl_syringe.lua"
+BOOTSTRAP = CONN / "lua/wszc_vendor/bootstrap.lua"
 BUILD = ROOT / "tools/build_packs.py"
 
 results = []
@@ -45,6 +47,7 @@ remote_s = REMOTE.read_text(encoding="utf-8")
 organism_s = ORGANISM.read_text(encoding="utf-8")
 bandage_s = BANDAGE.read_text(encoding="utf-8")
 syringe_s = SYRINGE.read_text(encoding="utf-8")
+bootstrap_s = BOOTSTRAP.read_text(encoding="utf-8")
 
 check("S01 shared layer probes complete native/legacy contracts and independent features",
       "function WSZC.RefreshCapabilities()" in shared_s
@@ -131,8 +134,20 @@ with ZipFile(connector_zip) as packed, ZipFile(full_zip) as full:
     )
     source_count = sum(1 for path in CONN.rglob("*") if path.is_file() and "__pycache__" not in path.parts)
     check("S09 rebuilt ZIPs contain one physical copy of relocated C:U resources",
-          packaged_relocated_ok and len(connector_names) == source_count == 676
-          and len(full_names) == 2779)
+          packaged_relocated_ok and len(connector_names) == source_count == 752
+          and len(full_names) == 2855)
+
+vendor_check = subprocess.run(
+    [sys.executable, str(ROOT / "tools/embed_runtime.py"), "--check"],
+    cwd=ROOT, capture_output=True, text=True,
+)
+check("S10 isolated embedded C:U/WoundBridge matches the supplied sources and path resolver",
+      vendor_check.returncode == 0 and "cu=71 bridge=3" in vendor_check.stdout
+      and 'pcall(include, "wszc_vendor/bootstrap.lua")' in shared_s
+      and "function WSZC.ResolveCUPath(path)" in shared_s
+      and "runtime: cu=" in shared_s
+      and "_WSZCEmbeddedLoaderRan" in (CONN /
+          "lua/wszc_vendor/cu/autorun/sh_health_init.lua").read_text(encoding="utf-8"))
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -254,6 +269,46 @@ end
 ''')
     lua.execute(shared_s)
     lua.execute(mg_s)
+
+    def embedded_runtime(server=True, initial=""):
+        runtime = LuaRuntime(unpack_returned_tuples=True)
+        runtime.globals().SERVER = server
+        runtime.globals().CLIENT = not server
+        runtime.execute(r'''
+INCLUDES, CLIENT_FILES, EXTERNALS, GLOBALS, LOGS = {}, {}, {}, {}, {}
+file = { Exists = function(path, searchPath) return EXTERNALS[path] == true end }
+timer = { Simple = function(_, fn) LATE = fn end }
+function AddCSLuaFile(path) CLIENT_FILES[#CLIENT_FILES + 1] = path end
+function SetGlobalBool(name, value) GLOBALS[name] = value and true or false end
+function GetGlobalBool(name, fallback)
+    if GLOBALS[name] == nil then return fallback end
+    return GLOBALS[name]
+end
+function print(...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[#parts + 1] = tostring(select(i, ...)) end
+    LOGS[#LOGS + 1] = table.concat(parts, " ")
+end
+include = function(path)
+    INCLUDES[#INCLUDES + 1] = path
+    if path == "wszc_vendor/cu/autorun/sh_health_init.lua" then
+        EXTERNALS["wszc_vendor/cu/autorun/server/sv_woundsys_weather_compat.lua"] = true
+        WoundSystem = WoundSystem or {}
+        WoundSystem.Health = WoundSystem.Health or {}
+        WoundSystem.Items = WoundSystem.Items or { Get = function() return nil end }
+    elseif path == "wszc_vendor/zcity/woundbridge/sh_woundbridge.lua" then
+        hg = hg or {}
+        hg.WoundBridge = hg.WoundBridge or {}
+        hg.WoundBridge.IsEnabled = function() return true end
+        hg.WoundBridge.ApplyDamage = function() return true end
+    end
+    return {}
+end
+''')
+        if initial:
+            runtime.execute(initial)
+        runtime.execute(bootstrap_s)
+        return runtime
 
     runtime_check("R01 completely missing ZCity/C:U stays inactive without throwing", lambda: lua.execute(r'''
 ResetEnvironment()
@@ -509,6 +564,84 @@ local ok = count == 1 and #added == 1 and added[1] == "materials/wszc/new.png"
     and WoundSystem.Resources.Added["materials/wszc/new.png"] == true
 resource, file.Find = nil, nil
 return ok
+'''))
+
+    runtime_check("R22 missing external APIs load the isolated server runtime and publish that choice", lambda: embedded_runtime(True).execute(r'''
+local expected = table.concat({
+    "wszc_vendor/cu/autorun/sh_health_init.lua",
+    "wszc_vendor/cu/autorun/server/sv_woundsys_weather_compat.lua",
+    "wszc_vendor/zcity/woundbridge/sh_woundbridge.lua",
+    "wszc_vendor/zcity/woundbridge/sv_woundbridge.lua",
+}, "|")
+local clients = table.concat({
+    "wszc_vendor/cu/autorun/sh_health_init.lua",
+    "wszc_vendor/zcity/woundbridge/sh_woundbridge.lua",
+    "wszc_vendor/zcity/woundbridge/cl_woundbridge.lua",
+}, "|")
+return table.concat(INCLUDES, "|") == expected
+    and table.concat(CLIENT_FILES, "|") == clients
+    and WoundSystem._WSZCEmbedded == true and hg.WoundBridge._WSZCEmbedded == true
+    and GLOBALS.WSZC_CUSourceKnown == true and GLOBALS.WSZC_CUEmbedded == true
+    and GLOBALS.WSZC_BridgeSourceKnown == true and GLOBALS.WSZC_BridgeEmbedded == true
+    and type(LATE) == "function"
+'''))
+
+    runtime_check("R23 existing Workshop/GitHub APIs win without any embedded include", lambda: embedded_runtime(True, r'''
+WoundSystem = { Health = {}, Items = { Get = function() return nil end } }
+hg = { WoundBridge = {} }
+''').execute(r'''
+LATE()
+return #INCLUDES == 0 and GLOBALS.WSZC_CUSourceKnown == true
+    and GLOBALS.WSZC_CUEmbedded == false and GLOBALS.WSZC_BridgeEmbedded == false
+'''))
+
+    runtime_check("R24 a present but uninitialized external loader falls back only on the late pass", lambda: embedded_runtime(True, r'''
+EXTERNALS["autorun/sh_health_init.lua"] = true
+EXTERNALS["homigrad/woundbridge/sh_woundbridge.lua"] = true
+''').execute(r'''
+local initial = #INCLUDES
+LATE()
+return initial == 0 and #INCLUDES == 4
+    and WoundSystem._WSZCEmbedded == true and hg.WoundBridge._WSZCEmbedded == true
+'''))
+
+    runtime_check("R25 dedicated client waits for and honors the server's external-runtime decision", lambda: embedded_runtime(False).execute(r'''
+local initial = #INCLUDES
+LATE()
+local waitedForServer = initial == 0 and #INCLUDES == 0 and #CLIENT_FILES == 0
+GLOBALS.WSZC_CUSourceKnown = true
+GLOBALS.WSZC_CUEmbedded = false
+GLOBALS.WSZC_BridgeSourceKnown = true
+GLOBALS.WSZC_BridgeEmbedded = false
+LATE()
+return waitedForServer and #INCLUDES == 0 and #CLIENT_FILES == 0
+'''))
+
+    runtime_check("R26 dedicated client loads only embedded shared/client realms when requested", lambda: embedded_runtime(False, r'''
+GLOBALS.WSZC_CUSourceKnown = true
+GLOBALS.WSZC_CUEmbedded = true
+GLOBALS.WSZC_BridgeSourceKnown = true
+GLOBALS.WSZC_BridgeEmbedded = true
+''').execute(r'''
+LATE()
+local expected = table.concat({
+    "wszc_vendor/cu/autorun/sh_health_init.lua",
+    "wszc_vendor/zcity/woundbridge/sh_woundbridge.lua",
+    "wszc_vendor/zcity/woundbridge/cl_woundbridge.lua",
+}, "|")
+return table.concat(INCLUDES, "|") == expected and #CLIENT_FILES == 0
+    and WoundSystem._WSZCEmbedded == true and hg.WoundBridge._WSZCEmbedded == true
+'''))
+
+    runtime_check("R27 connector optional includes resolve into the embedded C:U namespace", lambda: lua.execute(r'''
+ResetEnvironment()
+WoundSystem = { _WSZCEmbedded = true }
+local expected = "wszc_vendor/cu/woundsystem/client/minigames/cl_clip.lua"
+file.Exists = function(path) return path == expected end
+include = function(path) INCLUDED = path; return { loaded = true } end
+local resolved = WSZC.ResolveCUPath("woundsystem/client/minigames/cl_clip.lua")
+local result, ok = WSZC.OptionalInclude("woundsystem/client/minigames/cl_clip.lua")
+return resolved == expected and ok == true and INCLUDED == expected and result.loaded == true
 '''))
 
 failed = [name for name, ok in results if not ok]

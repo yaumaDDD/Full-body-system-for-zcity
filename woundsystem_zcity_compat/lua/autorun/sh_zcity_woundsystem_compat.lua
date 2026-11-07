@@ -13,6 +13,15 @@ WSZC = WSZC or {}
 if WSZC._SharedLoaded then return end
 WSZC._SharedLoaded = true
 
+-- Load missing dependencies from the isolated embedded runtime.  External
+-- Workshop/GitHub C:U and WoundBridge installations keep priority.  A loader
+-- error is reported without aborting the connector's adaptive status/probe.
+if SERVER and AddCSLuaFile then AddCSLuaFile("wszc_vendor/bootstrap.lua") end
+if include then
+    local ok, err = pcall(include, "wszc_vendor/bootstrap.lua")
+    if not ok then print("[ZCity/CU compat] embedded bootstrap failed: " .. tostring(err)) end
+end
+
 local TAG = "[ZCity/CU compat] "
 
 ---------------------------------------------------------------------------
@@ -82,6 +91,19 @@ local function LegacyDamageEntrypoint(H)
     return type(damage) == "table" and type(damage.WoundSystem_Damage) == "function"
 end
 
+--- Resolve C:U source files without letting the embedded copy shadow an
+--- external Workshop/GitHub installation.  Once embedded runtime is selected,
+--- its isolated namespace is preferred consistently on that realm.
+function WSZC.ResolveCUPath(path)
+    if type(WoundSystem) == "table" and WoundSystem._WSZCEmbedded == true then
+        local vendored = "wszc_vendor/cu/" .. tostring(path)
+        if not (file and file.Exists) or file.Exists(vendored, "LUA") then
+            return vendored
+        end
+    end
+    return path
+end
+
 function WSZC.RefreshCapabilities()
     local WB = hg and hg.WoundBridge or nil
     local H = WoundSystem and WoundSystem.Health or nil
@@ -97,8 +119,8 @@ function WSZC.RefreshCapabilities()
 
     local minigameFiles = false
     if file and file.Exists then
-        minigameFiles = file.Exists("woundsystem/client/minigames/sh_handphysics.lua", "LUA")
-            and file.Exists("woundsystem/client/minigames/cl_clip.lua", "LUA")
+        minigameFiles = file.Exists(WSZC.ResolveCUPath("woundsystem/client/minigames/sh_handphysics.lua"), "LUA")
+            and file.Exists(WSZC.ResolveCUPath("woundsystem/client/minigames/cl_clip.lua"), "LUA")
     else
         -- GMod always exposes file.Exists.  Headless/limited hosts can still
         -- use the legacy adapter; OptionalInclude remains the final guard.
@@ -185,11 +207,19 @@ local function YesNo(value) return value and "yes" or "no" end
 
 function WSZC.CompatibilityStatusLines()
     local caps = WSZC.RefreshCapabilities()
+    local hasCU = type(WoundSystem) == "table"
+        and (type(WoundSystem.Health) == "table" or type(WoundSystem.Items) == "table")
+    local cuRuntime = (type(WoundSystem) == "table" and WoundSystem._WSZCEmbedded == true) and "embedded"
+        or (hasCU and "external" or "missing")
+    local bridgeRuntime = (type(hg and hg.WoundBridge) == "table"
+        and hg.WoundBridge._WSZCEmbedded == true) and "embedded"
+        or (type(hg and hg.WoundBridge) == "table" and "external" or "missing")
     local lines = {
         TAG .. "adaptive compatibility: " .. tostring(Compatibility.profile),
         "  ready=" .. YesNo(WSZC.Ready == true)
             .. " active_adapter=" .. tostring(Compatibility.activeAdapter or "none")
             .. " adaptive=" .. YesNo(WSZC.AdaptiveCompatibility()),
+        "  runtime: cu=" .. cuRuntime .. " zcity_bridge=" .. bridgeRuntime,
         "  contracts: zcity_bridge=" .. YesNo(caps.zcity_bridge)
             .. " cu_health=" .. YesNo(caps.cu_health)
             .. " cu_items=" .. YesNo(caps.cu_items)
@@ -224,6 +254,7 @@ end
 -- Optional C:U source files differ between builds.  Missing optional artwork
 -- or hand physics must degrade locally, never abort the whole autorun file.
 function WSZC.OptionalInclude(path)
+    path = WSZC.ResolveCUPath and WSZC.ResolveCUPath(path) or path
     if file and file.Exists and not file.Exists(path, "LUA") then return nil, false end
     if not include then return nil, false end
     local ok, result = pcall(include, path)
@@ -241,6 +272,10 @@ if concommand and concommand.Add then
     end)
     concommand.Add("wszc_compat_reprobe", function(ply)
         if SERVER and IsValid and IsValid(ply) and ply.IsAdmin and not ply:IsAdmin() then return end
+        if type(WSZC.EnsureEmbeddedRuntime) == "function" then
+            local ok, err = pcall(WSZC.EnsureEmbeddedRuntime, true)
+            if not ok then print(TAG .. "embedded runtime reprobe failed: " .. tostring(err)) end
+        end
         WSZC.ClearCompatibilityFailures()
         WSZC.SetupFailed = nil
         if SERVER and not WSZC.Ready and type(WSZC.Attempt) == "function" then

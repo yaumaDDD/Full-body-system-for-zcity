@@ -554,14 +554,17 @@ check('S61 remote and self share the same advanced WoundView and explicit sessio
 try:
     sys.path.insert(0, '/tmp/luaparser_pkg')
     from luaparser import ast
-    lua_files = sorted(glob.glob(str(CONN / 'lua/**/*.lua'), recursive=True))
+    lua_files = sorted(
+        f for f in glob.glob(str(CONN / 'lua/**/*.lua'), recursive=True)
+        if '/wszc_vendor/cu/' not in f and '/wszc_vendor/zcity/woundbridge/' not in f
+    )
     bad = []
     for f in lua_files:
         try:
             ast.parse(Path(f).read_text(encoding='utf-8'))
         except Exception as exc:
             bad.append((f, str(exc)[:120]))
-    check('S15 ALL_LUA_OK %d/%d' % (len(lua_files) - len(bad), len(lua_files)), not bad and len(lua_files) == 13)
+    check('S15 ALL_LUA_OK %d/%d' % (len(lua_files) - len(bad), len(lua_files)), not bad and len(lua_files) == 14)
 except ImportError:
     print('SKIP S15 luaparser unavailable')
 
@@ -569,6 +572,8 @@ except ImportError:
 cjk = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]')
 bad_cjk = []
 for p in list(ROOT.glob('*.md')) + list(CONN.rglob('*.md')) + list(CONN.rglob('*.lua')):
+    if 'wszc_vendor' in p.parts:
+        continue  # vendored upstream sources are verified by embed_runtime.py --check
     if cjk.search(p.read_text(encoding='utf-8')):
         bad_cjk.append(str(p))
 check('S16 CJK_CLEAN', not bad_cjk)
@@ -853,7 +858,7 @@ def validate_zips():
         assert z.testzip() is None
         full = {i.filename: z.read(i.filename) for i in z.infolist()}
     conn_files = {p.relative_to(CONN).as_posix(): p.read_bytes() for p in CONN.rglob('*') if p.is_file()}
-    assert len(conn_files) == len(compat) == 676
+    assert len(conn_files) == len(compat) == 752
     assert all(compat['woundsystem_zcity_compat/' + r] == d for r, d in conn_files.items())
     mirror = {n[len('garrysmod/addons/casualties_unknown_health_system_beta/materials/'):]: d
               for n, d in full.items()
@@ -861,11 +866,17 @@ def validate_zips():
     assert len(mirror) == 653
     assert all(mirror[r[len('materials/'):]] == d for r, d in conn_files.items() if r.startswith('materials/'))
     assert json.loads(compat['woundsystem_zcity_compat/addon.json'])
-    bridge = [n for n in full if n.endswith('woundbridge/sv_woundbridge.lua')]
-    assert len(bridge) == 1 and b'Not completed - nothing was applied' not in full[bridge[0]]
+    external_bridge = full['garrysmod/addons/z_city/lua/homigrad/woundbridge/sv_woundbridge.lua']
+    embedded_bridge = full['garrysmod/addons/woundsystem_zcity_compat/lua/wszc_vendor/zcity/woundbridge/sv_woundbridge.lua']
+    # Full pack preserves the historical external source patch.  The embedded
+    # copy remains byte-provenance-clean; the connector's runtime PrintMessage
+    # filter suppresses this same notice for both runtime selections.
+    assert b'Not completed - nothing was applied' not in external_bridge
+    assert b'WSZC: the empty-dose centre notice is intentionally suppressed.' in external_bridge
+    assert b'Not completed - nothing was applied' in embedded_bridge
     manifest = full['MANIFEST.txt'].decode('utf-8')
     shas = re.findall(r'woundsystem_zcity_compat/lua/[^\s]+\.lua\s+([0-9a-f]{64})', manifest)
-    assert len(shas) == 13
+    assert len(shas) == 88
     assert all(hashlib.sha256(d).hexdigest() in shas for r, d in conn_files.items() if r.endswith('.lua'))
     shipped_layout = full['garrysmod/addons/woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua'].decode('utf-8')
     assert 'HandRectForCursor' in shipped_layout
@@ -883,8 +894,9 @@ def validate_zips():
     assert 'wszc/unitmenu/limbs/pelvis_edge.png' in mirror
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
     # +4 neck/pelvis PNGs in the connector and +4 in the C:U material mirror.
-    # Six fonts/shaders moved C:U -> connector, so the full total is unchanged.
-    assert len(full) == 2779
+    # Six fonts/shaders moved C:U -> connector without changing the old total.
+    # The isolated embedded runtime adds 75 Lua files + one provenance manifest.
+    assert len(full) == 2855
     declared_total = re.search(r'Всего файлов в архиве:\s*(\d+)', manifest)
     assert declared_total and int(declared_total.group(1)) == len(full)
     return True

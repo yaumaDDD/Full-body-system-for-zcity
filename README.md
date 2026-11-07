@@ -16,7 +16,10 @@
 
 Connector теперь не патчит любую найденную сборку вслепую. Перед активацией он
 проверяет полный core contract ZCity/C:U и отдельно возможности inspection,
-medicine, external minigames, remote treatment и organism extensions:
+medicine, external minigames, remote treatment и organism extensions. Встроенные
+71 C:U Lua + 3 WoundBridge Lua находятся в изолированном `wszc_vendor/`:
+отдельные C:U/WoundBridge не обязательны, а внешние Workshop/GitHub API имеют
+приоритет и не получают второй runtime поверх себя:
 
 - приложенная legacy-сборка выбирает прежний адаптер со всеми функциями;
 - C:U с полным native API используется напрямую, её external-minigame API не
@@ -32,10 +35,12 @@ medicine, external minigames, remote treatment и organism extensions:
 `adaptive 0` — только экспертный override для старого поведения, а не способ
 гарантировать совместимость.
 
-**Это не делает любую сборку автоматически поддерживаемой.** Без C:U connector
-не является standalone health system, а изменённые `ply.organism`, damage hooks
-или ragdoll API требуют отдельного адаптера и живой проверки. Для анализа нужны
-вывод `wszc_compat_status` и ZIP конкретной сборки.
+**Это не делает любую модификацию ZCity автоматически поддерживаемой.** Сама
+ZCity с `ply.organism`, gamemode и основными damage/ragdoll API необходима, но
+C:U и WoundBridge уже встроены и не требуют отдельной установки. Изменённые
+`ply.organism`, damage hooks или ragdoll API требуют отдельного адаптера и живой
+проверки. Для анализа нужны вывод `wszc_compat_status` (включая `runtime:`) и
+ZIP конкретной сборки.
 
 Шрапнель использует общий для родной мини-игры счётчик `state.shrapnel`, но
 источники хранятся раздельно: **дробовик**, взрыв и **стекло** (руки/ноги,

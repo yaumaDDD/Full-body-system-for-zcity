@@ -5,6 +5,12 @@
 (`casualites unknown.zip`), не изменяя исходные ZIP-архивы. Все патчи делаются в
 рантайме, после загрузки C:U и ZCity.
 
+В коннектор дополнительно встроены изолированные **71 C:U Lua + 3 ZCity
+WoundBridge Lua** (`lua/wszc_vendor/`). Поэтому отдельная установка C:U или
+поиск ZCity-версии с WoundBridge больше не обязательны. Внешние
+Workshop/GitHub API имеют приоритет; embedded-загрузчик включается только при
+их отсутствии и не создаёт второй runtime поверх уже загруженного аддона.
+
 ## Адаптивная совместимость со сборками
 
 `WSZC.RefreshCapabilities()` проверяет реальные контракты, а не версию или название
@@ -15,7 +21,7 @@
 | `legacy-adapter` | ZCity WoundBridge + узнаваемый legacy damage/medical entrypoint C:U + `debug.getupvalue/setupvalue` | Текущий полный путь; native/external API экспортируются connector-ом |
 | `native-api` | C:U экспортирует `HandleDamage`, `ApplyItemToBody`, `GetBody/GetLimbs` | Нативный API сохраняется; при наличии native external minigames WSZC-копии не подменяют его |
 | `partial` | Найдены лишь некоторые таблицы/функции | Core не активируется; несовместимые функции остаются выключенными |
-| `unavailable` | ZCity/C:U ещё не загружены или отсутствуют | Connector инертен, возможен поздний probe/reprobe |
+| `unavailable` | Внешние API ещё не загружены и embedded fallback ещё не готов/не смог загрузиться | Connector инертен, возможен поздний probe/reprobe; источник виден в строке `runtime:` |
 
 Core не означает автоматическую поддержку всех расширений. Отдельно проверяются:
 
@@ -34,9 +40,12 @@ Core не означает автоматическую поддержку вс�
 `zc_woundsystem_compat_prefer_native_api 1` сохраняет native external API;
 `adaptive 0` — экспертный legacy override, а не гарантия запуска.
 
-Это **не standalone-версия и не обещание поддержать абсолютно любую сборку**.
-При изменении смысла `ply.organism`, damage/ragdoll hooks или анатомии нужен
-отдельный адаптер по ZIP сборки и живой двухклиентный тест.
+Коннектор **не заменяет саму ZCity** и не обещает поддержать абсолютно любую
+её модификацию: `hg.organism`, gamemode и основной ragdoll/damage API должны
+существовать. Но C:U/WoundBridge уже являются embedded-зависимостями, а не
+отдельным обязательным скачиванием. При изменении смысла `ply.organism`,
+damage/ragdoll hooks или анатомии нужен отдельный адаптер по ZIP сборки и
+живой двухклиентный тест.
 
 ## Режим по умолчанию: `ply.organism` авторитетен
 
@@ -404,21 +413,19 @@ FakeUp `PlayerSpawn` сервер видит `OverrideSpawn == true` и сохр
 Сам `woundsystem_zcity_compat` в Мастерской **не published**: это папка в
 `garrysmod/addons/`, подпиской его не поставить.
 
-Для системы нужен **ровно один** экземпляр C:U. Два источника одновременно
-(папка из `casualites unknown.zip` **и** GMA из Мастерской) дают двойные хуки,
-таймеры, net-сообщения, `CreateConVar` и HUD — это главный источник «ерроров».
-Выберите одно:
+Отдельный C:U для запуска **больше не нужен**: при отсутствии внешнего API
+`wszc_vendor/bootstrap.lua` поднимает приложенные 71 Lua. Если внешний C:U уже
+есть, embedded-файлы остаются неактивными. Не устанавливайте одновременно два
+**внешних** экземпляра (папку `casualties_unknown_health_system_beta` и GMA
+`3728573930`): два external loader-а по-прежнему дадут двойные хуки, таймеры,
+net-сообщения и HUD.
 
-* **Рекомендуется** — папка `casualties_unknown_health_system_beta` из
-  `casualites unknown.zip`: компат написан именно под этот билд.
-* **Альтернатива** — подписка `3728573930` («Casualties: Source /
-  Casualties: Unknown Health System»). Это живой обновляемый билд (49 правок,
-  ver 0.2.22Bt Patch 1, 41 МБ), он может отличаться от приложенного ZIP: тогда
-  `WSZC.Setup()` не найдёт ожидаемый `WoundSystem.Health.*` API и `WSZC_Ready`
-  останется `false`. Три собственных C:U-шейдера `shaders/fxc/*.vcs` уже
-  находятся в коннекторе; **Simple Custom Shaders** (`3440271589`) нужен только
-  для дополнительных внешних C:U-эффектов. Если выбрана Мастерская, папку из
-  ZIP нужно удалить.
+Внешняя Workshop-версия может отличаться от приложенного ZIP; adaptive probe
+использует её только при подходящем API. Три собственных C:U-шейдера
+`shaders/fxc/*.vcs` уже находятся в коннекторе; **Simple Custom Shaders**
+(`3440271589`) нужен только для дополнительных внешних C:U-эффектов. Подписка
+`3728573930` теперь опциональна и полезна в основном ради звуков, которых нет
+в исходном ZIP.
 
 Контент ZCity подтягивается сам через `resource.AddWorkshop` при
 `hg_loadcontent 1`: `3657897364` (main content), `3257937532` (distac content),
@@ -443,10 +450,12 @@ assert'ом запрещает пропуски. Коннектор сам вы�
 `zcitygore` папкой нужен `zcity_gore_torso_workshopid` (по умолчанию `0`), из
 Мастерской аддон определяет свой ID через `engine.GetAddons()`.
 
-Обязательные конвары: `woundsys_enabled 1`, `zc_woundsystem_bridge 1`. Если C:U
-не загрузился, компат не падает: он около 30 с повторяет `WSZC.Setup()` и
-остаётся выключенным (`WSZC_Ready = false`); ZCity работает на ванильном
-`ply.organism`, но панель C:U, мини-игры и шрапнель недоступны.
+Обязательные конвары: `woundsys_enabled 1`, `zc_woundsystem_bridge 1`. Если
+внешний C:U/WoundBridge отсутствует, bootstrap автоматически загружает embedded
+runtime. Только если и он не смог инициализироваться, компат около 30 с
+повторяет `WSZC.Setup()` и остаётся выключенным (`WSZC_Ready = false`), не
+ломая ванильный `ply.organism`. Строка `runtime:` в `wszc_compat_status`
+показывает `embedded`, `external` или `missing` для каждой зависимости.
 
 В консоли при успехе будет одна из строк:
 
@@ -961,8 +970,9 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  фиксированный набор полей. Локальные счётчики, эффекты глаз, debug и кнопка
  работают; часть «берсерк/стимуляция» завязана на поля, которые в bridged
  `Org Think "Main"` не обновлялись и в vanilla-ветке тоже могут не
- обновляться. Чистый vanilla без C:U достигается `zc_woundsystem_bridge 0`
- + `woundsys_enabled 0`, но тогда исчезают панель и мини-игры.
+ обновляться. Vanilla-поведение без активной C:U-интеграции достигается
+ `zc_woundsystem_bridge 0` + `woundsys_enabled 0`, но тогда исчезают панель и
+ мини-игры (сам embedded loader при этом может оставаться загруженным).
 - C:U-инвентарь скрыт и при самоосмотре, и в чужом WoundView: ZCity мини-игры
  используют виртуальный слот `6`, а расходуемые предметы применяются на пациента
  штатными ZCity SWEP. Пять native слотов появляются только при явном
@@ -1029,9 +1039,11 @@ camelCase-копий (архив в lowercase, Linux-клиент регистр
 `garrysmod/addons/casualties_unknown_health_system_beta/materials/`, поэтому
 аддон C:U тоже полный. Три `resource/fonts/*.ttf` и три `shaders/fxc/*.vcs`
 перенесены из исходного C:U ZIP в коннектор побайтово; full pack удаляет их
-старые копии из папки C:U. Итого standalone ZIP содержит **676 файлов**: 653
-материала, 6 C:U resource payloads и прежний код/manifest. Lua исходных
-аддонов не меняется.
+старые копии из папки C:U. После добавления isolated runtime standalone ZIP
+содержит **752 файла**: 653 материала, 6 C:U resource payloads, 88 Lua
+(13 connector + 71 C:U + 3 WoundBridge + bootstrap), документацию и
+`VENDOR_RUNTIME.sha256`. Исходные ZIP-аддоны не меняются; генератор
+`tools/embed_runtime.py --check` подтверждает provenance всех 74 vendored Lua.
 
 Для dedicated server `WSZC.InstallPortableResources()` регистрирует все 659
 material/font/shader paths через `resource.AddFile`. По умолчанию включено
@@ -1222,10 +1234,14 @@ woundsystem_zcity_compat/
     │   ├── cl_zcity_woundsystem_compat_inspect.lua    # «Проверить травмы» → WoundSystem.OpenHealthHUD()
     │   ├── wszc_cl_bandage.lua               # namespaced-копия C:U bandage UI, full-screen
     │   └── wszc_cl_syringe.lua               # namespaced-копия C:U syringe UI, full-screen
-    └── server/
-        ├── sv_zcity_woundsystem_compat.lua           # экспорты, guard урона, лечение, ragdoll
-        ├── sv_zcity_woundsystem_compat_minigames.lua # external API, сессии, прогресс, закрытие
-        └── sv_zcity_woundsystem_compat_organism.lua  # authority-режим: шрапнель, тень, vanilla-обёртки
+    ├── server/
+    │   ├── sv_zcity_woundsystem_compat.lua           # экспорты, guard урона, лечение, ragdoll
+    │   ├── sv_zcity_woundsystem_compat_minigames.lua # external API, сессии, прогресс, закрытие
+    │   └── sv_zcity_woundsystem_compat_organism.lua  # authority-режим: шрапнель, тень, vanilla-обёртки
+    └── wszc_vendor/
+        ├── bootstrap.lua                             # external-first + late fallback + client source sync
+        ├── cu/                                       # 71 изолированный C:U Lua
+        └── zcity/woundbridge/                        # 3 изолированных WoundBridge Lua
 ```
 
 ## Диагностика
@@ -1237,9 +1253,11 @@ woundsystem_zcity_compat/
 2. `zc_woundsystem_bridge 1`, `woundsys_enabled 1`,
    `zc_woundsystem_compat_adaptive 1`.
 3. `zc_woundsystem_compat_debug 1` и перезапустить карту.
-4. Проверить, что в `lua/autorun` загрузились и `sh_health_init.lua` C:U,
-   и `loader.lua` ZCity. При `core=no` не отключайте adaptive: нужен ZIP сборки
-   для адаптера, а не принудительный запуск несовместимых wrapper-ов.
+4. Проверить `runtime:` в статусе. При отсутствии внешних
+   `autorun/sh_health_init.lua` / `homigrad/woundbridge/` должно быть
+   `cu=embedded zcity_bridge=embedded`; внешние API показываются как
+   `external`. При `core=no` не отключайте adaptive: нужен ZIP сборки для
+   адаптера, а не принудительный запуск несовместимых wrapper-ов.
 
 Если мини-игра не открывается:
 

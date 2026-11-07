@@ -11,9 +11,11 @@ only the parts this repository owns:
         <- the exact same 653 UI materials mirrored into C:U
   * C:U resource/fonts/** and shaders/fxc/** are RELOCATED into the connector,
     so the standalone connector owns every UI resource it needs
+  * the connector also carries an isolated embedded C:U + WoundBridge runtime;
+    external Workshop/GitHub APIs still take priority at runtime
   * root docs (README_INSTALL.md / ZCity_binds.md / WORKSHOP_IDS.txt)
   * garrysmod/cfg/zcity_binds.cfg
-  * MANIFEST.txt (counts + sha256 of the 13 connector Lua files)
+  * MANIFEST.txt (counts + sha256 of the 88 connector/vendor Lua files)
 
 No upstream Lua is modified except the single already-patched line in
 z_city/lua/homigrad/woundbridge/sv_woundbridge.lua.  C:U's six font/shader
@@ -145,8 +147,14 @@ def main():
     conn = collect_connector()
     lua = [r for r in conn if r.endswith('.lua')]
     mats = [r for r in conn if r.startswith('materials/')]
-    assert len(lua) == 13, ('connector Lua count', len(lua))
+    assert len(lua) == 88, ('connector + embedded Lua count', len(lua))
     assert len(mats) >= 653, ('connector material count', len(mats))
+    embedded_cu = [r for r in lua if r.startswith('lua/wszc_vendor/cu/')]
+    embedded_bridge = [r for r in lua if r.startswith('lua/wszc_vendor/zcity/woundbridge/')]
+    assert len(embedded_cu) == 71, ('embedded C:U count', len(embedded_cu))
+    assert len(embedded_bridge) == 3, ('embedded bridge count', len(embedded_bridge))
+    assert 'lua/wszc_vendor/bootstrap.lua' in conn
+    assert 'VENDOR_RUNTIME.sha256' in conn
     fonts = [r for r in conn if r.startswith('resource/fonts/') and r.endswith('.ttf')]
     shaders = [r for r in conn if r.startswith('shaders/fxc/') and r.endswith('.vcs')]
     assert len(fonts) == 3, ('portable font count', fonts)
@@ -194,6 +202,7 @@ def main():
     print('connector files:', len(conn))
     print('materials mirrored into C:U addon:', mirrored)
     print('portable C:U resources in connector: %d fonts + %d shaders' % (len(fonts), len(shaders)))
+    print('embedded runtime: %d C:U Lua + %d WoundBridge Lua + bootstrap' % (len(embedded_cu), len(embedded_bridge)))
     print('validation: 0 duplicates, 0 unsafe paths, connector Lua + addon.json OK')
     print('full pack', FULL_ZIP.stat().st_size, 'bytes', len(entries), 'files')
     print('connector zip', COMPAT_ZIP.stat().st_size, 'bytes', len(compat), 'files')

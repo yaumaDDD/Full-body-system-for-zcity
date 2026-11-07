@@ -428,3 +428,20 @@ GMod не запускался — принятие по свежему live-с�
 
 Suite `82/82` до пересборки архивов, затем полный прогон. Живой GMod не
 запускался — принятие по свежему live-скрину.
+
+## Изолированный embedded runtime
+
+`tools/embed_runtime.py` извлекает 71 C:U Lua из `casualites unknown.zip` в
+`lua/wszc_vendor/cu/` и 3 WoundBridge Lua из `zcity.zip` в
+`lua/wszc_vendor/zcity/woundbridge/`. Изменяются только quoted `*.lua` include
+paths и C:U `medical_tools` include directory; `woundsystem/persist`, звуки,
+data/material paths сохраняются. `VENDOR_RUNTIME.sha256` фиксирует source и
+vendored SHA-256, а `--check` запрещает stale/extra generated files.
+
+`lua/wszc_vendor/bootstrap.lua` выбирает external API первым. При отсутствии
+C:U/WoundBridge он загружает embedded runtime немедленно или в late pass;
+повторный вызов не ставит вторую копию. Server публикует выбор через
+`WSZC_CUSourceKnown/CUEmbedded` и `WSZC_BridgeSourceKnown/BridgeEmbedded`,
+client ждёт это решение на dedicated server. `WSZC.ResolveCUPath()` направляет
+connector `OptionalInclude`/capability file checks в isolated C:U namespace.
+`wszc_compat_status` печатает `runtime: cu=... zcity_bridge=...`.
