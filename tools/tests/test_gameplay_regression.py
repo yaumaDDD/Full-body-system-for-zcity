@@ -1534,7 +1534,7 @@ assert(WSZC.RestoreBones(ply))
 WSZC.SyncOrganismShadow(ply, ply.organism)
 local separated = ply._limbs.neck.broken == true and ply._limbs.head.broken == false
     and ply._limbs.neck.muscle == 0 and ply._limbs.head.muscle == 100
-    and ply._limbs.neck.boneHealTimer == 0 and ply._limbs.head.boneHealTimer == 0
+    and ply._limbs.neck.boneHealTimer == 100 and ply._limbs.head.boneHealTimer == 0
 local bleed = WSZC.LimbBleedMap(ply, ply.organism)
 local routed = bleed.neck == 16 and bleed.head == 6
 

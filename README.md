@@ -54,6 +54,28 @@ limb из `hitgroup/dmgstack/HitBones`, включая голову, торс и
 
 ## Исправления этой сборки
 
+**Сквозной аудит урона и лечения (2026-11-07):** проверены пути от ZCity damage
+до реальных `organism`-полей и обратной синхронизации, а не только наличие C:U
+значков. Бинт при подтверждённой ампутации теперь находит и лечит рану культи,
+но её артерия по-прежнему требует жгут. Adrenaline/betablock/mannitol/thiamine
+получают ровно одну authoritative-дозу и в instant-ветке, и в защитном async
+`onProgress`; стандартный one-dose instant режим не изменён. `BloodBagTake`
+уменьшает и C:U `bloodVolume`, и ZCity `blood`; naloxone включает native
+`naloxoneadd`; успешный chest drain/medkit 5 устанавливает `org.needle`, а
+отклонённый — нет. Procoagulant больше не теряет последующие timed steps:
+все 20 шагов уменьшают `internalBleed` и реальные ordinary/arterial wounds на
+всех 17 зонах без повторной первой дозы; delayed relief cream учитывается так же.
+
+Отдельно исправлены кости: C:U `boneHealTimer` теперь имеет правильный смысл
+**оставшегося** времени (`100 → 0`), а GAUZE уменьшает настоящие
+`org.larm/rarm/lleg/rleg/skull/chest`, включая синхронный `brokenribs`. Вывих
+снимается только своей anchor-зоной. `SPLINTED` сохраняет native износ
+`0.025/s`, ускоряет существующую ZCity-регенерацию перелома до ×2.5 и через
+штатный `SyncDislocation` завершает восстановление сустава; после reset/expire
+эффект отсутствует. Добавлен `tools/tests/test_medical_regression.py`, который
+загружает canonical `sv_woundbridge.lua` из исходного `zcity.zip` и проверяет
+фактические дозы, расход, timed steps и отсутствие двойного mirror.
+
 **Живот и таз разделены (2026-11-07):** прежний единый `abdomen` разрезан по
 настоящему traced-шву `y=520`: верхняя часть — `abdomen`, нижняя — новый
 `pelvis`. Теперь **17 native limb id / 34 limb PNG**, у таза собственные sprite,

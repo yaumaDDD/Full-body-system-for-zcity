@@ -617,17 +617,30 @@ local function ArterialWoundLimb(ply, wound)
         or LimbFromBoneName(BoneNameOf(ply, wound[4]))
 end
 
+-- One anatomical routing rule for BOTH presentation and treatment.  A wound
+-- on a missing forearm/calf still bleeds from the remaining upper arm/thigh;
+-- bandage queries must therefore see exactly the same stump as LimbBleedMap.
+-- The original wound bone/artery fields remain untouched.
+local function AuthoritativeWoundLimb(org, limbId, limbs)
+    limbId = NormalizeLimb(limbId) or limbId
+    local stump = AMPUTATION_APPLICATION_SITE[limbId]
+    local flag = stump and AMPUTATION_STUMP_FLAG[stump] or nil
+    if not (type(org) == "table" and flag and org[flag] == true) then return limbId end
+
+    -- During a ragdoll/net transition the organism flag may arrive before the
+    -- native limb table.  If a distal state is explicitly still alive, keep
+    -- its wound on that visible limb; once it is confirmed dismembered, route
+    -- treatment to the stump.  With no limb table the organism is the fallback.
+    local state = type(limbs) == "table" and limbs[limbId] or nil
+    if type(state) == "table" and state.dismembered ~= true then return limbId end
+    return stump
+end
+
 local function LimbBleedMap(ply, org)
     local map = {}
     local function add(limbId, amount)
-        limbId = NormalizeLimb(limbId)
+        limbId = AuthoritativeWoundLimb(org, limbId)
         if not limbId or amount <= 0 then return end
-        -- A legacy rarmartery/llegartery normally belongs to the distal limb.
-        -- Once ZCity amputates that part, its still-real bleeding is presented
-        -- on the remaining stump.  This changes no wound[7], bone or severity.
-        local stump = AMPUTATION_APPLICATION_SITE[limbId]
-        local flag = stump and AMPUTATION_STUMP_FLAG[stump] or nil
-        if flag and org[flag] == true then limbId = stump end
         map[limbId] = (map[limbId] or 0) + amount
     end
 
@@ -648,11 +661,13 @@ end
 WSZC.LimbBleedMap = LimbBleedMap -- exported for diagnostics / headless tests
 
 local function NormalBleedingOnLimb(ply, org, limbId)
-    limbId = NormalizeLimb(limbId) or limbId
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    limbId = AuthoritativeWoundLimb(org, limbId, limbs)
     local total = 0
     for _, wound in pairs(org.wounds or {}) do
-        if type(wound) == "table"
-            and LimbFromBoneName(BoneNameOf(ply, wound[4])) == limbId then
+        if type(wound) == "table" and AuthoritativeWoundLimb(org,
+            LimbFromBoneName(BoneNameOf(ply, wound[4])), limbs) == limbId then
             total = total + math.max(tonumber(wound[1]) or 0, 0) * NORMAL_WOUND_BLEED
         end
     end
@@ -660,10 +675,13 @@ local function NormalBleedingOnLimb(ply, org, limbId)
 end
 
 local function ArterialBleedingOnLimb(ply, org, limbId)
-    limbId = NormalizeLimb(limbId) or limbId
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    limbId = AuthoritativeWoundLimb(org, limbId, limbs)
     local total = 0
     for _, wound in pairs(org.arterialwounds or {}) do
-        if type(wound) == "table" and ArterialWoundLimb(ply, wound) == limbId then
+        if type(wound) == "table" and AuthoritativeWoundLimb(org,
+            ArterialWoundLimb(ply, wound), limbs) == limbId then
             total = total + math.max(tonumber(wound[1]) or 0, 0) * ARTERIAL_WOUND_BLEED
         end
     end
@@ -711,6 +729,53 @@ local function CompactWoundTable(wounds)
     for key in pairs(wounds) do wounds[key] = nil end
     for i, entry in ipairs(entries) do wounds[i] = entry.wound end
 end
+
+-- Negative C:U limb-bleed deltas are real treatment, not merely a different
+-- HUD number.  Apply the same proportional reduction to the authoritative
+-- ordinary and arterial wounds on that limb.  Bandages/tourniquets zero their
+-- snapshot delta after their specialised treatment, so they never enter here.
+local function ReduceLimbWoundBleeding(ply, org, limbId, amount)
+    limbId = NormalizeLimb(limbId) or limbId
+    amount = math.max(tonumber(amount) or 0, 0)
+    if not limbId or amount <= 0.000001 or type(org) ~= "table" then return 0 end
+    local normalBefore = NormalBleedingOnLimb(ply, org, limbId)
+    local arterialBefore = ArterialBleedingOnLimb(ply, org, limbId)
+    local total = normalBefore + arterialBefore
+    if total <= 0.000001 then return 0 end
+
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    local target = AuthoritativeWoundLimb(org, limbId, limbs)
+    local scale = math.Clamp((total - amount) / total, 0, 1)
+    for _, wound in pairs(org.wounds or {}) do
+        if type(wound) == "table" and AuthoritativeWoundLimb(org,
+            LimbFromBoneName(BoneNameOf(ply, wound[4])), limbs) == target then
+            wound[1] = math.max((tonumber(wound[1]) or 0) * scale, 0)
+            if wound[1] <= 0.000001 then wound[1] = 0 end
+        end
+    end
+    for _, wound in pairs(org.arterialwounds or {}) do
+        if type(wound) == "table" and AuthoritativeWoundLimb(org,
+            ArterialWoundLimb(ply, wound), limbs) == target then
+            wound[1] = math.max((tonumber(wound[1]) or 0) * scale, 0)
+            if wound[1] <= 0.000001 then
+                wound[1] = 0
+                if type(wound[7]) == "string" then org[wound[7]] = 0 end
+                if wound[7] == "arteria" and type(org.o2) == "table" then org.o2.regen = 0 end
+            end
+        end
+    end
+    CompactWoundTable(org.wounds)
+    CompactWoundTable(org.arterialwounds)
+    if ply.SetNetVar then
+        pcall(ply.SetNetVar, ply, "wounds", org.wounds)
+        pcall(ply.SetNetVar, ply, "arterialwounds", org.arterialwounds)
+    end
+    ply.fullsend = true
+    return math.max(total - NormalBleedingOnLimb(ply, org, limbId)
+        - ArterialBleedingOnLimb(ply, org, limbId), 0)
+end
+WSZC.ReduceLimbWoundBleeding = ReduceLimbWoundBleeding
 
 -- ZCity wound schema is {severity, localPos:Vector, localAng:Angle, bone, time}.
 -- Synthetic shrapnel wounds used to put nil in slots 2/3.  That is not a
@@ -1039,6 +1104,8 @@ function WSZC.ApplyBandageToOrganism(ctx, profile, effectFraction)
     local normalBefore = WSZC.GetBandageBleeding(ply, limbId)
     local arterial = WSZC.GetArterialBleeding(ply, limbId)
     local before = normalBefore + arterial
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
     local budget = WSZC.BandageSeverityPerFullEffect(profile)
         * math.max(tonumber(effectFraction) or 0, 0) * NORMAL_WOUND_BLEED
     if budget <= 0 then return 0, before, before end
@@ -1046,7 +1113,7 @@ function WSZC.ApplyBandageToOrganism(ctx, profile, effectFraction)
     local candidates = {}
     for _, wound in pairs(org.wounds or {}) do
         if type(wound) == "table" and (tonumber(wound[1]) or 0) > 0
-            and LimbFromBoneName(BoneNameOf(ply, wound[4])) == limbId then
+            and AuthoritativeWoundLimb(org, LimbFromBoneName(BoneNameOf(ply, wound[4])), limbs) == limbId then
             candidates[#candidates + 1] = {
                 wound = wound,
                 weight = NORMAL_WOUND_BLEED,
@@ -1229,6 +1296,7 @@ function WSZC.BestBandageLimb(ply, spec, preferred)
     if type(limbs) ~= "table" or type(org) ~= "table" then return nil end
 
     local bestId, bestScore
+    local preferredSite = preferred and AuthoritativeWoundLimb(org, preferred, limbs) or nil
     for limbId, state in pairs(limbs) do
         if type(state) == "table" and not state.dismembered then
             local bleed = math.max(tonumber(NormalBleedingOnLimb(ply, org, limbId)) or 0, 0)
@@ -1240,7 +1308,7 @@ function WSZC.BestBandageLimb(ply, spec, preferred)
             -- bandage wound and used to make every input a no-op.
             if bleed > 0.1 or aftercare then
                 local score = bleed + (aftercare and 0.2 or 0)
-                    + (limbId == preferred and 1000 or 0)
+                    + (limbId == preferredSite and 1000 or 0)
                 if not bestScore or score > bestScore
                     or (score == bestScore and limbId < bestId) then
                     bestId, bestScore = limbId, score
@@ -2275,9 +2343,13 @@ function WSZC.RestoreBones(ply)
                 and org[map.dis] == true or false
             state.dislocated = out
             state.dislocationTimer = out and DislocationStartTimer() or 0
-            state.broken = map.dmg ~= nil and Fractured(org, limbId, map) or false
-            state.boneHealTimer = map.dmg ~= nil and math.Clamp((1 -
-                (tonumber(org[map.dmg]) or 0)) * 100, 0, 100) or 0
+            local fractured = map.dmg ~= nil and Fractured(org, limbId, map) or false
+            state.broken = fractured
+            -- C:U stores REMAINING fracture time: ApplyFracture starts at 100
+            -- and healing decreases it to zero.  ZCity damage has the same
+            -- direction (healthy 0 -> fully broken 1), so do not invert it.
+            state.boneHealTimer = fractured and math.Clamp(
+                (tonumber(org[map.dmg]) or 0) * 100, 0, 100) or 0
             ply._WSZCExpectedDislocation[limbId] = out
             if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
         end
@@ -2320,6 +2392,79 @@ function WSZC.SyncDislocation(ply, org, limbs, newLimbTable)
                 changed = true
             end
         end
+    end
+    return changed
+end
+
+-- DisableCUPhysiology removes WoundSystem_LimbTick, which is also where the
+-- native SPLINTED status expires and multiplies bone/joint recovery.  Preserve
+-- JUST that item contract here; do not restart C:U's general health tick.
+-- Fracture acceleration is an addition to ZCity's own sv_pain regeneration:
+-- baseline + 1.5 * baseline = the native splint multiplier 2.5.  At damage 1
+-- vanilla regeneration is gated off, and the splint supplies the 2.5 rate that
+-- starts recovery.  Joint recovery uses C:U's 0.07 * 2 timer rate and then the
+-- ordinary SyncDislocation path clears the authoritative ZCity flag.
+function WSZC.TickSplints(ply, org, dt)
+    if not (Authority() and IsValid(ply) and type(org) == "table") then return false end
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    if type(limbs) ~= "table" then return false end
+    dt = math.max(tonumber(dt) or 0, 0)
+    if dt <= 0 then return false end
+    local changed, active = false, {}
+    local now = CurTime and CurTime() or 0
+
+    for limbId, map in pairs(LIMB_ORG) do
+        local state = limbs[limbId]
+        if type(state) == "table" then
+            local statuses = state.customStatuses
+            local durability = type(statuses) == "table" and tonumber(statuses.SPLINTED) or nil
+            local expired = false
+            if durability ~= nil then
+                durability = math.max(durability - dt * 0.025, 0)
+                if durability <= 0 then
+                    statuses.SPLINTED = nil
+                    state.splinted = false
+                    expired = true
+                    changed = true
+                else
+                    statuses.SPLINTED = durability
+                end
+            end
+
+            if state.splinted == true and not state.dismembered then
+                active[#active + 1] = limbId
+                if map.dmg and BoneAnchor(limbId, "fracture") and state.broken == true then
+                    local damage = math.Clamp(tonumber(org[map.dmg]) or 0, 0, 1)
+                    local amputated = map.amp and org[map.amp] == true or false
+                    if damage > 0 and not amputated then
+                        local nativeStep = damage < 1 and dt / 240 or 0
+                        local extra = nativeStep > 0 and nativeStep * 1.5 or dt / 240 * 2.5
+                        org[map.dmg] = math.max(damage - extra, 0)
+                        ply.fullsend = true
+                        changed = true
+                    end
+                end
+                if BoneAnchor(limbId, "dislocation") and state.dislocated == true then
+                    local timerValue = math.max((tonumber(state.dislocationTimer) or 0)
+                        - dt * 0.07 * 2, 0)
+                    state.dislocationTimer = timerValue
+                    if timerValue <= 0 then state.dislocated = false end
+                    changed = true
+                end
+            end
+
+            if expired and h.SendLimbUpdate then
+                pcall(h.SendLimbUpdate, ply, limbId, true)
+            end
+        end
+    end
+
+    -- Durability is a native net status.  A 1 Hz refresh is enough for its
+    -- very slow 0.025/s wear and avoids sending every 10 Hz organism tick.
+    if #active > 0 and h.SendLimbUpdate and now >= (ply._WSZCNextSplintSync or 0) then
+        ply._WSZCNextSplintSync = now + 1
+        for _, limbId in ipairs(active) do pcall(h.SendLimbUpdate, ply, limbId, false) end
     end
     return changed
 end
@@ -3000,10 +3145,12 @@ local function PushShadow(ply, org)
                 local dmg = math.Clamp(tonumber(org[map.dmg]) or 0, 0, 1)
                 limbSet("muscle", math.Clamp((1 - dmg) * 100, 0, 100))
                 if map.amp then limbSet("dismembered", org[map.amp] == true) end
-                -- Fractures are pure ZCity state (org.<limb> >= 1, brokenribs).
-                -- C:U only draws the icon; no C:U fracture simulation runs.
-                limbSet("broken", Fractured(org, limbId, map))
-                limbSet("boneHealTimer", math.Clamp((1 - dmg) * 100, 0, 100))
+                -- Fractures are pure ZCity state (org.<limb>, brokenribs).
+                -- C:U's timer is REMAINING healing time (100 at a fresh break),
+                -- hence damage * 100 and zero as soon as Fractured is false.
+                local fractured = Fractured(org, limbId, map)
+                limbSet("broken", fractured)
+                limbSet("boneHealTimer", fractured and math.Clamp(dmg * 100, 0, 100) or 0)
                 if map.dis then
                     -- One point per dislocation: the limb above the fracture.
                     -- All other limbs of this arm/leg get `false`, so the
@@ -3074,9 +3221,12 @@ local function Snapshot(ply, limbId)
         -- ZCity's organism reads org.analgesiaAdd instead, so without this
         -- field the drug delta was invisible to the authoritative organism.
         opiateAmount = tonumber(body.opiateAmount) or 0,
+        antagonistAmount = tonumber(body.antagonistAmount) or 0,
         limbBleed = type(state) == "table" and (tonumber(state.bleed) or 0) or 0,
         limbPain = type(state) == "table" and (tonumber(state.pain) or 0) or 0,
         limbMuscle = type(state) == "table" and (tonumber(state.muscle) or 100) or 100,
+        limbBroken = type(state) == "table" and state.broken == true or false,
+        limbBoneHealTimer = type(state) == "table" and (tonumber(state.boneHealTimer) or 0) or 0,
     }
 end
 
@@ -3104,6 +3254,10 @@ function WSZC.ApplyMedicalDelta(ply, limbId, before)
     add("consciousness", (after.consciousness - before.consciousness) / 100, 0, 1)
     add("brain", -(after.brainHealth - before.brainHealth) / 100, 0, 1)
     add("bleed", (after.totalBleedSpeed - before.totalBleedSpeed), 0)
+    local bleedTreatment = before.limbBleed - after.limbBleed
+    if bleedTreatment > 0.000001 and LIMB_ORG[limbId] then
+        ReduceLimbWoundBleeding(ply, org, limbId, bleedTreatment)
+    end
     add("bleed", (after.limbBleed - before.limbBleed) * 0.2, 0)
     add("pain", (after.limbPain - before.limbPain) * 0.25, 0)
     add("internalBleed", after.internalBleeding - before.internalBleeding, 0)
@@ -3120,6 +3274,11 @@ function WSZC.ApplyMedicalDelta(ply, limbId, before)
     -- works (pain relief, sedation, breathing).  0.006 maps a full 420-unit
     -- fentanyl syringe to ~2.5 analgesia, inside ZCity's 0..4 range.
     add("analgesiaAdd", (after.opiateAmount - before.opiateAmount) * 0.006, 0, 4)
+    -- Naloxone does not subtract opiateAmount directly.  C:U records the
+    -- antagonist separately (a full native syringe adds 50), so mirror that
+    -- delta into ZCity's own naloxoneadd timer (full dose = 1).  The native
+    -- sv_pain module then accelerates analgesia decay exactly as it should.
+    add("naloxoneadd", (after.antagonistAmount - before.antagonistAmount) * 0.02, 0, 1)
     if type(org.stamina) == "table" then
         local max = math.max(tonumber(org.stamina.max) or 180, 1)
         org.stamina[1] = math.Clamp((tonumber(org.stamina[1]) or 0) +
@@ -3129,6 +3288,19 @@ function WSZC.ApplyMedicalDelta(ply, limbId, before)
     local map = LIMB_ORG[limbId]
     if map and map.dmg then
         add(map.dmg, -(after.limbMuscle - before.limbMuscle) / 100, 0, 1)
+        if BoneAnchor(limbId, "fracture") and before.limbBroken then
+            local boneDelta = (after.limbBoneHealTimer - before.limbBoneHealTimer) / 100
+            if boneDelta < 0 then
+                add(map.dmg, boneDelta, 0, 1)
+                if limbId == "thorax" then
+                    -- Native sv_bone derives this display/count field from the
+                    -- same chest scalar; keep the two authoritative values in
+                    -- lockstep instead of clearing only the C:U icon.
+                    org.brokenribs = math.floor(math.Clamp((tonumber(org.chest) or 0) * 3, 0, 3) + 0.5)
+                end
+                ply.fullsend = true
+            end
+        end
         -- A limb that healed past its shrapnel floor releases the block.
         if org.wszc_shrapnel_floor and org.wszc_shrapnel_floor[limbId] then
             org.wszc_shrapnel_floor[limbId] = math.min(
@@ -3142,6 +3314,198 @@ function WSZC.SnapshotMedical(ply, limbId)
     if not Authority() then return nil end
     return Snapshot(ply, limbId)
 end
+
+---------------------------------------------------------------------------
+-- Native timed medicine (procoagulant / relief cream)
+---------------------------------------------------------------------------
+
+-- C:U applies these effects once immediately and then once per second.  Its
+-- later ticks are outside SwepHeal/ApplyItemToBody, so an ordinary delta
+-- wrapper cannot see them before PushShadow restores the old C:U values.
+-- Execute the exact native numeric step on a TEMPORARY shadow, mirror every
+-- affected body/limb delta, then restore that shadow.  The caller's own outer
+-- snapshot consequently sees no duplicate immediate dose.
+local function MirrorTimedBodyEffectStep(ply, effect)
+    if not (Authority() and IsValid(ply) and type(effect) == "table") then return end
+    local h = H()
+    local body = h and h.GetBody and h.GetBody(ply) or nil
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    if type(body) ~= "table" then return end
+    local kind = effect.kind or effect.id
+
+    if kind == "procoagulant" then
+        local bodyShadow = effect._WSZCBodyShadow or {}
+        local limbShadow = effect._WSZCLimbShadow or {}
+        local externalBody = effect._WSZCExternalBodyShadow or {}
+        local externalLimbs = effect._WSZCExternalLimbShadow or {}
+        effect._WSZCBodyShadow, effect._WSZCLimbShadow = bodyShadow, limbShadow
+        effect._WSZCExternalBodyShadow, effect._WSZCExternalLimbShadow = externalBody, externalLimbs
+        local bodyKeys = { "internalBleeding", "bloodViscosity", "strokeAmount" }
+        local savedBody = {}
+        for _, key in ipairs(bodyKeys) do
+            savedBody[key] = body[key]
+            local externalValue = savedBody[key] == nil and false or savedBody[key]
+            -- If PushShadow/new damage changed the external value, it is the
+            -- current native baseline.  Otherwise continue our simulated
+            -- cumulative value (needed when shadow sync is disabled).
+            if bodyShadow[key] ~= nil and externalBody[key] ~= nil
+                and externalBody[key] == externalValue then
+                body[key] = bodyShadow[key]
+            end
+        end
+
+        local beforeLimbs, savedBleed = {}, {}
+        for limbId, state in pairs(type(limbs) == "table" and limbs or {}) do
+            if type(state) == "table" then
+                savedBleed[limbId] = state.bleed
+                local cached = limbShadow[limbId]
+                local external = externalLimbs[limbId]
+                local externalValue = savedBleed[limbId] == nil and false or savedBleed[limbId]
+                if cached and cached.bleed ~= nil and external
+                    and external.bleed ~= nil and external.bleed == externalValue then
+                    state.bleed = cached.bleed
+                end
+                beforeLimbs[limbId] = Snapshot(ply, limbId)
+            end
+        end
+        local bodyBefore = Snapshot(ply, "body")
+        if not bodyBefore then
+            for key, value in pairs(savedBody) do body[key] = value end
+            for limbId, value in pairs(savedBleed) do limbs[limbId].bleed = value end
+            return
+        end
+        local simulatedBeforeBody = {}
+        for _, key in ipairs(bodyKeys) do simulatedBeforeBody[key] = body[key] end
+
+        body.internalBleeding = math.Clamp((body.internalBleeding or 0) * 0.95, 0, 100)
+        body.bloodViscosity = math.Clamp((body.bloodViscosity or 0) + 1.75, -100, 150)
+        body.strokeAmount = math.Clamp((body.strokeAmount or 0) - 10, 0, 100)
+        for limbId in pairs(beforeLimbs) do
+            local state = limbs[limbId]
+            state.bleed = math.Clamp((state.bleed or 0) * 0.96, 0, 100)
+        end
+
+        local ok, err = pcall(WSZC.ApplyMedicalDelta, ply, "body", bodyBefore)
+        for _, key in ipairs(bodyKeys) do
+            bodyShadow[key] = body[key]
+            -- Limb snapshots were taken against the simulated BEFORE body.
+            -- Keep that baseline until every limb delta is done; restoring the
+            -- external shadow here would add a phantom body dose per limb.
+            body[key] = simulatedBeforeBody[key]
+        end
+        if not ok then Warn("procoagulant body mirror failed: " .. tostring(err)) end
+
+        for limbId, before in pairs(beforeLimbs) do
+            local state = limbs[limbId]
+            ok, err = pcall(WSZC.ApplyMedicalDelta, ply, limbId, before)
+            local cached = limbShadow[limbId] or {}
+            cached.bleed = state.bleed
+            limbShadow[limbId] = cached
+            state.bleed = savedBleed[limbId]
+            if not ok then Warn("procoagulant limb mirror failed: " .. tostring(err)) end
+        end
+        for key, value in pairs(savedBody) do
+            body[key] = value
+            externalBody[key] = value == nil and false or value
+        end
+        for limbId, value in pairs(savedBleed) do
+            local external = externalLimbs[limbId] or {}
+            external.bleed = value == nil and false or value
+            externalLimbs[limbId] = external
+        end
+    elseif kind == "reliefcream" and type(limbs) == "table" then
+        local limbId = effect.limbId
+        local state = limbId and limbs[limbId] or nil
+        if type(state) ~= "table" then return end
+        local limbShadow = effect._WSZCLimbShadow or {}
+        local externalLimbs = effect._WSZCExternalLimbShadow or {}
+        effect._WSZCLimbShadow, effect._WSZCExternalLimbShadow = limbShadow, externalLimbs
+        local cached = limbShadow[limbId]
+        local external = externalLimbs[limbId]
+        local savedPain = state.pain
+        local externalValue = savedPain == nil and false or savedPain
+        if cached and cached.pain ~= nil and external
+            and external.pain ~= nil and external.pain == externalValue then
+            state.pain = cached.pain
+        end
+        local before = Snapshot(ply, limbId)
+        if not before then state.pain = savedPain return end
+        -- Native: Lerp(0.15, pain, pain * 0.1) == pain * 0.865.
+        state.pain = math.Clamp((state.pain or 0) * 0.865, 0, 100)
+        local ok, err = pcall(WSZC.ApplyMedicalDelta, ply, limbId, before)
+        cached = cached or {}
+        cached.pain = state.pain
+        limbShadow[limbId] = cached
+        external = external or {}
+        external.pain = savedPain == nil and false or savedPain
+        externalLimbs[limbId] = external
+        state.pain = savedPain
+        if not ok then Warn("relief-cream mirror failed: " .. tostring(err)) end
+    end
+end
+WSZC.MirrorTimedBodyEffectStep = MirrorTimedBodyEffectStep
+
+function WSZC.TickTimedBodyEffects(ply, dt)
+    if not Authority() then return end
+    local effects = IsValid(ply) and ply._WSZCTimedBodyEffects or nil
+    if type(effects) ~= "table" then return end
+    if ply.Alive and not ply:Alive() then ply._WSZCTimedBodyEffects = nil return end
+    dt = math.max(tonumber(dt) or 0, 0)
+    for id, effect in pairs(effects) do
+        effect.remaining = (tonumber(effect.remaining) or 0) - dt
+        effect.accumulator = (tonumber(effect.accumulator) or 0) + dt
+        while effect.remaining > 0 and effect.accumulator >= 1 do
+            MirrorTimedBodyEffectStep(ply, effect)
+            effect.accumulator = effect.accumulator - 1
+        end
+        if effect.remaining <= 0 then effects[id] = nil end
+    end
+end
+
+local function InstallTimedEffectBridge()
+    local h = H()
+    if type(h) ~= "table" or type(h.QueueTimedBodyEffect) ~= "function" then return false end
+    if h.QueueTimedBodyEffect == h._WSZCQueueTimedBodyEffectWrapper then return true end
+    local base = h.QueueTimedBodyEffect
+    local function wrapped(ply, body, id, duration, data)
+        local kind = data and data.kind or id
+        if not Authority() or (kind ~= "procoagulant" and kind ~= "reliefcream") then
+            return base(ply, body, id, duration, data)
+        end
+        if not IsValid(ply) or type(body) ~= "table" then return false end
+        id = tostring(id or "")
+        duration = math.max(tonumber(duration) or 0, 0)
+        if id == "" or duration <= 0 then return false end
+
+        local effects = ply._WSZCTimedBodyEffects
+        if type(effects) ~= "table" then
+            effects = {}
+            ply._WSZCTimedBodyEffects = effects
+        end
+        local effect = effects[id]
+        if effect then
+            effect.remaining = (effect.remaining or 0) + duration
+            effect.maxHad = math.max(effect.maxHad or 0, effect.remaining or 0)
+            effect.kind = data and data.kind or effect.kind
+            effect.limbId = data and data.limbId or effect.limbId
+        else
+            effect = {
+                id = id, kind = kind, limbId = data and data.limbId or nil,
+                remaining = duration, maxHad = duration, accumulator = 0,
+            }
+            effects[id] = effect
+            if not data or data.immediate ~= false then
+                MirrorTimedBodyEffectStep(ply, effect)
+            end
+        end
+        return true
+    end
+    h._WSZCOriginalQueueTimedBodyEffect = base
+    h._WSZCQueueTimedBodyEffectWrapper = wrapped
+    h.QueueTimedBodyEffect = wrapped
+    return true
+end
+WSZC.InstallTimedEffectBridge = InstallTimedEffectBridge
 
 ---------------------------------------------------------------------------
 -- Wrapper installation
@@ -3300,9 +3664,70 @@ function WSZC.ResolveTourniquetLimb(swep, ent, mode, bone)
     return limb or TourniquetExtremity(LimbFromHitgroup(tr.HitGroup))
 end
 
+-- Body drugs administered through a minigame call spec.fn LATER from
+-- StartMinigame.onProgress, after WB.SwepHeal (and its outer snapshot) has
+-- already returned.  Wrap the exposed spec functions so that asynchronous
+-- call gets its own delta.  During instant use SwepHealDepth > 0 and the outer
+-- wrapper remains solely responsible, preventing a double dose.
+local patchedBodyDrugFns = setmetatable({}, { __mode = "k" })
+local function PatchBodyDrugSpecs(wb)
+    if type(wb) ~= "table" then return false end
+    local changed = false
+    local function patch(specs)
+        for _, spec in pairs(type(specs) == "table" and specs or {}) do
+            if type(spec) == "table" and spec.kind == "body"
+                and type(spec.fn) == "function" and not patchedBodyDrugFns[spec.fn] then
+                local base = spec.fn
+                local wrapped = function(ply, body, ...)
+                    local mirror = Authority() and (WSZC.SwepHealDepth or 0) <= 0
+                    local before = mirror and WSZC.SnapshotMedical(ply, "body") or nil
+                    local a, b, c = base(ply, body, ...)
+                    if before then WSZC.ApplyMedicalDelta(ply, "body", before) end
+                    return a, b, c
+                end
+                patchedBodyDrugFns[wrapped] = true
+                spec.fn = wrapped
+                changed = true
+            end
+        end
+    end
+    patch(wb.SwepSpecs)
+    patch(wb.MedkitModes)
+    return changed
+end
+WSZC.PatchBodyDrugSpecs = PatchBodyDrugSpecs
+
+-- BloodBagGive already goes through H.ApplyItemToBody.  BloodBagTake is the
+-- opposite native path and writes body.bloodVolume directly, so without this
+-- wrapper the next organism shadow simply restored the supposedly drawn blood.
+local function PatchBloodBagTake(wb)
+    if type(wb) ~= "table" or type(wb.BloodBagTake) ~= "function" then return false end
+    if wb.BloodBagTake == wb._WSZCBloodBagTakeWrapper then return true end
+    local base = wb.BloodBagTake
+    local wrapped = function(swep, ent)
+        if not Authority() then return base(swep, ent) end
+        local ply = OwnerOf(ent)
+        local before = ply and WSZC.SnapshotMedical(ply, "body") or nil
+        local ok, a, b, c = pcall(base, swep, ent)
+        if not ok then
+            Warn("WB.BloodBagTake failed: " .. tostring(a))
+            return nil
+        end
+        if before then WSZC.ApplyMedicalDelta(ply, "body", before) end
+        return a, b, c
+    end
+    wb._WSZCOriginalBloodBagTake = base
+    wb._WSZCBloodBagTakeWrapper = wrapped
+    wb.BloodBagTake = wrapped
+    return true
+end
+
 local function InstallMedicalBridge()
     local wb = WB()
     if not (wb and wb.SwepHeal) then return false end
+    PatchBodyDrugSpecs(wb)
+    PatchBloodBagTake(wb)
+    InstallTimedEffectBridge()
     if wb._WSZCSwepHealPatched then return true end
     wb._WSZCSwepHealPatched = true
     local original = wb.SwepHeal
@@ -3497,6 +3922,8 @@ function WSZC.ClearAllShrapnel(ply, org)
     end
 
     if IsValid(ply) then
+        ply._WSZCTimedBodyEffects = nil
+        ply._WSZCNextSplintSync = nil
         if WSZC.StopAllMinigames then WSZC.StopAllMinigames(ply, "zcity_compat_reset", true) end
         local h = H()
         if h and h.ResetPlayer then pcall(h.ResetPlayer, ply)
@@ -3509,6 +3936,8 @@ function WSZC.ClearAllShrapnel(ply, org)
                     state.broken, state.dislocated = false, false
                     state.isBandaged, state.wszcBandagedShrapnel = false, false
                     state.tourniqueted, state.blockedBleeding = false, false
+                    state.splinted, state.splintItemId, state.splintSourceSlot = false, nil, nil
+                    if type(state.customStatuses) == "table" then state.customStatuses.SPLINTED = nil end
                     state.bandageSlowAmount = 0
                     state.infection, state.infectionSpeed = 0, 0
                     state.dislocationTimer = 0
@@ -3901,6 +4330,8 @@ function WSZC.InstallOrganismMode()
         if not (IsValid(owner) and owner:IsPlayer() and owner:Alive()) then return end
         if type(org) ~= "table" then return end
 
+        WSZC.TickSplints(owner, org, dt)
+        WSZC.TickTimedBodyEffects(owner, dt)
         if cvShadow and cvShadow:GetBool() then
             local ok, err = pcall(PushShadow, owner, org)
             if not ok then Warn("shadow sync failed: " .. tostring(err)) end
@@ -3994,6 +4425,7 @@ function WSZC.InstallOrganismMode()
         if not Authority() then return end
         InstallVanillaHooks()
         DisableCUPhysiology()
+        InstallMedicalBridge()
         WSZC.InstallResetStructureGuard()
     end)
 

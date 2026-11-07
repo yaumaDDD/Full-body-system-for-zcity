@@ -659,6 +659,18 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
 
     if not ok then return false, 0 end
 
+    -- C:U's chest drain reduces its own hemothorax scalar.  ZCity's canonical
+    -- equivalent is the needle state: sv_lungs then stops pneumothorax growth
+    -- and drains it over time.  Apply it only AFTER native validation/success,
+    -- never in bridge mode and never when the item was rejected.
+    if itemId == "INJECTION" and WSZC.OrganismAuthority and WSZC.OrganismAuthority() then
+        local org = ply.organism
+        if type(org) == "table" then
+            org.needle = 1
+            ply.fullsend = true
+        end
+    end
+
     if minigame == "bandage" and WSZC.ApplyBandageToOrganism then
         local treatOk, treated, _, afterBleed = pcall(
             WSZC.ApplyBandageToOrganism, ctx, ctx.profile, bandageEffectFraction)

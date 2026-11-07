@@ -27,6 +27,39 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
 > `woundsys_enabled` **не выключается** ни в одном режиме: он гатит HUD C:U,
 > серверные обработчики мини-игр и `WoundSystem_ShrapnelStart`.
 
+## Аудит лечения и authoritative-полей (2026-11-07)
+
+Медицинский mirror проверен по конечному результату в `ply.organism`, а не по
+изменению C:U shadow. Исправлены:
+
+- выбор и лечение культи после ампутации: дистальная ordinary wound видна
+  бинту на remaining stump, arterial wound остаётся отдельной задачей жгута;
+- ровно одна доза body-drugs в штатной instant-ветке и в защитном async
+  `onProgress` (`SwepHealDepth == 0`); стандартный one-dose instant не изменён;
+- прямой `BloodBagTake`: уменьшение `body.bloodVolume` отражается в `org.blood`;
+- полная доза `antagonistAmount +50` → `org.naloxoneadd +1` (clamp `0..1`),
+  успешный `INJECTION` → `org.needle = 1`, rejected/wrong-limb → без needle;
+- native timed medicine: procoagulant выполняет immediate + последующие
+  1-секундные шаги с кумулятивными значениями, уменьшая `internalBleed` и
+  настоящие ordinary/arterial wounds на всех 17 зонах. Временный C:U shadow
+  восстанавливается после каждого шага, поэтому outer mirror не повторяет дозу;
+  delayed relief cream использует тот же путь, bridge mode делегирует native;
+- отрицательный C:U limb-bleed delta теперь уменьшает сами `org.wounds`, а не
+  только временный `org.bleed`; специальные bandage/tourniquet delta по-прежнему
+  обнулены и не применяются дважды;
+- fracture timer соответствует canonical C:U remaining time (`100 → 0`), а
+  лечение меняет настоящие limb/neck/chest fields и `brokenribs`. Естественная
+  ZCity-регенерация не заменяется второй физиологией. Для `SPLINTED` сохранены
+  native износ `0.025/s`, fracture multiplier ×2.5 и joint timer ×2; expiry/reset
+  очищают статус, а снятие вывиха проходит только через анатомический anchor.
+
+Регрессия `tools/tests/test_medical_regression.py` читает canonical ZCity
+WoundBridge и native C:U definitions прямо из исходных ZIP. Она проверяет
+instant/async `SwepHeal`, настоящий `BloodBagTake`, naloxone, chest drain,
+20 timed steps, fractures/dislocations/splint и отсутствие двойного расхода или
+лечения. Это offline Lua regressions; финальная проверка в живом GMod остаётся
+обязательной для engine/net/ragdoll поведения.
+
 ## Зачем аддон нужен
 
 В `zcity.zip` уже есть мост `lua/homigrad/woundbridge`, но он рассчитан на более
@@ -848,19 +881,15 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
 - Хуки сторонних аддонов (`PreHomigradDamage`, `HomigradDamage`,
  `PostEntityTakeDamage`, `simple eye gore`, `zcitygore`, `project hemogen blood`)
  не переопределяются.
-- Проверено синтаксически (`luaparser`, 11 файлов) и на заглушечном Lua-рантайме
- (проверки лежат в репозитории: `tools/tests/test_wszc_regression.py`
- — статические маркеры всех прошлых фиксов, `ALL_LUA_OK 11/11`,
- `CJK_CLEAN`, PIL-проверка человеческих пропорций, белой обводки и
- попиксельного воссоединения head+neck вне шва, 653 материал и
- `MATERIALS.sha256`, оба ZIP / зеркало / `MANIFEST.txt`, а также runtime-проверки
- lupa: фильтр HUD, full-screen клип, рука ровно на курсоре, скрытый курсор,
- точечный фильтр текста мини-игр, native first-life neck insertion, hit-test,
- tooltip и `Broken neck` — `TEST_OK 99/99`. Вместе с gameplay `84/84` и
- bandage `31/31` актуальный итог — **214/214**). Раньше
- наборы были в `/tmp` и не пережили очистку песочницы; скрипт сборки
- тоже перенесён в `tools/build_packs.py`. На живом GMod-сервере
- ассистентом не прогонялось.
+- Проверено синтаксически (`luaparser`, 11 файлов), статически, на заглушечном
+ Lua-рантайме и через canonical ZCity WoundBridge из исходного ZIP. Актуальные
+ suites: `tools/tests/test_wszc_regression.py` (**111/111**, включая Lua 11/11,
+ CRC/зеркало/манифест и pixel checks), `test_gameplay_regression.py` (**93/93**),
+ `test_bandage_regression.py` (**35/35**) и `test_medical_regression.py`
+ (**33/33**) — всего **272/272**. Medical-suite отдельно проверяет canonical
+ instant/async medicine, timed effects, кровь, грудной дренаж, naloxone, кости,
+ вывихи и splint. Скрипт сборки находится в `tools/build_packs.py`. На живом
+ GMod-сервере ассистентом не прогонялось.
  Пользовательские live-скриншоты после `3d7c793` и `e70bfb5` показали, что
  предыдущие headless-тесты не доказывали скрытие в реальном клиенте;
  исправления выше сделаны по ним, но собственной live-проверки не было.

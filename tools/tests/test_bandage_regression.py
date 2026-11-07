@@ -183,6 +183,50 @@ return arteryClosed, downstreamClosed
     check("R05 tourniquet really closes artery and syncs native markers", tourniquet[0])
     check("R06 tourniquet closes ordinary downstream wounds only", tourniquet[1])
 
+    amputated_bandage = lua.execute(r'''
+local netvars = {}
+local ply = {
+    SetNetVar = function(self, key, value) netvars[key] = value end,
+    _limbs = {
+        arm_R = { bleed = 14, isBandaged = false, dismembered = false },
+        forearm_R = { bleed = 14, dismembered = true },
+        hand_R = { bleed = 14, dismembered = true },
+        thigh_L = { bleed = 100, dismembered = false },
+    },
+}
+ply.organism = {
+    owner = ply, bleed = 20, rarmamputated = true, rarmartery = 1,
+    wounds = {
+        { 4, nil, nil, "ValveBiped.Bip01_R_Forearm", 0 },
+    },
+    arterialwounds = {
+        { 2, nil, nil, "ValveBiped.Bip01_R_Forearm", 0, nil, "rarmartery" },
+    },
+}
+WoundSystem.Health.GetLimbs = function(target) return target._limbs end
+WoundSystem.Health.GetLimbState = function(target, id)
+    return target._limbs[id]
+end
+local routed = WSZC.GetBandageBleeding(ply, "arm_R") == 8
+    and WSZC.GetArterialBleeding(ply, "arm_R") == 6
+    and WSZC.BestBandageLimb(ply, "forearm_R") == "arm_R"
+local amount, before, after = WSZC.ApplyBandageToOrganism({
+    ply = ply, limbId = "arm_R", limb = ply._limbs.arm_R,
+}, { effects = { bandageSlowAmount = 45 } }, 1)
+local treated = math.abs(amount - 8) < 0.001 and math.abs(before - 14) < 0.001
+    and math.abs(after - 6) < 0.001
+    and WSZC.GetBandageBleeding(ply, "arm_R") == 0
+    and WSZC.GetArterialBleeding(ply, "arm_R") == 6
+    and #ply.organism.wounds == 0 and #ply.organism.arterialwounds == 1
+    and ply.organism.arterialwounds[1][1] == 2 and ply.organism.rarmartery == 1
+    and math.abs(ply.organism.bleed - 18.4) < 0.001
+    and ply._limbs.arm_R.bleed == 6 and ply._limbs.arm_R.isBandaged == false
+    and WSZC.BestBandageLimb(ply, "forearm_R") == nil
+return routed, treated
+''')
+    check("R26 confirmed amputation routes bandage selection and progress to the stump", amputated_bandage[0])
+    check("R27 stump bandage treats the real distal wound without clearing its artery", amputated_bandage[1])
+
     # ----------------------------------------------------- server progress --
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(r'''

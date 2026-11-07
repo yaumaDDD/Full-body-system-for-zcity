@@ -315,8 +315,9 @@ check('S46 one fracture point (middle limb) + one dislocation point (limb above)
       and len(_disloc_limbs) == 4
       and set(_disloc_limbs) == {'arm_L', 'arm_R', 'thigh_L', 'thigh_R'}
       and 'if not BoneAnchor(limbId, "fracture") then return false end' in organism_s
-      and organism_s.count('BoneAnchor(limbId, "dislocation")') == 2
-      and 'limbSet("broken", Fractured(org, limbId, map))' in organism_s
+      and organism_s.count('BoneAnchor(limbId, "dislocation")') == 3
+      and 'limbSet("broken", fractured)' in organism_s
+      and 'limbSet("boneHealTimer", fractured and math.Clamp(dmg * 100, 0, 100) or 0)' in organism_s
       and 'limbSet("dislocated", out)' in organism_s
       and 'WSZC.BoneAnchor = BoneAnchor' in organism_s)
 check('S47 human hand + hidden arrow, action button offset, post-game release',
