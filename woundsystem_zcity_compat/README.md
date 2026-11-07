@@ -12,7 +12,8 @@
 ragdoll/fake и death logic остаются за ZCity. C:U остаётся загруженной, но
 выступает только как:
 
-- **UI** — панель осмотра травм `WoundSystem.OpenHealthHUD()` (self-only);
+- **UI** — панель осмотра травм `WoundSystem.OpenHealthHUD()` для себя и для
+  выбранного пациента через отдельную кнопку «Лечить игрока»;
 - **мини-игры** — bandage/syringe для «живых» ZCity-предметов, родная игра
   извлечения осколков и родная игра **ручного вправления вывихов**
   (`WoundSystemDislocationMinigame`, кнопка `FIX DISLOCATION`);
@@ -78,6 +79,43 @@ ragdoll/fake и death logic остаются за ZCity. C:U остаётся з
     `OpenHealthHUD()` мог навсегда заблокироваться после выключения физиологии C:U,
     и сбрасывает шрапнель при респавне (в том числе после `LoadPlayerPersistData`
     при переходе между картами).
+
+## Лечение другого игрока
+
+При наведении на другого живого игрока или его ragdoll (до 256 units) в
+`radialOptions` добавляется независимая кнопка **«Лечить игрока»**. Исходная
+«Проверить травмы» остаётся self-only. Remote-кнопку можно отключить конваром
+`zc_woundsystem_compat_remote_inspect_button 0`; консольная команда —
+`wszc_treat_player`.
+
+Клиент не подменяет `LocalPlayer()` глобально. Он открывает штатный
+`WoundSystem.OpenHealthHUD()` и временно наполняет exposed C:U tables
+`PlayerLimbs`, `Cardio` и `PlayerStats` авторитетными snapshots пациента
+(обновление каждые 0.35 с). Self tables сохраняются и восстанавливаются при
+закрытии; обычные self-updates во время remote-осмотра не затирают экран
+пациента, а после закрытия сервер присылает свежий self-snapshot.
+
+Только whitelist native medical messages перехватывается и отправляется как
+`WSZC_RemoteMedicalAction` с явным `target` и typed payload. Сервер проверяет:
+
+- operator и patient — разные живые игроки на дистанции ≤256;
+- наличие активной inspection session именно для этой пары;
+- точную схему action, число/типы полей и владельца native session;
+- реальный слот лекаря и дистанцию на каждом external input.
+
+Medical-эффекты вызываются для пациента через существующие C:U receivers и
+`WSZC.ApplyMedicalDelta`; расход и durability — из инвентаря лекаря. Native
+shrapnel/dislocation/AED sessions остаются у пациента, а UI/state/input
+перенаправляются лекарю, включая отложенные AED callbacks. Bandage/syringe
+используют существующий `StartExternalMinigame`: каждая принятая доза сначала
+применяется к пациенту и затем синхронно списывается с лекаря. Два лечебных
+minigame у одного лекаря одновременно не запускаются.
+
+Поскольку в этой сборке C:U inventory обычно скрыт, **только на время активного
+remote treatment** пять слотов показывают реальные предметы лекаря и разрешают
+их выбор/move. Self-панель и скрытие UNI-HEALTH не меняются. Watchdog закрывает
+inspection/native/external sessions при смерти, дистанции, потере цели,
+disconnect и закрытии панели.
 
 ## Шрапнель: одно состояние, три источника
 

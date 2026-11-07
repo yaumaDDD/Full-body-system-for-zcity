@@ -33,6 +33,8 @@ CLIENT = CONN / 'lua/autorun/client'
 SERVER = CONN / 'lua/autorun/server'
 LAYOUT = CLIENT / 'cl_zcity_woundsystem_compat_layout.lua'
 ORGANISM = SERVER / 'sv_zcity_woundsystem_compat_organism.lua'
+REMOTE_SERVER = SERVER / 'sv_zcity_woundsystem_compat_remote.lua'
+REMOTE_CLIENT = CLIENT / 'cl_zcity_woundsystem_compat_remote.lua'
 
 results = []
 
@@ -56,6 +58,8 @@ def src(rel):
 # ---------------------------------------------------------------- static ----
 layout_s = LAYOUT.read_text(encoding='utf-8')
 organism_s = ORGANISM.read_text(encoding='utf-8')
+remote_server_s = REMOTE_SERVER.read_text(encoding='utf-8')
+remote_client_s = REMOTE_CLIENT.read_text(encoding='utf-8')
 minigames_s = (CLIENT / 'cl_zcity_woundsystem_compat_minigames.lua').read_text(encoding='utf-8')
 generator_s = src('tools/build_unitmenu_materials.py')
 readme_s = src('README.md')
@@ -357,6 +361,79 @@ check('S41 text=all no longer deletes gameplay sprites / the wound front layer',
       and 'bandageouter' in layout_s
       and 'WSZC.MinigameTextHidden()' in layout_s)
 
+# Remote treatment is an adapter around C:U, never a second health model.
+check('S51 separate remote radial option; self inspection remains intact',
+      'Лечить игрока' in remote_client_s
+      and 'ZCity_WoundBridge_RemoteInspect_WSZC' in remote_client_s
+      and '_WSZCRemoteInspect = true' in remote_client_s
+      and 'target ~= ply' in remote_client_s
+      and 'hg.RagdollOwner' in remote_client_s
+      and 'WSZC.OpenCUWoundMenu = function(...)' in remote_client_s
+      and 'ZCity_WoundBridge_RemoteInspect_WSZC'
+          not in src('woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_inspect.lua'))
+check('S52 namespaced protocol carries an explicit patient and exact schemas',
+      'WSZC_RemoteMedicalAction' in remote_server_s
+      and 'local EXPECTED = {' in remote_server_s
+      and 'local INPUT_TYPES = {' in remote_server_s
+      and 'payload.n or #payload' in remote_server_s
+      and 'inspection.target ~= target or not ValidPair(operator, target)' in remote_server_s
+      and 'operator == target' in remote_server_s
+      and 'not operator:Alive() or not target:Alive()' in remote_server_s
+      and 'distance <= RANGE' in remote_server_s)
+check('S53 native sessions belong to patient; traffic and slots belong to operator',
+      'receiver(0, target)' in remote_server_s
+      and 'targetInventory[slotIdx] = operatorSlot' in remote_server_s
+      and 'targetInventory[slotIdx] = originalSlot or EmptySlot()' in remote_server_s
+      and 'operatorInventory[slotIdx] = EmptySlot()' in remote_server_s
+      and 'originalSend(activeNet.operator' in remote_server_s
+      and 'originalSend(meta.operator' in remote_server_s
+      and 'message == "WoundSystem_SyncInventory" then return end' in remote_server_s)
+check('S54 remote client restores limbs, cardio and skills; drops self updates only remotely',
+      'selfUpdateOriginals' in remote_client_s
+      and 'if Remote.active then return end' in remote_client_s
+      and 'Remote.selfStats' in remote_client_s
+      and 'ApplyStatsSnapshot(cardio)' in remote_client_s
+      and 'ReplaceContents(currentStats, Remote.selfStats)' in remote_client_s
+      and 'RestoreSelfState()' in remote_client_s)
+check('S55 native minigames and AED timers revalidate the remote pair',
+      'MetaFor(target, "Aed")' in remote_server_s
+      and 'not ValidPair(operator, target) then return end' in remote_server_s
+      and 'WithNativeContext(operator, target, meta.slotIdx' in remote_server_s
+      and 'NativeSession(target, kind)' in remote_server_s
+      and 'OperatorBusy(operator)' in remote_server_s)
+check('S56 bandage/syringe reuse external sessions; one applied dose equals one consume',
+      'h.StartExternalMinigame' in remote_server_s
+      and 'h.ApplyItemToBody, target, itemId, limbId, cost' in remote_server_s
+      and 'ConsumeSlot(operator, idx, itemId, cost, true)' in remote_server_s
+      and 'ConsumeSlot(operator, idx, itemId, cost)' in remote_server_s
+      and 'if durability <= 0 then return false end' in remote_server_s
+      and '.remote = true' in remote_server_s
+      and 'RemoteSessionValid(ply, session)' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua'))
+check('S57 pending opens and all remote/native/external sessions have a close path',
+      'FinishRemote("open_timeout")' in remote_client_s
+      and 'if Remote.active or Remote.pending then FinishRemote("replaced") end' in remote_client_s
+      and 'WSZC_RemoteMedicalWatchdog' in remote_server_s
+      and 'CloseNativeMeta(target, kind' in remote_server_s
+      and 'StopExternalMinigame' in remote_server_s
+      and 'PlayerDisconnected' in remote_server_s)
+check('S58 remote client/server modules are registered for download and include',
+      'AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_remote.lua")' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat.lua')
+      and 'include("autorun/server/sv_zcity_woundsystem_compat_remote.lua")' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat.lua'))
+
+check('S59 hidden self inventory is reopened only for the remote medic',
+      'WSZC.CUInventoryAllowed = InventoryAllowed' in layout_s
+      and 'WSZC.RemoteMedical and WSZC.RemoteMedical.active == true' in layout_s
+      and 'if InventoryAllowed() then return rawget(real, key) end' in layout_s
+      and 'if InventoryAllowed() then return inventoryMoveOriginal(...) end' in layout_s
+      and 'if InventoryAllowed() then return false end' in layout_s)
+
+check('S60 remote treatment usage, controls and limitations are documented',
+      'Лечить игрока' in all_docs
+      and 'zc_woundsystem_compat_remote_inspect_button' in all_docs
+      and 'wszc_treat_player' in all_docs
+      and 'двух' in all_docs.lower()
+      and 'предметы' in all_docs.lower() and 'лекар' in all_docs.lower())
+
 # Lua syntax (luaparser is optional).
 try:
     sys.path.insert(0, '/tmp/luaparser_pkg')
@@ -368,7 +445,7 @@ try:
             ast.parse(Path(f).read_text(encoding='utf-8'))
         except Exception as exc:
             bad.append((f, str(exc)[:120]))
-    check('S15 ALL_LUA_OK %d/%d' % (len(lua_files) - len(bad), len(lua_files)), not bad and len(lua_files) == 11)
+    check('S15 ALL_LUA_OK %d/%d' % (len(lua_files) - len(bad), len(lua_files)), not bad and len(lua_files) == 13)
 except ImportError:
     print('SKIP S15 luaparser unavailable')
 
@@ -510,7 +587,7 @@ def validate_zips():
         assert z.testzip() is None
         full = {i.filename: z.read(i.filename) for i in z.infolist()}
     conn_files = {p.relative_to(CONN).as_posix(): p.read_bytes() for p in CONN.rglob('*') if p.is_file()}
-    assert len(conn_files) == len(compat) == 662
+    assert len(conn_files) == len(compat) == 664
     assert all(compat['woundsystem_zcity_compat/' + r] == d for r, d in conn_files.items())
     mirror = {n[len('garrysmod/addons/casualties_unknown_health_system_beta/materials/'):]: d
               for n, d in full.items()
@@ -522,7 +599,7 @@ def validate_zips():
     assert len(bridge) == 1 and b'Not completed - nothing was applied' not in full[bridge[0]]
     manifest = full['MANIFEST.txt'].decode('utf-8')
     shas = re.findall(r'woundsystem_zcity_compat/lua/[^\s]+\.lua\s+([0-9a-f]{64})', manifest)
-    assert len(shas) == 11
+    assert len(shas) == 13
     assert all(hashlib.sha256(d).hexdigest() in shas for r, d in conn_files.items() if r.endswith('.lua'))
     shipped_layout = full['garrysmod/addons/woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua'].decode('utf-8')
     assert 'HandRectForCursor' in shipped_layout
@@ -532,7 +609,7 @@ def validate_zips():
     assert 'origBoardRect' not in shipped_layout
     assert 'function WSZC.WoundViewEmptyClick' in shipped_layout
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
-    assert len(full) == 2765
+    assert len(full) == 2767
     return True
 
 
@@ -1202,6 +1279,56 @@ end)()
     return arrowDefault and noHand and patched and twice and released
 end)()
 ''')
+
+    rt('R34 remote treatment alone exposes the medic inventory; self stays hidden', '''
+(function()
+    WSZC.InstallCUInventoryProxy()
+    local real = WSZC._CURealInventory
+    real[1] = { type = "tool", toolName = "MORPHINE", durability = 10 }
+    WSZC.RemoteMedical = nil
+    WSZC.CUHudFiltered = true
+    local selfSlotHidden = WoundSystemInventorySlots[1].type == "empty"
+        and WSZC.CUHudHiddenRegionRaw(760, 240, 50, 50) == true
+    WoundSystemInventorySlots[1] = { type = "tool", toolName = "BAD" }
+    local selfWriteBlocked = real[1].toolName == "MORPHINE"
+    WSZC.RemoteMedical = { active = true }
+    local remoteSlotVisible = WoundSystemInventorySlots[1] == real[1]
+        and WSZC.CUInventoryAllowed() == true
+        and WSZC.CUHudHiddenRegionRaw(760, 240, 50, 50) == false
+    WoundSystemInventorySlots[1] = { type = "tool", toolName = "AED", durability = 5 }
+    local remoteWriteAllowed = real[1].toolName == "AED"
+    WSZC.RemoteMedical = nil
+    WSZC.CUHudFiltered = false
+    return selfSlotHidden and selfWriteBlocked and remoteSlotVisible and remoteWriteAllowed
+end)()
+''')
+
+# Remote treatment uses isolated server/client Lua states and representative
+# native C:U receivers.  It exercises behavior rather than source markers.
+if LuaRuntime is not None:
+    remote_fixture = (ROOT / 'tools/tests/remote_medical_runtime.lua').read_text(encoding='utf-8')
+    for mode, remote_source in (('server', remote_server_s), ('client', remote_client_s)):
+        remote_lua = LuaRuntime(unpack_returned_tuples=True)
+        remote_lua.globals().MODE = mode
+        remote_lua.globals().REMOTE_SOURCE = remote_source
+        try:
+            remote_cases = remote_lua.execute(remote_fixture)
+            invoke = remote_lua.eval('function(fn) local ok, err = pcall(fn); return ok, err end')
+            index = 1
+            while remote_cases[index] is not None:
+                case = remote_cases[index]
+                try:
+                    ok, err = invoke(case.fn)
+                    check(case.name, ok)
+                    if not ok:
+                        print('ERR', case.name, str(err)[:240])
+                except Exception as exc:
+                    check(case.name, False)
+                    print('ERR', case.name, type(exc).__name__, str(exc)[:240])
+                index += 1
+        except Exception as exc:
+            check('REMOTE_' + mode.upper() + '_HARNESS_LOAD', False)
+            print('ERR REMOTE_' + mode.upper() + '_HARNESS_LOAD', type(exc).__name__, str(exc)[:300])
 
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)

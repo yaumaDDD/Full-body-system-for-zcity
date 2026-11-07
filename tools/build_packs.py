@@ -11,7 +11,7 @@ only the parts this repository owns:
         <- the exact same 647 UI materials mirrored into C:U
   * root docs (README_INSTALL.md / ZCity_binds.md / WORKSHOP_IDS.txt)
   * garrysmod/cfg/zcity_binds.cfg
-  * MANIFEST.txt (counts + sha256 of the 11 connector Lua files)
+  * MANIFEST.txt (counts + sha256 of the 13 connector Lua files)
 
 No file of any upstream addon is modified except the single already-patched
 line in z_city/lua/homigrad/woundbridge/sv_woundbridge.lua.
@@ -134,7 +134,7 @@ def main():
     conn = collect_connector()
     lua = [r for r in conn if r.endswith('.lua')]
     mats = [r for r in conn if r.startswith('materials/')]
-    assert len(lua) == 11, ('connector Lua count', len(lua))
+    assert len(lua) == 13, ('connector Lua count', len(lua))
     assert len(mats) >= 647, ('connector material count', len(mats))
     for marker in ('limbs/head_fill.png', 'limbs/thorax_edge.png',
                    'homigrad/handanim/hand.png', 'handanim/3_3.png'):

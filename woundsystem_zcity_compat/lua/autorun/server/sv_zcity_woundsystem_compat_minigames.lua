@@ -474,6 +474,12 @@ function WSZC.InstallMinigameAPI(H)
     return true
 end
 
+local function RemoteSessionValid(ply, session)
+    if not session.remote then return true end
+    local validator = WSZC.RemoteMedicalValidPair
+    return type(validator) == "function" and validator(ply, session.target) == true
+end
+
 local function ProcessBandageInput(_, ply)
     local session = ValidSession(ply)
     if not session or session.kind ~= "bandage" then return end
@@ -489,6 +495,10 @@ local function ProcessBandageInput(_, ply)
     end
     if not IsValid(session.target) or not session.target:Alive() or not Bridged(session.target) then
         StopMinigame(ply, "target_gone")
+        return
+    end
+    if not RemoteSessionValid(ply, session) then
+        StopMinigame(ply, "out_of_range")
         return
     end
 
@@ -540,6 +550,10 @@ local function ProcessSyringeInput(_, ply)
     end
     if not IsValid(session.target) or not session.target:Alive() or not Bridged(session.target) then
         StopMinigame(ply, "target_gone")
+        return
+    end
+    if not RemoteSessionValid(ply, session) then
+        StopMinigame(ply, "out_of_range")
         return
     end
 

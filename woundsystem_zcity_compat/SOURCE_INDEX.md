@@ -12,10 +12,12 @@ GMod. Исходные ZIP-аддоны не изменяются: всё пат
 | `lua/autorun/sh_zcity_woundsystem_compat.lua` | shared | `WSZC.OrganismAuthority()`, конвар `zc_woundsystem_compat_authority`, `WithVanillaContext`, `PatchIsEnabled`, `PatchIsBridged` (weak-key `BridgedWrappers`), повторные попытки инициализации |
 | `lua/autorun/server/sv_zcity_woundsystem_compat.lua` | server | Основной мост: weak-key `WSZC.RawDamage`, `DamageWrapper`, снимки/дельты медицины в `ApplyItemToBodyImpl`, публикация `WSZC_Ready` / `WSZC_OrganismAuthority`, `Setup()`/`Attempt()`, mode-aware `InstallOrganismMode` |
 | `lua/autorun/server/sv_zcity_woundsystem_compat_organism.lua` | server | Authority-слой: единый `state.shrapnel`, `IsShotgunHit()` (только дробовик/взрыв), `FreshHitgroup`/`LimbFromHitBones` (limb из `org.dmgstack`/`HitBones`), `InjectDamageShrapnel` в `PostEntityTakeDamage`, `WSZC.RestoreShrapnel`/`SyncShrapnel` (двусторонняя синхронизация, сохранение в ragdoll), `WSZC_GlassRagdoll` (стекло в fake ragdoll), `ApplyShrapnelComplication` + irritation (боль/нарастающее кровотечение от мини-игры), `InstallResetStructureGuard()`, `Constants()`, `WrapHook`, per-limb shadow, `DisableCUBloodReplacement()`, `WB.SwepHeal`, 5-секундный reapply |
-| `lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua` | server | instant / watchdog / continuous мини-игры, виртуальный слот `6`, `WSZC_*` net-сообщения, рантайм-фильтр надписи «Not completed - nothing was applied», `session.frozenAngles` и серверный `SetupMove`-лок движения + камеры |
+| `lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua` | server | instant / watchdog / continuous мини-игры, виртуальный слот `6`, `WSZC_*` net-сообщения, рантайм-фильтр надписи «Not completed - nothing was applied», `session.frozenAngles` и серверный `SetupMove`-лок движения + камеры; remote input перепроверяет operator→target |
+| `lua/autorun/server/sv_zcity_woundsystem_compat_remote.lua` | server | Namespaced operator→patient protocol, Alive/range/session/schema validation, snapshots, native packet replay и redirect, borrowing/restoration слотов лекаря, AED timer context, external bandage/syringe, watchdog |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua` | client | Full-screen мини-игры: переопределение `WoundSystem.MinigameClip.GetRect()`, единый `WSZC.MinigameScale()`, клиентский кламп `org.adrenaline`/`org.painkiller` |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_fx.lua` | client | Фильтр эффектов C:U: снимает `RenderScreenspaceEffects`/`CalcView`/`HUDPaint*`/`PostDrawHUD`/`CreateMove`/fog-хуки и blood-хуки, нейтрализует `TextCorruption`, выставляет визуальные конвары C:U в `0`, умеет восстанавливать оригиналы |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_inspect.lua` | client | Пункт «Проверить травмы» в круговом меню ZCity → `WoundSystem.OpenHealthHUD()`, gate `WSZC_Ready`, `OPEN_DELAY = 0.12`, `wszc_open_wounds` |
+| `lua/autorun/client/cl_zcity_woundsystem_compat_remote.lua` | client | Отдельная кнопка «Лечить игрока» для player/ragdoll, delayed open, snapshots пациента, whitelist capture native actions, reuse WoundView, guards/restoration self-state и patient banner |
 | `lua/autorun/client/cl_zcity_woundsystem_compat_minigames.lua` | client | Клиентская часть мини-игр, приём `WSZC_*`, владение курсором без мигания, заморозка `ViewAngles` без подавления GUI-мыши (`InputMouseApply` НЕ возвращает `true`), пропуск `+attack`/`+attack2` в UI, блокировка движения `SetupMove` |
 | `lua/autorun/client/wszc_cl_bandage.lua` | client | Порт родной C:U мини-игры бинтования (ЛКМ/ПКМ/ESC), layout на весь экран |
 | `lua/autorun/client/wszc_cl_syringe.lua` | client | Порт родной C:U мини-игры шприца (ЛКМ/ПКМ/ESC), board = весь экран, оффсеты в долях viewport |
@@ -104,21 +106,20 @@ GMod. Исходные ZIP-аддоны не изменяются: всё пат
 | Стабилизировать руку/курсор | `WSZC.StabilizeHandPhysics()` обнуляет `pain`/`shakeX`/`shakeY` и ограничивает `maxLength=45` в копиях `sh_handphysics.lua`; `WSZC.HandCursorScale()` = 0.45 умножает спрайт 512×1260 в `wszc_cl_bandage.lua` / `wszc_cl_syringe.lua`; `WSZC.MinigameActive()` теперь знает все нативные мини-игры C:U (курсор + лок камеры). |
 | Респавн после смерти | `WSZC.MinigameContextOK()` возвращает `false` для `not LocalPlayer():Alive()`; `WSZC.MinigameActive()` / `WSZCMinigameActive()` / `NativeMinigameActive()` всё проверяют. `WSZC.ClearAllMinigameState()` на `PlayerDeath`/`PlayerSpawn` сбрасывает `MinigameHUDOpen`, `MinigameFrozenAngles`, `_ViewModelHidden` и `MG.active` у всех 7 таблиц мини-игр. Серверный `WSZC_MinigameServerLock` выходит сразу для мёртвого игрока, чтобы `PlayerDeathThink` получил свободный `CUserCmd`. |
 
-Валидация: все 11 Lua-файлов проходят `luaparser`, `addon.json` — JSON-парсер,
-headless-тесты `TEST_OK 11/11` (базовые фиксы), `TEST_OK 8/8` (full-screen и
-нативный клип), `TEST_OK 20/20` (FX/кровь/курсор/камера/бинды), `TEST_OK 11/11`
-`tools/tests/test_wszc_regression.py` — **65 проверок** в репозитории:
-статические маркеры всех прошлых фиксов, `ALL_LUA_OK 11/11`,
-`CJK_CLEAN`, PIL-проверка человеческих пропорций / белой обводки /
-зазоров суставов, 647 материалов, `MATERIALS.sha256`, оба ZIP /
-зеркало / `MANIFEST.txt` и 29 рантайм-проверок на lupa (включая
-точечный фильтр текста (включая AED), сохранение уведомлений ZCity,
-сохранение `finalOutline` для hover и `FindCULimbs` fallback).
-Прежние transient-наборы из `/tmp` не
-пережили очистку песочницы; сборка тоже перенесена в
-`tools/build_packs.py`.
-Живой GMod-сервер ассистентом не запускался; правки сделаны по пользовательским
-live-скриншотам.
+Текущая валидация: все **13 Lua-файлов** проходят `luaparser`, `addon.json` —
+JSON-парсер, `tools/tests/test_wszc_regression.py` — **122/122 проверки**.
+Набор включает статические маркеры прошлых исправлений, PIL/материалы,
+CRC/source-equality обоих ZIP и манифест с 13 Lua hashes, runtime HUD/minigame
+checks и изолированный `tools/tests/remote_medical_runtime.lua`. Последний
+выполняет 28 server/client behavior tests для remote treatment: spoofing и
+schemas, дистанция, расход/восстановление инвентаря, native Start/Input/Close,
+async redirect, AED timers, external doses, watchdog и self-state restoration.
+Дополнительно покрыты stale close при смене цели, запрет self-fallback для
+invalid patient, потеря AED-слота, disconnect и защита native-сессии от self-input
+пациента. Отдельный R34 проверяет, что скрытый self-inventory открывается только лекарю
+во время remote treatment. Сборка воспроизводится через `tools/build_packs.py`.
+Живой GMod-сервер не запускался; для новой функции нужна проверка на двух
+реальных клиентах.
 
 ## По live-скриншотам №6 (`Screenshot_2-8`, `Screenshot_3-5`)
 

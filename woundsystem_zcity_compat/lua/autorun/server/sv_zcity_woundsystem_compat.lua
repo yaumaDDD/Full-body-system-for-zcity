@@ -21,6 +21,7 @@ WSZC._ServerLoaded = true
 AddCSLuaFile("autorun/sh_zcity_woundsystem_compat.lua")
 AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_minigames.lua")
 AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_inspect.lua")
+AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_remote.lua")
 AddCSLuaFile("autorun/client/wszc_cl_bandage.lua")
 AddCSLuaFile("autorun/client/wszc_cl_syringe.lua")
 if not WSZC.PatchIsEnabled then
@@ -636,6 +637,7 @@ WSZC.ApplyItemToBodyImpl = ApplyItemToBodyImpl
 -- Registers WSZC.InstallMinigameAPI() and the namespaced net protocol.
 include("autorun/server/sv_zcity_woundsystem_compat_minigames.lua")
 include("autorun/server/sv_zcity_woundsystem_compat_organism.lua")
+include("autorun/server/sv_zcity_woundsystem_compat_remote.lua")
 
 ---------------------------------------------------------------------------
 -- One-time setup
