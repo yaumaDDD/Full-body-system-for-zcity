@@ -115,9 +115,9 @@ severity 4 стоит 4 заряда и у малого (40), и у большо
 Цель бинта выбирается по реальным `organism.wounds`/aftercare, а не по stale
 `isBandaged` или shadow-only bleed; после последнего treatment native-сессия
 завершается `completed`, проходит `onClose/AfterUse` и снимает overlay/slot.
-`disinfected/processing`, fracture/dislocation, след укола и обычные C:U bleed
-иконки скрыты в WoundView, при этом infection/shrapnel и настоящий
-`disinfectTime` не затрагиваются. Красная 48px капля теперь означает только
+`disinfected/processing`, след укола и обычные C:U bleed иконки скрыты в
+WoundView. **Fracture/dislocation остаются видимыми**; infection/shrapnel и
+настоящий `disinfectTime` не затрагиваются. Красная 48px капля теперь означает только
 реальную артерию: native status `WSZC_ARTERIAL_BLEEDING` синхронизируется из
 `org.arterialwounds`, исчезает после жгута и не зависит от обычной раны/бинта.
 

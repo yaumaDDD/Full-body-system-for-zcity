@@ -1933,7 +1933,7 @@ end)()
 end)()
 ''')
 
-    rt('R38 native HUD hides marked statuses + ordinary bleed, keeps arterial and native sampling', '''
+    rt('R38 native HUD hides disinfect/injection + ordinary bleed but keeps fracture/dislocation/arterial', '''
 (function()
     filterCalls = {}
     TEXFILTER = { LINEAR = 77 }
@@ -1948,6 +1948,7 @@ end)()
     Icons.smallbleed = Material("native/bleeding")
     Icons.fracture = Material("native/fracture")
     Icons.dislocate = Material("native/dislocation")
+    Icons.injection = Material("native/injection")
     local arterial = Material("zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png")
     local handState = { disinfectTime = 120, infection = 4 }
     WoundSystemClientState = { PlayerLimbs = { hand_R = handState } }
@@ -1961,6 +1962,7 @@ end)()
         AddHudIcon(items, Icons.infectionneutral)
         AddHudIcon(items, Icons.fracture)
         AddHudIcon(items, Icons.dislocate)
+        AddHudIcon(items, Icons.injection)
         AddHudIcon(items, Icons.smallbleed)
         AddHudIcon(items, arterial)
         NativeWoundViewIcons = items
@@ -1970,15 +1972,18 @@ end)()
     local installedAgain = WSZC.InstallDisinfectedIconFilter()
     hook._t["HUDPaint"]["WoundDollAndPanel"]()
 
-    local count, infection, arterialKept = 0, 0, 0
+    local count, infection, fracture, dislocation, arterialKept = 0, 0, 0, 0, 0
     for _, mat in ipairs(NativeWoundViewIcons or {}) do
         count = count + 1
         if mat == Icons.infectionneutral then infection = infection + 1 end
+        if mat == Icons.fracture then fracture = fracture + 1 end
+        if mat == Icons.dislocate then dislocation = dislocation + 1 end
         if mat == arterial then arterialKept = arterialKept + 1 end
     end
     local filters = table.concat(filterCalls, ",")
-    return installed and installedAgain and count == 2
-        and infection == 1 and arterialKept == 1 and handState.disinfectTime == 120
+    return installed and installedAgain and count == 4
+        and infection == 1 and fracture == 1 and dislocation == 1 and arterialKept == 1
+        and handState.disinfectTime == 120
         and handState.infection == 4
         and filters == "" -- no LINEAR smoothing / no filter-stack side effects
 end)()
@@ -1986,7 +1991,7 @@ end)()
 
     # Live C:U keeps Icons in a local upvalue, not in _G.  Exercise that exact
     # load shape and put AddHudIcon one closure below WoundDollAndPanel.
-    rt('R42 local/nested Icons and exact paths hide marked icons without hiding shrapnel/infection/arterial', '''
+    rt('R42 local/nested Icons and exact paths hide processing/ordinary bleed but keep fracture/shrapnel/infection/arterial', '''
 (function()
     local nativeItems = {}
     local Icons = {
@@ -2023,7 +2028,8 @@ end)()
     hook.Add("HUDPaint", "WoundDollAndPanel", PathNativeWoundView)
     local pathInstalled = WSZC.InstallDisinfectedIconFilter()
     PathNativeWoundView()
-    return localIconsOK and pathInstalled and #pathItems == 1 and pathItems[1] == arterial
+    return localIconsOK and pathInstalled and #pathItems == 2
+        and pathItems[1] == fracture and pathItems[2] == arterial
 end)()
 ''')
 

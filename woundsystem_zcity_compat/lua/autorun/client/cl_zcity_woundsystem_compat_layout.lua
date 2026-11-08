@@ -809,8 +809,9 @@ end
 WSZC.InstallCUHudDrawWrappers = InstallDrawWrappers
 
 -- Keep treatment state intact; filter ONLY presentation in native WoundView.
--- Owner-marked icons: disinfect spray, fracture, dislocation and injection.
--- Ordinary bleed icons are hidden as well: a separate native status with a
+-- Owner-marked icons: disinfect spray and injection.  Fracture/dislocation
+-- stay visible: their red native injury colour is information, not a removal
+-- mark.  Ordinary bleed icons are hidden: a separate native status with a
 -- DIFFERENT material is projected from real org.arterialwounds on the server.
 -- Infection, shrapnel, tourniquet/splint, amputation and internal-bleed status
 -- are not part of this removal and keep their existing behaviour.
@@ -818,8 +819,7 @@ local disinfectedFilterFns = setmetatable({}, { __mode = "k" })
 local disinfectedFilterWrappers = setmetatable({}, { __mode = "k" })
 
 local HIDDEN_NATIVE_STATUS_KEYS = {
-    disinfected = true, fracture = true, fracture2 = true, dislocate = true,
-    injection = true,
+    disinfected = true, injection = true,
     smallbleed = true, smallbleed_bandaged = true,
     midbleed = true, midbleed_bandaged = true,
     strongbleed = true, strongbleed_bandaged = true,
@@ -828,11 +828,8 @@ local HIDDEN_NATIVE_STATUS_KEYS = {
 
 local HIDDEN_NATIVE_STATUS_PATHS = {
     ["casunknown-images/icons/disinfected.png"] = true,
-    ["casunknown-images/icons/fracturedbone.png"] = true,
-    ["casunknown-images/icons/dislocatedbone.png"] = true,
     ["casunknown-images/icons/injectionwound.png"] = true,
     ["casunknown-images/icons/injectionwound_red.png"] = true,
-    ["casunknown-images/bottomui/fracturedbone.png"] = true,
     ["casunknown-images/icons/smallbleeding.png"] = true,
     ["casunknown-images/icons/smallbleedingbandaged.png"] = true,
     ["casunknown-images/icons/midbleeding.png"] = true,
@@ -841,11 +838,7 @@ local HIDDEN_NATIVE_STATUS_PATHS = {
     ["casunknown-images/icons/bleedingbandaged.png"] = true,
     ["casunknown-images/icons/strongbleed.png"] = true,
     ["casunknown-images/icons/strongbleedbandaged.png"] = true,
-    ["wszc/unitmenu/status/fracture.png"] = true,
-    ["wszc/unitmenu/status/dislocation.png"] = true,
     ["wszc/unitmenu/status/bleeding.png"] = true,
-    ["zcity_delta/unitmenu/status/fracture.png"] = true,
-    ["zcity_delta/unitmenu/status/dislocation.png"] = true,
     ["zcity_delta/unitmenu/status/bleeding.png"] = true,
 }
 
@@ -1823,8 +1816,8 @@ local function ApplyUnitmenuIcons()
     for key, mat in pairs(built) do icons[key] = mat end
     -- Do NOT replace Icons.disinfected with infection.png: that still leaves a
     -- processing slot and confuses it with a real infection.  AddHudIcon skips
-    -- the marked statuses and ordinary bleed; the arterial status has its own
-    -- distinct material and remains visible.
+    -- disinfect/injection and ordinary bleed; fracture/dislocation and the
+    -- distinct arterial material remain visible.
     icons._WSZCUnitmenuPatched = true
     return true
 end

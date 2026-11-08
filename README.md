@@ -178,8 +178,9 @@ white exterior кистей, швов и внешних white-anchors непос
 последнего обычного кровотечения native-сессия автоматически закрывается через
 `completed` → `onClose/AfterUse`, удаляя virtual slot и client overlay; расход
 по-прежнему равен реально удалённой severity без второго Consume. Ложный значок
-`disinfected/processing`, fracture/dislocation и след укола больше не рисуются
-в WoundView; infection/shrapnel и действие `disinfectTime` сохраняются. Обычная
+`disinfected/processing` и след укола больше не рисуются в WoundView;
+**fracture/dislocation остаются видимыми**, как и infection/shrapnel; действие
+`disinfectTime` не меняется. Обычная
 C:U капля скрыта: вместо неё сервер создаёт `WSZC_ARTERIAL_BLEEDING` только по
 реальным `org.arterialwounds`, с отдельной красной 48px иконкой. Закрытие артерии
 удаляет значок, а обычное кровотечение и лечение бинтом продолжают использовать

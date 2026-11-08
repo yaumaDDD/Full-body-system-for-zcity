@@ -960,9 +960,11 @@ return treated == 0
     and ply._limbs.hand_R.infection == 0
 ''')
     check("R58 final dressing completes aftercare even if extraction bleeding clotted", zero_aftercare)
-    check("S16 marked icons + ordinary bleed are filtered; infection/disinfect mechanics survive",
+    check("S16 disinfect/injection + ordinary bleed are filtered; fracture/dislocation and mechanics survive",
           "function WSZC.InstallDisinfectedIconFilter()" in layout_s
           and "HIDDEN_NATIVE_STATUS_KEYS" in layout_s
+          and "disinfected = true, injection = true" in layout_s
+          and "fracture = true, fracture2 = true" not in layout_s
           and "WSZC.IsHiddenNativeStatusIcon(mat, nativeIcons)" in layout_s
           and "WSZC_ARTERIAL_BLEEDING" in shared_s
           and 'icons.disinfected = Material("casunknown-images/icons/infection.png"' not in layout_s

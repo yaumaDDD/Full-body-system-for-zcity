@@ -330,9 +330,10 @@ map и irritation; обычные раны остаются. Откат рост
 
 На конечности сразу появляется штатная C:U `infection.png`, а на covered-ране
 `disinfectTime` обнуляется. По отметкам владельца из WoundView убраны значки
-`disinfected`, fracture/dislocation, injection и обычные bleed: native
-`AddHudIcon` не добавляет их в раскладку, а draw-фильтр закрывает отдельно
-рисуемый след укола. Infection/shrapnel и мини-игры не затрагиваются. Вместо
+`disinfected`, injection и обычные bleed: native `AddHudIcon` не добавляет их
+в раскладку, а draw-фильтр закрывает отдельно рисуемый след укола.
+**Fracture/dislocation остаются видимыми**; infection/shrapnel и мини-игры не
+затрагиваются. Вместо
 обычной капли сервер создаёт native status `WSZC_ARTERIAL_BLEEDING` только для
 положительной раны в `org.arterialwounds`; отдельный material
 `zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png` не попадает под
