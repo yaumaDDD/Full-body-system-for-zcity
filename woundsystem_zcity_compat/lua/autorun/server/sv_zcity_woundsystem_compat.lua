@@ -13,6 +13,7 @@ WSZC = WSZC or {}
 
 if SERVER then
     SetGlobalBool("WSZC_Ready", false)
+    if type(SetGlobalString) == "function" then SetGlobalString("WSZC_ActiveAdapter", "") end
 end
 
 if WSZC._ServerLoaded then return end
@@ -1244,6 +1245,9 @@ local function Attempt()
     WSZC.SetupFailed = nil
     if WSZC.Compatibility then WSZC.Compatibility.failures.core = nil end
     SetGlobalBool("WSZC_Ready", true)
+    if type(SetGlobalString) == "function" then
+        SetGlobalString("WSZC_ActiveAdapter", tostring(WSZC.Compatibility.activeAdapter or ""))
+    end
     SetGlobalBool("WSZC_OrganismAuthority", WSZC.OrganismAuthority())
     if WSZC.PatchIsEnabled then WSZC.PatchIsEnabled() end
     if WSZC.PatchIsBridged then WSZC.PatchIsBridged() end

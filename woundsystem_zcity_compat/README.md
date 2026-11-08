@@ -1249,7 +1249,11 @@ woundsystem_zcity_compat/
 Если строка «compatibility layer active» не появилась:
 
 1. Выполнить `wszc_compat_status`, затем `wszc_compat_reprobe` после загрузки всех
-   аддонов. Сохранить профиль, список contracts/features и `reason=...`.
+   аддонов. Сохранить `realm=server/client`, профиль, contracts/features и
+   `reason=...`. На клиенте server-only contracts и `ready/active_adapter`
+   реплицируются сервером; точная ошибка загрузки выводится в
+   `embedded_cu_error` / `embedded_bridge_error`. Для первичной диагностики
+   embedded loader выполнить команду также в server console.
 2. `zc_woundsystem_bridge 1`, `woundsys_enabled 1`,
    `zc_woundsystem_compat_adaptive 1`.
 3. `zc_woundsystem_compat_debug 1` и перезапустить карту.

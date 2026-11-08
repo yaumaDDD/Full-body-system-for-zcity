@@ -374,13 +374,17 @@ return not WSZC.HasNativeExternalMinigameAPI(WoundSystem.Health)
 
     runtime_check("R09 status/reprobe commands expose profile, features and failure reasons", lambda: lua.execute(r'''
 ResetEnvironment(); InstallLegacyContract(); WSZC.MarkFeatureFailed("remote", "missing test state")
+WSZC._EmbeddedCULoadError = "test load error"
 local lines = WSZC.CompatibilityStatusLines()
 local text = table.concat(lines, "\n")
-return type(COMMANDS.wszc_compat_status) == "function"
+local ok = type(COMMANDS.wszc_compat_status) == "function"
     and type(COMMANDS.wszc_compat_reprobe) == "function"
     and string.find(text, "legacy-adapter", 1, true) ~= nil
     and string.find(text, "remote=no", 1, true) ~= nil
     and string.find(text, "missing test state", 1, true) ~= nil
+    and string.find(text, "embedded_cu_error=test load error", 1, true) ~= nil
+WSZC._EmbeddedCULoadError = nil
+return ok
 '''))
 
     runtime_check("R10 missing or broken optional includes degrade without a Lua exception", lambda: lua.execute(r'''
@@ -642,6 +646,70 @@ include = function(path) INCLUDED = path; return { loaded = true } end
 local resolved = WSZC.ResolveCUPath("woundsystem/client/minigames/cl_clip.lua")
 local result, ok = WSZC.OptionalInclude("woundsystem/client/minigames/cl_clip.lua")
 return resolved == expected and ok == true and INCLUDED == expected and result.loaded == true
+'''))
+
+    runtime_check("R28 the supplied SwepHeal-local minigame helper is a supported contract", lambda: lua.execute(r'''
+ResetEnvironment(); InstallLegacyContract()
+hg.WoundBridge.StartMinigame = nil
+local caps = WSZC.RefreshCapabilities()
+return caps.zcity_minigames and caps.external_minigames and WSZC.Supports("external_minigames")
+'''))
+
+    runtime_check("R29 a client uses replicated server contracts and readiness instead of server-only Lua", lambda: lua.execute(r'''
+ResetEnvironment(); InstallLegacyContract()
+WoundSystem.UseMedicalItem = nil
+hook._t = {}
+debug = nil
+hg.WoundBridge = { IsEnabled = function() return true end }
+SERVER, CLIENT = false, true
+GetGlobalString = function(name, fallback)
+    if GLOBALS[name] == nil then return fallback end
+    return GLOBALS[name]
+end
+GLOBALS.WSZC_CapabilitiesKnown = true
+GLOBALS.WSZC_CapZCityBridge = true
+GLOBALS.WSZC_CapNativeAPI = false
+GLOBALS.WSZC_CapLegacyAPI = true
+GLOBALS.WSZC_CapNativeState = false
+GLOBALS.WSZC_CapNativeExternal = false
+GLOBALS.WSZC_CapDebugIntrospection = true
+GLOBALS.WSZC_CapZCityMedicine = true
+GLOBALS.WSZC_CapZCityMinigames = true
+GLOBALS.WSZC_CapZCityOrganism = true
+GLOBALS.WSZC_CapCore = true
+GLOBALS.WSZC_CapMedicine = true
+GLOBALS.WSZC_CapExternalMinigames = true
+GLOBALS.WSZC_CapOrganismExtensions = true
+GLOBALS.WSZC_Ready = true
+GLOBALS.WSZC_ActiveAdapter = "legacy-adapter"
+local caps = WSZC.RefreshCapabilities()
+local text = table.concat(WSZC.CompatibilityStatusLines(), "\n")
+local ok = caps.core and caps.cu_legacy_api and not caps.cu_native_api
+    and caps.inspection and caps.medicine and caps.external_minigames
+    and caps.remote and caps.organism_extensions
+    and string.find(text, "realm=client", 1, true) ~= nil
+    and string.find(text, "ready=yes", 1, true) ~= nil
+    and string.find(text, "active_adapter=legacy-adapter", 1, true) ~= nil
+GLOBALS.WSZC_CapNativeAPI = true
+GLOBALS.WSZC_CapLegacyAPI = false
+GLOBALS.WSZC_CapNativeState = true
+GLOBALS.WSZC_CapNativeExternal = true
+file.Exists = function() return false end
+local nativeCaps = WSZC.RefreshCapabilities()
+local nativeOK = nativeCaps.core and nativeCaps.remote and nativeCaps.external_minigames
+    and not nativeCaps.cu_minigame_files
+SERVER, CLIENT = true, false
+GetGlobalString = nil
+return ok and nativeOK
+'''))
+
+    runtime_check("R30 a medical-only partial C:U table is not a legacy damage contract", lambda: lua.execute(r'''
+ResetEnvironment(); InstallLegacyContract()
+hook._t = {}
+WoundSystem.Health.HandleDamage = nil
+local caps = WSZC.RefreshCapabilities()
+return type(WoundSystem.UseMedicalItem) == "function"
+    and not caps.cu_legacy_api and not caps.core
 '''))
 
 failed = [name for name, ok in results if not ok]

@@ -83,7 +83,6 @@ function WSZC.HasNativeExternalMinigameAPI(H)
 end
 
 local function LegacyDamageEntrypoint(H)
-    if type(WoundSystem and WoundSystem.UseMedicalItem) == "function" then return true end
     if type(H and H.HandleDamage) == "function" then return true end
     if not (hook and hook.GetTable) then return false end
     local ok, hooks = pcall(hook.GetTable)
@@ -104,6 +103,58 @@ function WSZC.ResolveCUPath(path)
     return path
 end
 
+-- Most legacy C:U/WoundBridge contracts are server-only.  A client cannot
+-- discover them from its own Lua realm (and some ZCity loaders accidentally
+-- include parts of sv_ files there), so the server publishes the probed
+-- contracts instead of letting every client guess a different adapter.
+local SERVER_CAPABILITY_GLOBALS = {
+    zcity_bridge = "WSZC_CapZCityBridge",
+    cu_native_api = "WSZC_CapNativeAPI",
+    cu_legacy_api = "WSZC_CapLegacyAPI",
+    cu_native_state = "WSZC_CapNativeState",
+    cu_native_external = "WSZC_CapNativeExternal",
+    debug_introspection = "WSZC_CapDebugIntrospection",
+    zcity_medicine = "WSZC_CapZCityMedicine",
+    zcity_minigames = "WSZC_CapZCityMinigames",
+    zcity_organism = "WSZC_CapZCityOrganism",
+    core = "WSZC_CapCore",
+    medicine = "WSZC_CapMedicine",
+    external_minigames = "WSZC_CapExternalMinigames",
+    organism_extensions = "WSZC_CapOrganismExtensions",
+}
+
+local function PublishServerCapabilities(caps)
+    if not SERVER or type(SetGlobalBool) ~= "function" then return end
+    local published = Compatibility.publishedServerCaps or {}
+    Compatibility.publishedServerCaps = published
+    if published.known ~= true then
+        SetGlobalBool("WSZC_CapabilitiesKnown", true)
+        published.known = true
+    end
+    for key, globalName in pairs(SERVER_CAPABILITY_GLOBALS) do
+        local value = caps[key] == true
+        if published[key] ~= value then
+            SetGlobalBool(globalName, value)
+            published[key] = value
+        end
+    end
+end
+
+local function ApplyServerCapabilities(caps)
+    if not CLIENT or type(GetGlobalBool) ~= "function"
+        or not GetGlobalBool("WSZC_CapabilitiesKnown", false) then return false end
+    for key, globalName in pairs(SERVER_CAPABILITY_GLOBALS) do
+        caps[key] = GetGlobalBool(globalName, false) == true
+    end
+    -- Inspection and remote UI still require the actual client panel.  Other
+    -- feature contracts above are authoritative server decisions.
+    caps.inspection = caps.core and caps.cu_ui
+    caps.remote = caps.inspection and (caps.cu_native_state or caps.cu_legacy_api)
+    caps.external_minigames = caps.cu_native_external
+        or (caps.external_minigames and caps.cu_minigame_files)
+    return true
+end
+
 function WSZC.RefreshCapabilities()
     local WB = hg and hg.WoundBridge or nil
     local H = WoundSystem and WoundSystem.Health or nil
@@ -114,7 +165,9 @@ function WSZC.RefreshCapabilities()
         and type(H.GetLimbs) == "function"
     local nativeAPI = nativeState and type(H.HandleDamage) == "function"
         and type(H.ApplyItemToBody) == "function"
-    local legacyAPI = type(H) == "table" and hasDebug and LegacyDamageEntrypoint(H)
+    local legacyAPI = type(H) == "table" and hasDebug
+        and type(WoundSystem and WoundSystem.UseMedicalItem) == "function"
+        and LegacyDamageEntrypoint(H)
     local nativeExternal = WSZC.HasNativeExternalMinigameAPI(H)
 
     local minigameFiles = false
@@ -142,7 +195,10 @@ function WSZC.RefreshCapabilities()
         debug_introspection = hasDebug,
         zcity_medicine = type(WB) == "table" and type(WB.SwepHeal) == "function"
             and type(WB.GetPlayer) == "function",
-        zcity_minigames = type(WB) == "table" and type(WB.StartMinigame) == "function",
+        -- Supplied ZCity keeps StartMinigame as a local helper called by
+        -- SwepHeal; it does not export WB.StartMinigame at all.
+        zcity_minigames = type(WB) == "table" and (type(WB.SwepHeal) == "function"
+            or type(WB.StartMinigame) == "function"),
         zcity_organism = type(WB) == "table" and type(WB.Sync) == "function"
             and type(WB.Think) == "function" and type(hg and hg.organism) == "table"
             and type(hg.organism.Clear) == "function",
@@ -156,18 +212,32 @@ function WSZC.RefreshCapabilities()
     caps.remote = caps.inspection and (caps.cu_native_state or caps.cu_legacy_api)
     caps.organism_extensions = caps.core and caps.zcity_organism
 
+    local usingServerCaps = ApplyServerCapabilities(caps)
     Compatibility.capabilities = caps
-    Compatibility.nativeAPI = nativeAPI == true
-    Compatibility.legacyAPI = legacyAPI == true
-    Compatibility.nativeExternal = nativeExternal == true
+    Compatibility.serverCapsKnown = usingServerCaps
+    Compatibility.nativeAPI = caps.cu_native_api == true
+    Compatibility.legacyAPI = caps.cu_legacy_api == true
+    Compatibility.nativeExternal = caps.cu_native_external == true
     Compatibility.lastProbe = CurTime and CurTime() or 0
+
+    local reportedAdapter
+    if usingServerCaps and type(GetGlobalString) == "function" then
+        reportedAdapter = GetGlobalString("WSZC_ActiveAdapter", "")
+    elseif SERVER and WSZC.Ready then
+        reportedAdapter = Compatibility.activeAdapter
+    end
     if caps.core then
-        Compatibility.profile = nativeAPI and "native-api" or "legacy-adapter"
+        if reportedAdapter == "native-api" or reportedAdapter == "legacy-adapter" then
+            Compatibility.profile = reportedAdapter
+        else
+            Compatibility.profile = caps.cu_native_api and "native-api" or "legacy-adapter"
+        end
     elseif caps.zcity_bridge or caps.cu_health or caps.cu_items then
         Compatibility.profile = "partial"
     else
         Compatibility.profile = "unavailable"
     end
+    PublishServerCapabilities(caps)
     return caps
 end
 
@@ -207,6 +277,15 @@ local function YesNo(value) return value and "yes" or "no" end
 
 function WSZC.CompatibilityStatusLines()
     local caps = WSZC.RefreshCapabilities()
+    local ready = WSZC.Ready == true
+    local activeAdapter = Compatibility.activeAdapter
+    if CLIENT then
+        ready = type(GetGlobalBool) == "function" and GetGlobalBool("WSZC_Ready", false) == true
+        if type(GetGlobalString) == "function" then
+            local serverAdapter = GetGlobalString("WSZC_ActiveAdapter", "")
+            if serverAdapter ~= "" then activeAdapter = serverAdapter end
+        end
+    end
     local hasCU = type(WoundSystem) == "table"
         and (type(WoundSystem.Health) == "table" or type(WoundSystem.Items) == "table")
     local cuRuntime = (type(WoundSystem) == "table" and WoundSystem._WSZCEmbedded == true) and "embedded"
@@ -215,9 +294,10 @@ function WSZC.CompatibilityStatusLines()
         and hg.WoundBridge._WSZCEmbedded == true) and "embedded"
         or (type(hg and hg.WoundBridge) == "table" and "external" or "missing")
     local lines = {
-        TAG .. "adaptive compatibility: " .. tostring(Compatibility.profile),
-        "  ready=" .. YesNo(WSZC.Ready == true)
-            .. " active_adapter=" .. tostring(Compatibility.activeAdapter or "none")
+        TAG .. "adaptive compatibility: " .. tostring(Compatibility.profile)
+            .. " realm=" .. (SERVER and "server" or "client"),
+        "  ready=" .. YesNo(ready)
+            .. " active_adapter=" .. tostring(activeAdapter or "none")
             .. " adaptive=" .. YesNo(WSZC.AdaptiveCompatibility()),
         "  runtime: cu=" .. cuRuntime .. " zcity_bridge=" .. bridgeRuntime,
         "  contracts: zcity_bridge=" .. YesNo(caps.zcity_bridge)
@@ -225,12 +305,19 @@ function WSZC.CompatibilityStatusLines()
             .. " cu_items=" .. YesNo(caps.cu_items)
             .. " native_api=" .. YesNo(caps.cu_native_api)
             .. " legacy_api=" .. YesNo(caps.cu_legacy_api)
-            .. " native_external=" .. YesNo(caps.cu_native_external),
+            .. " native_external=" .. YesNo(caps.cu_native_external)
+            .. " debug=" .. YesNo(caps.debug_introspection),
         "  optional contracts: zcity_medicine=" .. YesNo(caps.zcity_medicine)
             .. " zcity_minigames=" .. YesNo(caps.zcity_minigames)
             .. " zcity_organism=" .. YesNo(caps.zcity_organism)
             .. " cu_minigame_files=" .. YesNo(caps.cu_minigame_files),
     }
+    if WSZC._EmbeddedCULoadError then
+        lines[#lines + 1] = "  embedded_cu_error=" .. tostring(WSZC._EmbeddedCULoadError)
+    end
+    if WSZC._EmbeddedBridgeLoadError then
+        lines[#lines + 1] = "  embedded_bridge_error=" .. tostring(WSZC._EmbeddedBridgeLoadError)
+    end
     for _, feature in ipairs(FEATURES) do
         local failed = Compatibility.failures[feature]
         local supported = caps[feature] == true and not Compatibility.failures.core and not failed

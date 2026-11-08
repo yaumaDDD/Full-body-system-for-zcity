@@ -157,10 +157,15 @@ partial bandage, shrapnel aftercare и защита исходных/посто�
 wszc_compat_status
 ```
 
-Первая строка содержит профиль совместимости, `runtime:` — источник C:U и
-bridge (`embedded/external/missing`), а строки `core/inspection/medicine/
-external_minigames/remote/organism_extensions` — фактически доступные функции и
-причину отключения. После обновления аддонов без смены карты выполните
+Первая строка содержит профиль совместимости и `realm=server/client`.
+На клиенте `ready`, `active_adapter` и server-only contracts берутся из
+replicated server-статуса, а не из отсутствующих на клиенте `sv_*.lua`.
+`runtime:` — источник C:U и bridge (`embedded/external/missing`), а строки
+`core/inspection/medicine/external_minigames/remote/organism_extensions` —
+фактически доступные функции и причину отключения. Если embedded loader был
+прерван, точный chunk/line дополнительно печатается в `embedded_cu_error` или
+`embedded_bridge_error`; для серверной диагностики команду нужно выполнять в
+server console. После обновления аддонов без смены карты выполните
 `wszc_compat_reprobe`. `zc_woundsystem_compat_prefer_native_api 1` сохраняет
 родной external-minigame API новой C:U вместо его замены.
 
