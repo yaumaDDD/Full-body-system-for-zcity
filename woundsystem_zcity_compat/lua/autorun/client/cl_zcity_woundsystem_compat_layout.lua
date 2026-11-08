@@ -892,29 +892,6 @@ function WSZC.InstallDisinfectedIconFilter()
     return PatchDisinfectedIcon(fn)
 end
 
--- A previous HUD/minigame can leave point sampling active.  The generated
--- contour now carries a small source-alpha fringe; LINEAR sampling resolves it
--- instead of turning that fringe back into stair steps.  Scope the override to
--- C:U's native WoundView call and always restore both filter stacks, including
--- when the native draw errors.
-local function BeginUnitmenuSmoothing()
-    if not cvUnitmenuDoll:GetBool() then return false end
-    local linear = TEXFILTER and TEXFILTER.LINEAR
-    if not linear or not render or not render.PushFilterMag or not render.PushFilterMin
-        or not render.PopFilterMag or not render.PopFilterMin then
-        return false
-    end
-    render.PushFilterMag(linear)
-    render.PushFilterMin(linear)
-    return true
-end
-
-local function EndUnitmenuSmoothing(active)
-    if not active then return end
-    render.PopFilterMin()
-    render.PopFilterMag()
-end
-
 local function InstallHudFilter()
     local hooks = hook.GetTable and hook.GetTable() or nil
     local hud = type(hooks) == "table" and hooks.HUDPaint or nil
@@ -935,9 +912,9 @@ local function InstallHudFilter()
         end
         local prevFiltered = WSZC.CUHudFiltered
         WSZC.CUHudFiltered = true
-        local smoothing = BeginUnitmenuSmoothing()
+        -- Keep native texture sampling: forcing LINEAR here blurred the whole
+        -- WoundView.  This wrapper must not alter either render filter stack.
         local ok, a, b, c = pcall(fn, ...)
-        EndUnitmenuSmoothing(smoothing)
         WSZC.CUHudFiltered = prevFiltered
         if not ok then error(a, 0) end
         return a, b, c

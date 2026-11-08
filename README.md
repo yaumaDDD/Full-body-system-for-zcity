@@ -180,9 +180,10 @@ white exterior кистей, швов и внешних white-anchors непос
 по-прежнему равен реально удалённой severity без второго Consume. Ложный значок
 `disinfected/processing` пропускается только в native `AddHudIcon` — настоящие
 infection/bleed/fracture и действие `disinfectTime` сохраняются. Внешние контуры
-получили узкий alpha-fringe (`EDGE_AA_RADIUS=0.45`) и scoped LINEAR sampling с
-гарантированным восстановлением filter stack; pinned geometry, head/neck seam
-`y=317`, abdomen seam `y=520`, fit и hitboxes не изменены.
+сохраняют узкий alpha-fringe (`EDGE_AA_RADIUS=0.45`), но добавленный scoped
+LINEAR sampling УБРАН: WoundView снова использует родное texture sampling и
+вообще не изменяет render filter stack. Pinned geometry, head/neck seam `y=317`,
+abdomen seam `y=520`, fit и hitboxes не изменены.
 
 **Медицинские значки по `Screenshot_13.png` (2026-11-07):** фильтр
 `disinfected` теперь захватывает настоящую локальную таблицу C:U `Icons` и

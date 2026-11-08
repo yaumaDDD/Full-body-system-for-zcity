@@ -122,9 +122,10 @@ infection/bleed/fracture и настоящий `disinfectTime` не затраг
 16 независимых `REFERENCE_BOXES`, crop-first head/neck и раздельная калибровка
 каждой части. **Стандартный чёрный `(0,0,0)`** сохранён. **Обводка по форме
 каждого лимба** использует `EDGE_WIDTH=17` (3–4 px), для пальцев 11, плюс
-внешний `MaxFilter(9)` на голове/животе/ногах, `EDGE_AA_RADIUS=0.45` и LINEAR
-filtering только на время native WoundView;
-ни один белый пиксель не касается границы прямоугольного спрайта. Neck без blur
+внешний `MaxFilter(9)` на голове/животе/ногах и `EDGE_AA_RADIUS=0.45`.
+Добавленный ранее LINEAR filtering native WoundView УБРАН: используется родное
+texture sampling, render filter stack не изменяется. Ни один белый пиксель не
+касается границы прямоугольного спрайта. Neck без blur
 один владеет
 швом `y=317`, abdomen имеет внутренний seam `y=520`; «конструктора» и единого
 `outer_band` нет.

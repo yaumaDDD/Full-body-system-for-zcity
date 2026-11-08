@@ -1933,7 +1933,7 @@ end)()
 end)()
 ''')
 
-    rt('R38 native HUD skips only disinfect icon and balances LINEAR filtering', '''
+    rt('R38 native HUD skips only disinfect icon and never changes texture filtering', '''
 (function()
     filterCalls = {}
     TEXFILTER = { LINEAR = 77 }
@@ -1975,7 +1975,7 @@ end)()
     return installed and installedAgain and count == 2 and disinfected == 0
         and infection == 1 and bleeding == 1 and handState.disinfectTime == 120
         and handState.infection == 4
-        and filters == "mag:77,min:77,popMin,popMag"
+        and filters == "" -- no LINEAR smoothing / no filter-stack side effects
 end)()
 ''')
 
