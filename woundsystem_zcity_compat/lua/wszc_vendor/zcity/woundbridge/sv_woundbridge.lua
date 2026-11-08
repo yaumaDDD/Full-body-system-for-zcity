@@ -1033,6 +1033,16 @@ local function StartMinigame(swep, spec, idx, target, limbId)
 		itemId = item,
 		limbId = limbId,
 		amount = amount,
+		swep = swep,
+		idx = idx,
+		spec = spec,
+		target = target,
+		maxDur = maxDur,
+		live = live,
+		oneDose = oneDose,
+		_WSZCSetAppliedLive = function(value)
+			appliedLive = math.max(tonumber(value) or 0, 0)
+		end,
 
 		-- the player did `durCost` of work (durability units of the minigame item)
 		onProgress = function(ply, session, durCost)
@@ -1242,4 +1252,13 @@ function WB.SwepHeal(swep, ent, mode, bone)
 	AfterUse(swep, spec, idx)
 
 	return true
+end
+
+
+-- WSZC embedded no-debug contract.  External ZCity is never modified.
+WB._WSZCBridgeRefs = { version = 1, BestLimb = BestLimb }
+function WB._WSZCReplaceBestLimb(swepHeal, replacement)
+    if swepHeal ~= WB.SwepHeal or type(replacement) ~= "function" then return false end
+    BestLimb = replacement
+    return true
 end

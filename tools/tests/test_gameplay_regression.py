@@ -1463,6 +1463,43 @@ return patched and tourniquet == "arm_R" and bandage == "hand_R"
 ''')
     check("R49 installed BestLimb uses real tourniquet/bandage targets despite stale shadow flags", selector_upvalue)
 
+    selector_no_debug = lua.execute(r'''
+local ply = MakePlayer()
+ply._limbs.arm_R = { bleed = 15, dismembered = false, tourniqueted = false }
+ply.organism.rarmamputated = true
+ply.organism.arterialwounds = {
+    { 5, Vector(), Angle(), "ValveBiped.Bip01_R_UpperArm", 0, Vector(), "rarmartery" },
+}
+local BestLimb = function() return "native_bandage_site" end
+local NativeSwepHeal = function(target, spec, preferred)
+    return BestLimb(target, spec, preferred)
+end
+local wb = hg.WoundBridge
+local saved = { wb._WSZCEmbedded, wb._WSZCBridgeRefs, wb._WSZCReplaceBestLimb, wb.SwepHeal }
+wb._WSZCEmbedded = true
+wb._WSZCBridgeRefs = { version = 1, BestLimb = BestLimb }
+wb.SwepHeal = NativeSwepHeal
+local replaced = false
+wb._WSZCReplaceBestLimb = function(swepHeal, replacement)
+    if swepHeal ~= NativeSwepHeal or type(replacement) ~= "function" then return false end
+    BestLimb = replacement
+    replaced = true
+    return true
+end
+local previousDebug = debug
+debug = nil
+local ok, result = pcall(function()
+    local patched = WSZC.PatchTourniquetBestLimb(NativeSwepHeal)
+    local tourniquet = NativeSwepHeal(ply, { kind = "apply", item = "TOURNIQUET", pick = "extremity" })
+    local syringe = NativeSwepHeal(ply, { kind = "syringe", item = "MORPHINE" })
+    return patched and replaced and tourniquet == "arm_R" and syringe == "native_bandage_site"
+end)
+debug = previousDebug
+wb._WSZCEmbedded, wb._WSZCBridgeRefs, wb._WSZCReplaceBestLimb, wb.SwepHeal = saved[1], saved[2], saved[3], saved[4]
+return ok and result == true
+''')
+    check("R89 embedded BestLimb selector works without debug upvalues", selector_no_debug)
+
     status_client = LuaRuntime(unpack_returned_tuples=True)
     status_client.execute(r'''
 CLIENT = true; SERVER = false

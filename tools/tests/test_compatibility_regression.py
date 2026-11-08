@@ -141,8 +141,26 @@ vendor_check = subprocess.run(
     [sys.executable, str(ROOT / "tools/embed_runtime.py"), "--check"],
     cwd=ROOT, capture_output=True, text=True,
 )
+embedded_health_s = (CONN / "lua/wszc_vendor/cu/woundsystem/server/sv_health.lua").read_text(encoding="utf-8")
+embedded_bridge_s = (CONN / "lua/wszc_vendor/zcity/woundbridge/sv_woundbridge.lua").read_text(encoding="utf-8")
+embedded_ref_names = (
+    "Fn", "Const", "SendCardioUpdate", "ProcessImpactDamage", "SendLimbUpdate",
+    "BodyState", "PlayerLimbs", "GetBody", "TryCreateUnconsciousRagdoll",
+    "GuessRagdollDamageLimb", "RagdollBoneNameToLimb", "BuildMedicalItemContext",
+    "ApplyBandageProfile", "GetSyringeProfile", "ApplySyringeProfile", "Sessions",
+    "CloseBandageSession", "CloseSyringeSession", "CloseShrapnelSession",
+    "CloseDislocationSession", "CloseAedSession",
+)
+embedded_contract_ok = all(f"{name} = {name}," in embedded_health_s for name in embedded_ref_names) \
+    and "function WoundSystem.Health._WSZCReplaceUpvalue" in embedded_health_s \
+    and "WB._WSZCBridgeRefs = { version = 1, BestLimb = BestLimb }" in embedded_bridge_s \
+    and "function WB._WSZCReplaceBestLimb" in embedded_bridge_s \
+    and "_WSZCSetAppliedLive = function(value)" in embedded_bridge_s \
+    and all(f"{name} = {name}," in embedded_bridge_s
+            for name in ("swep", "idx", "spec", "target", "maxDur", "live", "oneDose"))
 check("S10 isolated embedded C:U/WoundBridge matches the supplied sources and path resolver",
       vendor_check.returncode == 0 and "cu=71 bridge=3" in vendor_check.stdout
+      and embedded_contract_ok
       and 'pcall(include, "wszc_vendor/bootstrap.lua")' in shared_s
       and "function WSZC.ResolveCUPath(path)" in shared_s
       and "runtime: cu=" in shared_s
@@ -710,6 +728,53 @@ WoundSystem.Health.HandleDamage = nil
 local caps = WSZC.RefreshCapabilities()
 return type(WoundSystem.UseMedicalItem) == "function"
     and not caps.cu_legacy_api and not caps.core
+'''))
+
+    runtime_check("R31 embedded lexical refs run the real legacy Setup with debug unavailable", lambda: lua.execute(r'''
+ResetEnvironment(); InstallLegacyContract()
+debug = nil
+WSZC.SetupDone, WSZC.Ready, WSZC.SetupFailed = nil, nil, nil
+WSZC.OriginalFn, WSZC.OriginalConst = nil, nil
+WSZC.DamageProxiesApplied, WSZC.ProxiedCUDamage = nil, nil
+WSZC.HandleDamageWrapped, WSZC.WrappedCUDamage = nil, nil
+WSZC.HandleDamageWrapper, WSZC.OriginalHandleDamage = nil, nil
+WSZC.CUDamageHandler, WSZC.DamageWrapper = nil, nil
+WoundSystem._WSZCEmbedded = true
+local H = WoundSystem.Health
+H._WSZCBridgeRefs = { version = 1 }
+H._WSZCReplaceUpvalue = function() return false end
+local partial = WSZC.RefreshCapabilities()
+local rejectedPartial = not partial.cu_embedded_bridge and not partial.cu_legacy_api and not partial.core
+
+local refs = {
+    version = 1, Fn = {}, Const = {}, BodyState = {}, PlayerLimbs = {}, Sessions = {},
+    GetBody = function(ply) return nil end,
+}
+local function noop() end
+for _, key in ipairs({
+    "SendCardioUpdate", "ProcessImpactDamage", "SendLimbUpdate",
+    "TryCreateUnconsciousRagdoll", "GuessRagdollDamageLimb", "RagdollBoneNameToLimb",
+    "BuildMedicalItemContext", "ApplyBandageProfile", "GetSyringeProfile",
+    "ApplySyringeProfile", "CloseBandageSession", "CloseSyringeSession",
+    "CloseShrapnelSession", "CloseDislocationSession", "CloseAedSession",
+}) do refs[key] = noop end
+H._WSZCBridgeRefs = refs
+local replaced = {}
+H._WSZCReplaceUpvalue = function(fn, wanted, value)
+    local registered = hook.GetTable().EntityTakeDamage.WoundSystem_Damage
+    if registered ~= fn or type(value) ~= "table" then return false end
+    if wanted ~= "Fn" and wanted ~= "Const" then return false end
+    replaced[wanted] = value
+    return true
+end
+local ok, ready = pcall(WSZC.Setup)
+local caps = WSZC.RefreshCapabilities()
+return rejectedPartial and ok and ready == true and WSZC.SetupDone == true
+    and WSZC.Compatibility.activeAdapter == "legacy-adapter"
+    and caps.cu_embedded_bridge and caps.cu_legacy_api and not caps.debug_introspection
+    and WSZC.Fn == refs.Fn and WSZC.Const == refs.Const
+    and type(replaced.Fn) == "table" and type(replaced.Const) == "table"
+    and type(H.HandleDamage) == "function" and type(H.ApplyItemToBody) == "function"
 '''))
 
 failed = [name for name, ok in results if not ok]

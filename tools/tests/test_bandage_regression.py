@@ -1020,6 +1020,42 @@ return WSZC.RealGetBandageBleeding(patient, "hand_R") == 0
 '''.replace('CLIENT_DEGREES', '{ ' + lua_degrees + ' }'))
     check("R25 client packets really close the wound, spend four units and complete/close server session", end_to_end)
 
+    no_debug = server_lua.execute(r'''
+WSZC.MinigameSessions = {}
+local Patient = BandagePatientFactory
+local patient, operator = Patient(), Patient()
+WSZC.RealAddShrapnel(patient, "hand_R", 3, "shotgun")
+local swep = NativeBandageSwepFactory(40)
+local spec = { mg = { kind = "bandage" }, kind = "item", item = "GAUZE" }
+local appliedLive, progressCalls = 0, 0
+local data = {
+    kind = "bandage", itemId = "GAUZE", limbId = "hand_R", amount = 100,
+    swep = swep, idx = 1, spec = spec, target = patient, maxDur = 100,
+    live = true, oneDose = false,
+    _WSZCSetAppliedLive = function(value) appliedLive = value end,
+    onProgress = function() progressCalls = progressCalls + 1 end,
+    onClose = function() local _ = appliedLive end,
+}
+local previousDebug = debug
+debug = nil
+local ok, result = pcall(function()
+    WSZC.Ready = true
+    WSZC.BridgeEnabled = function() return true end
+    local started = WSZC.StartExternalMinigameImpl(operator, data)
+    local session = WSZC.MinigameSessions[operator]
+    if not session then return false end
+    sent, readQueue = {}, { session.id, 360 }
+    receivers["WSZC_BandageInput"](0, operator)
+    return started and session.nativeBandage and session.nativeBandage.setAppliedLive
+        and swep.modeValues[1] == 36 and math.abs(session.deferredUsed - 10) < 0.001
+        and math.abs(appliedLive - 10) < 0.001 and progressCalls == 0
+        and WSZC.RealGetBandageBleeding(patient, "hand_R") == 0
+end)
+debug = previousDebug
+return ok and result == true
+''')
+    check("R26 embedded native bandage keeps exact cost without debug upvalues", no_debug)
+
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))
 sys.exit(0 if passed == len(results) else 1)

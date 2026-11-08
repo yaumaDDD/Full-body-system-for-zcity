@@ -166,18 +166,22 @@ local function NativeBandageContext(data, maxDur)
     if not (WSZC.OrganismAuthority and WSZC.OrganismAuthority()) then return nil end
     if type(WSZC.BandageSeverityPerFullEffect) ~= "function"
         or type(WSZC.BandageSeverityOnLimb) ~= "function" then return nil end
-    if not debug or type(debug.setupvalue) ~= "function" then return nil end
+    local setAppliedLive = type(data._WSZCSetAppliedLive) == "function"
+        and data._WSZCSetAppliedLive or nil
+    if not setAppliedLive and (not debug or type(debug.setupvalue) ~= "function") then return nil end
     local swep = ClosureValue(data, "swep")
     local idx = tonumber(ClosureValue(data, "idx")) or 1
-    local appliedLiveIdx = ClosureUpvalueIndex(data.onProgress, "appliedLive")
-    if not IsValid(swep) or type(swep.modeValues) ~= "table" or not appliedLiveIdx then return nil end
+    local appliedLiveIdx = not setAppliedLive
+        and ClosureUpvalueIndex(data.onProgress, "appliedLive") or nil
+    if not IsValid(swep) or type(swep.modeValues) ~= "table"
+        or not (setAppliedLive or appliedLiveIdx) then return nil end
     local def = swep.modeValuesdef and swep.modeValuesdef[idx]
     if type(def) == "table" then def = def[1] end
     def = tonumber(def)
     if not def or def <= 0 then return nil end -- unsafe custom SWEP: keep native onProgress
     return {
         swep = swep, idx = idx, def = def, maxDur = maxDur,
-        appliedLiveIdx = appliedLiveIdx,
+        appliedLiveIdx = appliedLiveIdx, setAppliedLive = setAppliedLive,
     }
 end
 
@@ -797,10 +801,14 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
         -- WB's original onClose only needs appliedLive > 0.01 for a live
         -- bandage before it calls native AfterUse.  Share the upvalue with
         -- onProgress; never call that onProgress and consume a second time.
-        local i = native.appliedLiveIdx
-        if i and debug and debug.setupvalue then
-            pcall(debug.setupvalue, session.onProgress, i,
-                math.max(session.deferredUsed or 0, 0.02))
+        local applied = math.max(session.deferredUsed or 0, 0.02)
+        if native.setAppliedLive then
+            pcall(native.setAppliedLive, applied)
+        else
+            local i = native.appliedLiveIdx
+            if i and debug and debug.setupvalue then
+                pcall(debug.setupvalue, session.onProgress, i, applied)
+            end
         end
     end
 

@@ -9267,3 +9267,46 @@ hook.Add("CanTool", "WoundSystem_BlockUnconsciousTools", function(ply, tr, toolm
 end)
 
 -- fix the symptom, not the problem >:3
+
+if WoundSystem._WSZCEmbedded then
+    WoundSystem.Health._WSZCBridgeRefs = {
+        version = 1,
+        Fn = Fn,
+        Const = Const,
+        SendCardioUpdate = SendCardioUpdate,
+        ProcessImpactDamage = ProcessImpactDamage,
+        SendLimbUpdate = SendLimbUpdate,
+        BodyState = BodyState,
+        PlayerLimbs = PlayerLimbs,
+        GetBody = GetBody,
+        TryCreateUnconsciousRagdoll = TryCreateUnconsciousRagdoll,
+        GuessRagdollDamageLimb = GuessRagdollDamageLimb,
+        RagdollBoneNameToLimb = RagdollBoneNameToLimb,
+        BuildMedicalItemContext = BuildMedicalItemContext,
+        ApplyBandageProfile = ApplyBandageProfile,
+        GetSyringeProfile = GetSyringeProfile,
+        ApplySyringeProfile = ApplySyringeProfile,
+        Sessions = Sessions,
+        CloseBandageSession = CloseBandageSession,
+        CloseSyringeSession = CloseSyringeSession,
+        CloseShrapnelSession = CloseShrapnelSession,
+        CloseDislocationSession = CloseDislocationSession,
+        CloseAedSession = CloseAedSession,
+    }
+
+    function WoundSystem.Health._WSZCReplaceUpvalue(fn, wanted, newValue)
+        if type(fn) ~= "function" or type(newValue) ~= "table" then return false end
+        local hooks = hook.GetTable and hook.GetTable() or nil
+        local damage = type(hooks) == "table" and hooks.EntityTakeDamage or nil
+        if type(damage) ~= "table" or damage.WoundSystem_Damage ~= fn then return false end
+
+        if wanted == "Fn" then
+            Fn = newValue
+        elseif wanted == "Const" then
+            Const = newValue
+        else
+            return false
+        end
+        return true
+    end
+end

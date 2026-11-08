@@ -1338,29 +1338,45 @@ end
 --- cannot be vetoed by a stale C:U isBandaged flag or phantom shadow bleed.
 local patchedTourniquetSelectors = setmetatable({}, { __mode = "k" })
 local function PatchTourniquetBestLimb(swepHeal)
-    if type(swepHeal) ~= "function" or not (debug and debug.getupvalue and debug.setupvalue) then
-        return false
+    if type(swepHeal) ~= "function" then return false end
+
+    local function Install(bestLimb, replace)
+        if type(bestLimb) ~= "function" then return false end
+        if patchedTourniquetSelectors[bestLimb] then return true end
+        local wrapped = function(ply, spec, preferred)
+            local isTourniquet = type(spec) == "table" and spec.kind == "apply"
+                and string.upper(tostring(spec.item or "")) == "TOURNIQUET"
+            local isBandage = type(spec) == "table" and spec.kind == "bandage"
+            if Authority() and isTourniquet then
+                return WSZC.BestTourniquetLimb(ply, spec, preferred)
+            end
+            if Authority() and isBandage then
+                return WSZC.BestBandageLimb(ply, spec, preferred)
+            end
+            return bestLimb(ply, spec, preferred)
+        end
+        patchedTourniquetSelectors[wrapped] = true
+        return replace(wrapped) == true
     end
+
+    local wb = WB()
+    if type(wb) == "table" and wb._WSZCEmbedded == true
+        and type(wb._WSZCBridgeRefs) == "table"
+        and type(wb._WSZCReplaceBestLimb) == "function" then
+        return Install(wb._WSZCBridgeRefs.BestLimb, function(wrapped)
+            return wb._WSZCReplaceBestLimb(swepHeal, wrapped)
+        end)
+    end
+
+    if not (debug and debug.getupvalue and debug.setupvalue) then return false end
     for i = 1, 64 do
         local name, bestLimb = debug.getupvalue(swepHeal, i)
         if not name then break end
         if name == "BestLimb" and type(bestLimb) == "function" then
-            if patchedTourniquetSelectors[bestLimb] then return true end
-            local wrapped = function(ply, spec, preferred)
-                local isTourniquet = type(spec) == "table" and spec.kind == "apply"
-                    and string.upper(tostring(spec.item or "")) == "TOURNIQUET"
-                local isBandage = type(spec) == "table" and spec.kind == "bandage"
-                if Authority() and isTourniquet then
-                    return WSZC.BestTourniquetLimb(ply, spec, preferred)
-                end
-                if Authority() and isBandage then
-                    return WSZC.BestBandageLimb(ply, spec, preferred)
-                end
-                return bestLimb(ply, spec, preferred)
-            end
-            patchedTourniquetSelectors[wrapped] = true
-            debug.setupvalue(swepHeal, i, wrapped)
-            return true
+            return Install(bestLimb, function(wrapped)
+                debug.setupvalue(swepHeal, i, wrapped)
+                return true
+            end)
         end
     end
     return false

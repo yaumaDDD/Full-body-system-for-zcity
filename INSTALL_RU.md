@@ -165,7 +165,12 @@ replicated server-статуса, а не из отсутствующих на �
 фактически доступные функции и причину отключения. Если embedded loader был
 прерван, точный chunk/line дополнительно печатается в `embedded_cu_error` или
 `embedded_bridge_error`; для серверной диагностики команду нужно выполнять в
-server console. После обновления аддонов без смены карты выполните
+server console.
+
+Если хостинг отключает `debug.getupvalue/setupvalue`, embedded runtime всё равно
+поддерживается через собственный versioned lexical contract. В успешном статусе
+при этом будет `debug=no embedded_bridge=yes legacy_api=yes`. Для external
+legacy-сборок без такого contract сохраняется прежнее fail-closed поведение. После обновления аддонов без смены карты выполните
 `wszc_compat_reprobe`. `zc_woundsystem_compat_prefer_native_api 1` сохраняет
 родной external-minigame API новой C:U вместо его замены.
 

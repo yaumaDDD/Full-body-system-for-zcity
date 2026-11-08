@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Vendor the supplied C:U and ZCity WoundBridge into the portable connector.
 
-The embedded files use an isolated Lua namespace.  Only quoted *.lua paths and
-C:U's medical_tools include directory are rewritten; data/sound paths such as
-woundsystem/persist and woundsystem/*.ogg intentionally stay untouched.
+The embedded files use an isolated Lua namespace.  Quoted *.lua paths and C:U's
+medical_tools include directory are rewritten; data/sound paths such as
+woundsystem/persist and woundsystem/*.ogg intentionally stay untouched.  The
+known embedded server sources also receive narrow versioned no-debug bridge
+contracts, so dedicated servers without debug.getupvalue/setupvalue do not need
+unsafe introspection.  External addons are never modified.
 
 Usage:
     python3 tools/embed_runtime.py           # regenerate
@@ -28,6 +31,80 @@ BRIDGE_DEST = CONN / "lua/wszc_vendor/zcity/woundbridge"
 VENDOR_LUA_PREFIX = b"wszc_vendor/cu/woundsystem/"
 MANIFEST = CONN / "VENDOR_RUNTIME.sha256"
 LUA_PATH = re.compile(rb"(['\"])woundsystem/([^'\"]+?\.lua)\1")
+
+# Some dedicated servers remove debug.getupvalue/setupvalue.  The embedded
+# sources are known and version-pinned, so expose a narrow lexical contract
+# instead of requiring unsafe debug introspection.  No new file-scope locals
+# are introduced in sv_health.lua (LuaJIT's 200-local limit matters here).
+CU_NO_DEBUG_EXPORTS = r'''
+
+if WoundSystem._WSZCEmbedded then
+    WoundSystem.Health._WSZCBridgeRefs = {
+        version = 1,
+        Fn = Fn,
+        Const = Const,
+        SendCardioUpdate = SendCardioUpdate,
+        ProcessImpactDamage = ProcessImpactDamage,
+        SendLimbUpdate = SendLimbUpdate,
+        BodyState = BodyState,
+        PlayerLimbs = PlayerLimbs,
+        GetBody = GetBody,
+        TryCreateUnconsciousRagdoll = TryCreateUnconsciousRagdoll,
+        GuessRagdollDamageLimb = GuessRagdollDamageLimb,
+        RagdollBoneNameToLimb = RagdollBoneNameToLimb,
+        BuildMedicalItemContext = BuildMedicalItemContext,
+        ApplyBandageProfile = ApplyBandageProfile,
+        GetSyringeProfile = GetSyringeProfile,
+        ApplySyringeProfile = ApplySyringeProfile,
+        Sessions = Sessions,
+        CloseBandageSession = CloseBandageSession,
+        CloseSyringeSession = CloseSyringeSession,
+        CloseShrapnelSession = CloseShrapnelSession,
+        CloseDislocationSession = CloseDislocationSession,
+        CloseAedSession = CloseAedSession,
+    }
+
+    function WoundSystem.Health._WSZCReplaceUpvalue(fn, wanted, newValue)
+        if type(fn) ~= "function" or type(newValue) ~= "table" then return false end
+        local hooks = hook.GetTable and hook.GetTable() or nil
+        local damage = type(hooks) == "table" and hooks.EntityTakeDamage or nil
+        if type(damage) ~= "table" or damage.WoundSystem_Damage ~= fn then return false end
+
+        if wanted == "Fn" then
+            Fn = newValue
+        elseif wanted == "Const" then
+            Const = newValue
+        else
+            return false
+        end
+        return true
+    end
+end
+'''
+
+ZCITY_NO_DEBUG_EXPORTS = r'''
+
+-- WSZC embedded no-debug contract.  External ZCity is never modified.
+WB._WSZCBridgeRefs = { version = 1, BestLimb = BestLimb }
+function WB._WSZCReplaceBestLimb(swepHeal, replacement)
+    if swepHeal ~= WB.SwepHeal or type(replacement) ~= "function" then return false end
+    BestLimb = replacement
+    return true
+end
+'''
+
+ZCITY_MINIGAME_CONTEXT = b'''\
+\t\tswep = swep,
+\t\tidx = idx,
+\t\tspec = spec,
+\t\ttarget = target,
+\t\tmaxDur = maxDur,
+\t\tlive = live,
+\t\toneDose = oneDose,
+\t\t_WSZCSetAppliedLive = function(value)
+\t\t\tappliedLive = math.max(tonumber(value) or 0, 0)
+\t\tend,
+'''
 
 
 def sha(data: bytes) -> str:
@@ -71,6 +148,8 @@ def collect() -> tuple[dict[str, bytes], list[tuple[str, str, str]]]:
                     b"WoundSystem._WSZCEmbeddedLoaderRan = true\n"
                     b"WoundSystem._WSZCEmbedded = true\n\n"
                 ) + transformed
+            if rel == "woundsystem/server/sv_health.lua":
+                transformed += CU_NO_DEBUG_EXPORTS.replace("\n", "\r\n").encode("utf-8")
             files[(CU_DEST / rel).relative_to(CONN).as_posix()] = transformed
             provenance.append((name, sha(original), sha(transformed)))
     with ZipFile(ZCITY_ZIP) as source:
@@ -82,8 +161,16 @@ def collect() -> tuple[dict[str, bytes], list[tuple[str, str, str]]]:
         for name in names:
             rel = name[len(BRIDGE_SOURCE_PREFIX):]
             original = source.read(name)
-            files[(BRIDGE_DEST / rel).relative_to(CONN).as_posix()] = original
-            provenance.append((name, sha(original), sha(original)))
+            transformed = original
+            if rel == "sv_woundbridge.lua":
+                newline = b"\r\n" if b"\r\n" in original else b"\n"
+                needle = b"\t\tamount = amount," + newline
+                assert original.count(needle) == 1, "embedded minigame context anchor"
+                context = ZCITY_MINIGAME_CONTEXT.replace(b"\n", newline)
+                transformed = original.replace(needle, needle + context, 1)
+                transformed += ZCITY_NO_DEBUG_EXPORTS.replace("\n", newline.decode()).encode("utf-8")
+            files[(BRIDGE_DEST / rel).relative_to(CONN).as_posix()] = transformed
+            provenance.append((name, sha(original), sha(transformed)))
     return files, provenance
 
 

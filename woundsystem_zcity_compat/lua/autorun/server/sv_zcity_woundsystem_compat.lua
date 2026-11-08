@@ -212,6 +212,12 @@ local function Upvalue(fn, wanted)
 end
 
 local function FindUpvalue(wanted)
+    local H = WoundSystem and WoundSystem.Health or nil
+    if type(WoundSystem) == "table" and WoundSystem._WSZCEmbedded == true
+        and type(H) == "table" and type(H._WSZCBridgeRefs) == "table" then
+        local value = H._WSZCBridgeRefs[wanted]
+        if value ~= nil then return value, nil end
+    end
     for _, fn in ipairs(RootFunctions()) do
         local value = Upvalue(fn, wanted)
         if value ~= nil then return value, fn end
@@ -220,6 +226,12 @@ local function FindUpvalue(wanted)
 end
 
 local function ReplaceUpvalue(fn, wanted, newValue)
+    local H = WoundSystem and WoundSystem.Health or nil
+    if type(WoundSystem) == "table" and WoundSystem._WSZCEmbedded == true
+        and type(H) == "table" and type(H._WSZCReplaceUpvalue) == "function" then
+        local ok, replaced = pcall(H._WSZCReplaceUpvalue, fn, wanted, newValue)
+        return ok and replaced == true
+    end
     if type(fn) ~= "function" or not debug then return false end
     local i = 1
     while true do
@@ -1004,8 +1016,14 @@ function WSZC.Setup()
                     return WSZC.OriginalFn and WSZC.OriginalFn[key]
                 end,
             })
-            ReplaceUpvalue(CUDamage, "Const", constProxy)
-            ReplaceUpvalue(CUDamage, "Fn", fnProxy)
+            local constReplaced = ReplaceUpvalue(CUDamage, "Const", constProxy)
+            local fnReplaced = ReplaceUpvalue(CUDamage, "Fn", fnProxy)
+            if WoundSystem._WSZCEmbedded and not (constReplaced and fnReplaced) then
+                if WSZC.MarkFeatureFailed then
+                    WSZC.MarkFeatureFailed("core", "embedded damage proxy contract rejected")
+                end
+                return false
+            end
             WSZC.ProxiedCUDamage = CUDamage
             WSZC.DamageProxiesApplied = true
         end

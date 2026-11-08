@@ -90,6 +90,29 @@ local function LegacyDamageEntrypoint(H)
     return type(damage) == "table" and type(damage.WoundSystem_Damage) == "function"
 end
 
+local EMBEDDED_FUNCTION_REFS = {
+    "SendCardioUpdate", "ProcessImpactDamage", "SendLimbUpdate", "GetBody",
+    "TryCreateUnconsciousRagdoll", "GuessRagdollDamageLimb", "RagdollBoneNameToLimb",
+    "BuildMedicalItemContext", "ApplyBandageProfile", "GetSyringeProfile",
+    "ApplySyringeProfile", "CloseBandageSession", "CloseSyringeSession",
+    "CloseShrapnelSession", "CloseDislocationSession", "CloseAedSession",
+}
+
+local function EmbeddedLegacyBridge(H)
+    if type(H) ~= "table" or type(WoundSystem) ~= "table"
+        or WoundSystem._WSZCEmbedded ~= true
+        or type(H._WSZCReplaceUpvalue) ~= "function" then return false end
+    local refs = H._WSZCBridgeRefs
+    if type(refs) ~= "table" or refs.version ~= 1 then return false end
+    for _, key in ipairs({ "Fn", "Const", "BodyState", "PlayerLimbs", "Sessions" }) do
+        if type(refs[key]) ~= "table" then return false end
+    end
+    for _, key in ipairs(EMBEDDED_FUNCTION_REFS) do
+        if type(refs[key]) ~= "function" then return false end
+    end
+    return true
+end
+
 --- Resolve C:U source files without letting the embedded copy shadow an
 --- external Workshop/GitHub installation.  Once embedded runtime is selected,
 --- its isolated namespace is preferred consistently on that realm.
@@ -111,6 +134,7 @@ local SERVER_CAPABILITY_GLOBALS = {
     zcity_bridge = "WSZC_CapZCityBridge",
     cu_native_api = "WSZC_CapNativeAPI",
     cu_legacy_api = "WSZC_CapLegacyAPI",
+    cu_embedded_bridge = "WSZC_CapEmbeddedBridge",
     cu_native_state = "WSZC_CapNativeState",
     cu_native_external = "WSZC_CapNativeExternal",
     debug_introspection = "WSZC_CapDebugIntrospection",
@@ -165,7 +189,8 @@ function WSZC.RefreshCapabilities()
         and type(H.GetLimbs) == "function"
     local nativeAPI = nativeState and type(H.HandleDamage) == "function"
         and type(H.ApplyItemToBody) == "function"
-    local legacyAPI = type(H) == "table" and hasDebug
+    local embeddedLegacy = EmbeddedLegacyBridge(H)
+    local legacyAPI = type(H) == "table" and (hasDebug or embeddedLegacy)
         and type(WoundSystem and WoundSystem.UseMedicalItem) == "function"
         and LegacyDamageEntrypoint(H)
     local nativeExternal = WSZC.HasNativeExternalMinigameAPI(H)
@@ -189,6 +214,7 @@ function WSZC.RefreshCapabilities()
             or type(WoundSystem and WoundSystem.ToggleHealthHUD) == "function",
         cu_native_api = nativeAPI == true,
         cu_legacy_api = legacyAPI == true,
+        cu_embedded_bridge = embeddedLegacy == true,
         cu_native_state = nativeState == true,
         cu_native_external = nativeExternal == true,
         cu_minigame_files = minigameFiles == true,
@@ -306,7 +332,8 @@ function WSZC.CompatibilityStatusLines()
             .. " native_api=" .. YesNo(caps.cu_native_api)
             .. " legacy_api=" .. YesNo(caps.cu_legacy_api)
             .. " native_external=" .. YesNo(caps.cu_native_external)
-            .. " debug=" .. YesNo(caps.debug_introspection),
+            .. " debug=" .. YesNo(caps.debug_introspection)
+            .. " embedded_bridge=" .. YesNo(caps.cu_embedded_bridge),
         "  optional contracts: zcity_medicine=" .. YesNo(caps.zcity_medicine)
             .. " zcity_minigames=" .. YesNo(caps.zcity_minigames)
             .. " zcity_organism=" .. YesNo(caps.zcity_organism)

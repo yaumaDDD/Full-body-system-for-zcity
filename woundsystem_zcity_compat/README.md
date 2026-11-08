@@ -10,6 +10,9 @@ WoundBridge Lua** (`lua/wszc_vendor/`). Поэтому отдельная уст
 поиск ZCity-версии с WoundBridge больше не обязательны. Внешние
 Workshop/GitHub API имеют приоритет; embedded-загрузчик включается только при
 их отсутствии и не создаёт второй runtime поверх уже загруженного аддона.
+Для серверов без `debug.getupvalue/setupvalue` embedded C:U/WoundBridge имеют
+собственный versioned lexical contract (`embedded_bridge=yes`): damage proxies,
+BestLimb и native bandage cost не зависят от debug library.
 
 ## Адаптивная совместимость со сборками
 

@@ -433,9 +433,13 @@ Suite `82/82` до пересборки архивов, затем полный 
 
 `tools/embed_runtime.py` извлекает 71 C:U Lua из `casualites unknown.zip` в
 `lua/wszc_vendor/cu/` и 3 WoundBridge Lua из `zcity.zip` в
-`lua/wszc_vendor/zcity/woundbridge/`. Изменяются только quoted `*.lua` include
-paths и C:U `medical_tools` include directory; `woundsystem/persist`, звуки,
-data/material paths сохраняются. `VENDOR_RUNTIME.sha256` фиксирует source и
+`lua/wszc_vendor/zcity/woundbridge/`. Переписываются только quoted `*.lua`
+include paths и C:U `medical_tools` include directory; `woundsystem/persist`,
+звуки, data/material paths сохраняются. В embedded-only server copies добавлены
+versioned no-debug contracts: `H._WSZCBridgeRefs` + setter только для `Fn` /
+`Const`, `WB._WSZCBridgeRefs.BestLimb` и явные native-minigame context /
+`_WSZCSetAppliedLive`. Они заменяют debug introspection на известном embedded
+коде, не меняя external addons. `VENDOR_RUNTIME.sha256` фиксирует source и
 vendored SHA-256, а `--check` запрещает stale/extra generated files.
 
 `lua/wszc_vendor/bootstrap.lua` выбирает external API первым. При отсутствии
