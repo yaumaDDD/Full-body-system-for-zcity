@@ -1020,7 +1020,13 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  больше нет. В самой игре успех проверяется по фактически нарисованной кости:
  `WSZC_DislocationVisualComplete` повторно валидирует native session ID и
  socket tolerance на сервере, затем сразу снимает вывих и закрывает сессию.
- Дополнительный удар или отпускание ЛКМ при идеальном стыке не требуются.
+ `DislocationSuccessTimer = 3` — НЕ секунды удержания: native условие
+ `distance * 0.2 < 3` означает радиус 15 simulation units. Дополнительный удар
+ или отпускание ЛКМ при идеальном стыке не требуются. Отдельно исправлен
+ modern native-api путь `Setup()`: его ранний return больше не пропускает
+ `Sessions/CloseDislocationSession`; `RefreshNativeSessionRefs()` вызывается
+ до выбора adapter, периодически и lazy в receiver, поэтому валидный пакет
+ больше не отклоняется из-за отсутствующих refs.
 - Скрытие инвентаря отключает и подбор мировых медпредметов C:U (`E`/`F`):
  медицинские предметы берутся через SWEP'ы и инвентарь ZCity.
 - Показатели в панели C:U — теневая проекция (4 Гц), а не самостоятельная симуляция.
@@ -1038,11 +1044,11 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  на заглушечном Lua-рантайме и через canonical ZCity WoundBridge из исходного
  ZIP. Актуальные suites: `tools/tests/test_wszc_regression.py` (**159/159**,
  включая Lua 15/15, CRC/зеркало/манифест, pixel checks и 32 remote behavior
- tests), `test_gameplay_regression.py` (**113/113**),
+ tests), `test_gameplay_regression.py` (**114/114**),
  `test_bandage_regression.py` (**40/40**), `test_medical_regression.py`
  (**50/50**) и `test_compatibility_regression.py` (**44/44**:
  native/legacy/partial/missing API, independent feature gates, optional
- includes и Setup failure latch) — всего **406/406**.
+ includes и Setup failure latch) — всего **407/407**.
  Remote M16 проверяет ragdoll range/watchdog; M17 прогоняет настоящий advanced minigame-server:
  `operator→patient`, один расход слота медика и запрет input вне дистанции.
  Medical-suite отдельно проверяет canonical

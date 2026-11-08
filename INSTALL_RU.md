@@ -61,6 +61,7 @@
 | WoundView не наслаивается поверх мини-игры | включается вместе с `zc_woundsystem_compat_minigames 1` |
 | Нативная мини-игра вправления меньше исходного квадрата C:U | `zc_woundsystem_compat_native_minigame_zoom 0.85` (диапазон `0.4..1.2`) |
 | Кость вправления рядом с суставом и на экране | `zc_woundsystem_compat_dislocation_start 35` (диапазон `10..100`) |
+| Идеальный стык сразу вправляет вывих | Проверяется нарисованная кость; сервер подтверждает native session/ID/допуск и закрывает миниигру без удара или удержания. `DislocationSuccessTimer = 3` — расстояние, не секунды; native session refs обязательно инициализируются на modern-api пути |
 | Компактная рука одного размера во всех мини-играх | `zc_woundsystem_compat_hand_cursor_scale 0.55`, `..._handanim_scale 1`; единый множитель в C:U/WSZC, миграция revision 6, hitbox/центр/rotation не меняются |
 | Кукла WoundView собрана из 17 пиксельно трассированных интерактивных частей чистого `1435.png` + иконки статусов | `zc_woundsystem_compat_unitmenu_doll 1`, `zc_woundsystem_compat_unitmenu_scale 0.25`; полный black/white POT round-trip = 0 различий, native `woundsys_ui_scale` компенсируется (диапазон `0.1..0.8`) |
 | Отдельная шея: hitbox/hover, `Broken neck`, подсказка Skin/Muscle и синхронизация на первой жизни | `org.skull`, `Bip01_Neck1` и `neckartery` относятся к `PlayerLimbs.neck`; head не дублирует перелом. Подсказка: `Neck / Skin: N% / Muscle: N%`; ZCity HUD, таймер и нижние слоты сохранены |

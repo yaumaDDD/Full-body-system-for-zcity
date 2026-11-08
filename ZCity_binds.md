@@ -71,6 +71,10 @@ WoundView; «Examine Body» заменён на «Проверить травм�
 кость попадает в native-допуск стыка, namespaced `WSZC_DislocationVisualComplete`
 немедленно запрашивает завершение; сервер проверяет живую сессию/ID/допуск и
 сразу снимает вывих, не требуя дополнительного удара или отпускания ЛКМ.
+Трёхсекундного удержания нет: `DislocationSuccessTimer = 3` — порог
+`distance * 0.2`, то есть 15 simulation units. Native session refs теперь
+инициализируются и на modern-api пути с ранним `Setup()` return, поэтому
+сервер больше не отбрасывает правильное совмещение из-за пустого `CUSessions`.
 Общий размер спрайта руки во всех мини-играх —
 `zc_woundsystem_compat_hand_cursor_scale` (0.55).
 

@@ -833,6 +833,42 @@ end
 
 WSZC.Upvalue = Upvalue
 WSZC.FindUpvalue = FindUpvalue
+
+-- Modern C:U exports HandleDamage/ApplyItemToBody, so Setup() takes its native
+-- API fast path and used to return BEFORE refs.CUSessions was assigned.  The
+-- rendered-dislocation receiver then rejected every packet: there was no live
+-- Sessions table or native close function to validate.  Resolve all native
+-- session refs independently of that adapter choice.  Embedded refs are O(1);
+-- discovery is needed only for external/legacy builds or a missing contract.
+function WSZC.RefreshNativeSessionRefs(discover)
+    local h = WoundSystem and WoundSystem.Health or nil
+    local nativeRefs = h and h._WSZCBridgeRefs or nil
+    local wantedByField = {
+        CUSessions = "Sessions",
+        CUCloseBandageSession = "CloseBandageSession",
+        CUCloseSyringeSession = "CloseSyringeSession",
+        CUCloseShrapnelSession = "CloseShrapnelSession",
+        CUCloseDislocationSession = "CloseDislocationSession",
+        CUCloseAedSession = "CloseAedSession",
+    }
+    for field, wanted in pairs(wantedByField) do
+        local current = WSZC[field]
+        local currentValid = wanted == "Sessions" and type(current) == "table"
+            or wanted ~= "Sessions" and type(current) == "function"
+        local value = type(nativeRefs) == "table" and nativeRefs[wanted] or nil
+        if value == nil and (discover == true or not currentValid) and WSZC.FindUpvalue then
+            value = WSZC.FindUpvalue(wanted)
+        end
+        if wanted == "Sessions" and type(value) == "table" then
+            WSZC[field] = value
+        elseif wanted ~= "Sessions" and type(value) == "function" then
+            WSZC[field] = value
+        end
+    end
+    return type(WSZC.CUSessions) == "table"
+        and type(WSZC.CUCloseDislocationSession) == "function"
+end
+
 WSZC.NormalizeItemId = NormalizeItemId
 WSZC.BandageProfile = BandageProfile
 WSZC.SyringeProfile = SyringeProfile
@@ -862,6 +898,8 @@ function WSZC.Setup()
 
     WSZC.H = H
     if WSZC.InstallNeckState then WSZC.InstallNeckState(H) end
+    -- Must precede BOTH the modern native-api early return and legacy setup.
+    if WSZC.RefreshNativeSessionRefs then WSZC.RefreshNativeSessionRefs(true) end
 
     -- A newer C:U can export the complete native bridge contract.  Prefer it;
     -- partial lookalikes still go through signature-checked legacy discovery.
@@ -1269,6 +1307,7 @@ local function Attempt()
     SetGlobalBool("WSZC_OrganismAuthority", WSZC.OrganismAuthority())
     if WSZC.PatchIsEnabled then WSZC.PatchIsEnabled() end
     if WSZC.PatchIsBridged then WSZC.PatchIsBridged() end
+    if WSZC.RefreshNativeSessionRefs then WSZC.RefreshNativeSessionRefs(false) end
     if WSZC.InstallLegacyRadialMedicineBlock then WSZC.InstallLegacyRadialMedicineBlock() end
     if WSZC.InstallOrganismMode then WSZC.InstallOrganismMode() end
 

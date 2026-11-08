@@ -4967,6 +4967,13 @@ function WSZC.HandleDislocationVisualComplete(operator, sessionId, x, y)
     sessionId = math.floor(tonumber(sessionId) or 0)
     if sessionId <= 0 then return false end
 
+    if (type(WSZC.CUSessions) ~= "table"
+        or type(WSZC.CUCloseDislocationSession) ~= "function")
+        and WSZC.RefreshNativeSessionRefs then
+        -- Modern native-api Setup used to skip these refs entirely.  Lazy
+        -- discovery also covers a hot reload immediately before this packet.
+        WSZC.RefreshNativeSessionRefs(true)
+    end
     local sessions = WSZC.CUSessions
     local byPatient = type(sessions) == "table" and sessions.Dislocation or nil
     if type(byPatient) ~= "table" or type(WSZC.CUCloseDislocationSession) ~= "function" then return false end

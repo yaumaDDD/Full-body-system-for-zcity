@@ -136,6 +136,10 @@ check("S18 rendered reduction is server-validated and closes the native session"
       and 'WSZC.RemoteMedicalValidPair(operator, target)' in organism_s
       and 'state.dislocated = false' in organism_s
       and 'WSZC.CUCloseDislocationSession, target, "complete"' in organism_s
+      and 'WSZC.RefreshNativeSessionRefs(true)' in organism_s
+      and 'WSZC.RefreshNativeSessionRefs(true)' in server_main_s
+      and server_main_s.index('WSZC.RefreshNativeSessionRefs(true)')
+          < server_main_s.index('if (caps and caps.cu_native_api)')
       and 'net.Receive("WSZC_DislocationVisualComplete"' in server_mg_s)
 
 try:
@@ -1960,6 +1964,9 @@ return committed, missKept
     visual_fn_start = shared_s.index('function WSZC.DislocationVisualAligned')
     visual_fn_end = shared_s.index('\nend\n', visual_fn_start) + 5
     lua.execute(shared_s[visual_fn_start:visual_fn_end])
+    session_refs_fn_start = server_main_s.index('function WSZC.RefreshNativeSessionRefs')
+    session_refs_fn_end = server_main_s.index('\nend\n', session_refs_fn_start) + 5
+    lua.execute(server_main_s[session_refs_fn_start:session_refs_fn_end])
     visual_reduction = lua.execute(r'''
 WSZC.Ready = true
 WSZC.RemoteNativeSessions = {}
@@ -1992,7 +1999,11 @@ local selfCommitted = selfOK and selfPatient._limbs.arm_R.dislocated == false
 local rejected = Injured(502)
 local wrongId = WSZC.HandleDislocationVisualComplete(rejected, 999, 421.82, 229.82)
 local far = WSZC.HandleDislocationVisualComplete(rejected, 502, 521.82, 229.82)
-local rejectionHeld = wrongId == false and far == false
+-- DislocationSuccessTimer=3 is a DISTANCE threshold, not a three-second hold:
+-- distance*0.2 < 3 => 15 simulation units at the native boundary.
+local thresholdMatchesNative = WSZC.DislocationVisualAligned(436.81, 229.82) == true
+    and WSZC.DislocationVisualAligned(436.83, 229.82) == false
+local rejectionHeld = wrongId == false and far == false and thresholdMatchesNative
     and rejected._limbs.arm_R.dislocated == true
     and rejected.organism.rarmdislocation == true and closed[rejected] == nil
 
@@ -2006,11 +2017,35 @@ local remoteCommitted = remoteOK and remotePatient._limbs.arm_R.dislocated == fa
     and remotePatient.organism.rarmdislocation == false
     and closed[remotePatient] == 1 and closed[medic] == nil
     and WSZC.RemoteNativeSessions[remotePatient] == nil
-return selfCommitted, rejectionHeld, remoteCommitted
+
+-- Reproduce the modern native-api early return: NO test session refs are
+-- preinstalled in WSZC.  The receiver must discover the real native tables.
+local lazyPatient = Injured(504)
+local nativeSessions = WSZC.CUSessions
+local nativeClose = WSZC.CUCloseDislocationSession
+WSZC.CUSessions, WSZC.CUCloseDislocationSession = nil, nil
+WoundSystem.Health._WSZCBridgeRefs = {
+    Sessions = nativeSessions, CloseDislocationSession = nativeClose,
+}
+local oldFindUpvalue = WSZC.FindUpvalue
+WSZC.FindUpvalue = function(wanted)
+    if wanted == "Sessions" then return nativeSessions end
+    if wanted == "CloseDislocationSession" then return nativeClose end
+    return nil
+end
+local lazyOK = WSZC.HandleDislocationVisualComplete(lazyPatient, 504, 421.82, 229.82)
+local lazyCommitted = lazyOK and WSZC.CUSessions == nativeSessions
+    and WSZC.CUCloseDislocationSession == nativeClose
+    and lazyPatient._limbs.arm_R.dislocated == false
+    and lazyPatient.organism.rarmdislocation == false and closed[lazyPatient] == 1
+WSZC.FindUpvalue = oldFindUpvalue
+WoundSystem.Health._WSZCBridgeRefs = nil
+return selfCommitted, rejectionHeld, remoteCommitted, lazyCommitted
 ''')
     check("R90 rendered perfect socket commits native + ZCity reduction immediately", visual_reduction[0])
     check("R91 wrong-session and non-aligned visual packets cannot heal", visual_reduction[1])
     check("R92 rendered remote reduction treats the patient and clears operator metadata", visual_reduction[2])
+    check("R95 modern native-api path lazily discovers Sessions and accepts visual completion", visual_reduction[3])
 
     legacy_block = lua.execute(r'''
 local previousCommand, previousWB = concommand, hg.WoundBridge
