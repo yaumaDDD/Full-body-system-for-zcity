@@ -449,6 +449,7 @@ local DOLL_DRAW_MARKERS = {
     "wszc/unitmenu/limbs/", "wszc/unitmenu/status/",
     "casunknown-images/middle/", "casunknown-images/outlines/",
     "casunknown-images/icons/", "casunknown-images/screen/uipoint",
+    "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical",
 }
 local function IsDollDrawMaterial(name)
     if type(name) ~= "string" then return false end
@@ -676,6 +677,8 @@ local function InstallDrawWrappers()
 
         local origTex = surface.DrawTexturedRect
         surface.DrawTexturedRect = function(x, y, w, h, ...)
+            if WSZC.HiddenNativeStatusIconDraw
+                and WSZC.HiddenNativeStatusIconDraw() then return end
             if HiddenRegion(x, y, w, h) then return end
             return origTex(x, y, w, h, ...)
         end
@@ -683,6 +686,8 @@ local function InstallDrawWrappers()
         if type(surface.DrawTexturedRectRotated) == "function" then
             local origRot = surface.DrawTexturedRectRotated
             surface.DrawTexturedRectRotated = function(x, y, w, h, ...)
+                if WSZC.HiddenNativeStatusIconDraw
+                    and WSZC.HiddenNativeStatusIconDraw() then return end
                 if HiddenRegion(x, y, w, h) then return end
                 return origRot(x, y, w, h, ...)
             end
@@ -803,26 +808,69 @@ local function InstallDrawWrappers()
 end
 WSZC.InstallCUHudDrawWrappers = InstallDrawWrappers
 
--- C:U owns disinfectTime as a real infection-resistance timer.  Do not zero
--- it and do not replace the whole medical icon layer: wrap ONLY the native
--- AddHudIcon upvalue and skip the single Icons.disinfected entry.  Consequently
--- the slot is not even appended (other icons keep their native spread), while
--- server disinfection and infection_up/down/neutral continue unchanged.
+-- Keep treatment state intact; filter ONLY presentation in native WoundView.
+-- Owner-marked icons: disinfect spray, fracture, dislocation and injection.
+-- Ordinary bleed icons are hidden as well: a separate native status with a
+-- DIFFERENT material is projected from real org.arterialwounds on the server.
+-- Infection, shrapnel, tourniquet/splint, amputation and internal-bleed status
+-- are not part of this removal and keep their existing behaviour.
 local disinfectedFilterFns = setmetatable({}, { __mode = "k" })
 local disinfectedFilterWrappers = setmetatable({}, { __mode = "k" })
 
-local function IsDisinfectedMaterial(mat, icons)
-    -- Icons is LOCAL in cl_health_gui.lua.  Looking only at _G.Icons made the
-    -- old filter a no-op in the real game even though its synthetic test passed.
-    icons = icons or _G.Icons
-    if type(icons) == "table" and mat == icons.disinfected then return true end
+local HIDDEN_NATIVE_STATUS_KEYS = {
+    disinfected = true, fracture = true, fracture2 = true, dislocate = true,
+    injection = true,
+    smallbleed = true, smallbleed_bandaged = true,
+    midbleed = true, midbleed_bandaged = true,
+    strongbleed = true, strongbleed_bandaged = true,
+    extremebleed = true, extremebleed_bandaged = true,
+}
 
-    -- Identity is the primary check.  The exact native path also covers a
-    -- padded/recreated IMaterial and builds where Icons cannot be inspected.
-    local name = MaterialName(mat)
+local HIDDEN_NATIVE_STATUS_PATHS = {
+    ["casunknown-images/icons/disinfected.png"] = true,
+    ["casunknown-images/icons/fracturedbone.png"] = true,
+    ["casunknown-images/icons/dislocatedbone.png"] = true,
+    ["casunknown-images/icons/injectionwound.png"] = true,
+    ["casunknown-images/icons/injectionwound_red.png"] = true,
+    ["casunknown-images/bottomui/fracturedbone.png"] = true,
+    ["casunknown-images/icons/smallbleeding.png"] = true,
+    ["casunknown-images/icons/smallbleedingbandaged.png"] = true,
+    ["casunknown-images/icons/midbleeding.png"] = true,
+    ["casunknown-images/icons/midbleedingbandaged.png"] = true,
+    ["casunknown-images/icons/bleeding.png"] = true,
+    ["casunknown-images/icons/bleedingbandaged.png"] = true,
+    ["casunknown-images/icons/strongbleed.png"] = true,
+    ["casunknown-images/icons/strongbleedbandaged.png"] = true,
+    ["wszc/unitmenu/status/fracture.png"] = true,
+    ["wszc/unitmenu/status/dislocation.png"] = true,
+    ["wszc/unitmenu/status/bleeding.png"] = true,
+    ["zcity_delta/unitmenu/status/fracture.png"] = true,
+    ["zcity_delta/unitmenu/status/dislocation.png"] = true,
+    ["zcity_delta/unitmenu/status/bleeding.png"] = true,
+}
+
+function WSZC.IsHiddenNativeStatusIcon(mat, icons)
+    -- Icons is LOCAL in cl_health_gui.lua.  Identity covers recreated/padded
+    -- materials and mock/native paths; the exact path is the fallback when a
+    -- C:U revision does not expose that table to the recursive upvalue walk.
+    icons = icons or _G.Icons
+    if type(icons) == "table" then
+        for key in pairs(HIDDEN_NATIVE_STATUS_KEYS) do
+            if mat == icons[key] then return true end
+        end
+    end
+    local name = type(mat) == "string" and mat or MaterialName(mat)
     if type(name) ~= "string" then return false end
-    name = name:lower():gsub("\\", "/")
-    return name:find("casunknown-images/icons/disinfected", 1, true) ~= nil
+    name = name:lower():gsub("\\", "/"):gsub("_padded%.png$", ".png")
+    return HIDDEN_NATIVE_STATUS_PATHS[name] == true
+end
+
+-- Second line of defence for injection sprites drawn OUTSIDE AddHudIcon and
+-- for native builds whose closure layout defeats upvalue discovery.  The flag
+-- is set only around WoundDollAndPanel, never around a treatment minigame.
+function WSZC.HiddenNativeStatusIconDraw()
+    return WSZC.CUStatusIconFiltered == true
+        and WSZC.IsHiddenNativeStatusIcon(WSZC._DrawMaterialName, _G.Icons)
 end
 
 local function PatchDisinfectedIcon(fn)
@@ -858,7 +906,7 @@ local function PatchDisinfectedIcon(fn)
             end
             local nativeIcons = icons
             local wrapped = function(items, mat, ...)
-                if IsDisinfectedMaterial(mat, nativeIcons) then return end
+                if WSZC.IsHiddenNativeStatusIcon(mat, nativeIcons) then return end
                 return addHudIcon(items, mat, ...)
             end
             disinfectedFilterWrappers[wrapped] = true
@@ -907,15 +955,17 @@ local function InstallHudFilter()
         -- the doll, FIX DISLOCATION label and tooltips appear stacked over the
         -- bone/hand ("too many reductions, all too high to click").
         if WSZC.WSZCMinigameActive() or WSZC.NativeMinigameActive() then return end
-        if not (cvHideUnitPanel:GetBool() or cvHideInventory:GetBool()) then
-            return fn(...)
-        end
         local prevFiltered = WSZC.CUHudFiltered
-        WSZC.CUHudFiltered = true
+        local prevStatusFiltered = WSZC.CUStatusIconFiltered
+        WSZC.CUStatusIconFiltered = true
+        if cvHideUnitPanel:GetBool() or cvHideInventory:GetBool() then
+            WSZC.CUHudFiltered = true
+        end
         -- Keep native texture sampling: forcing LINEAR here blurred the whole
         -- WoundView.  This wrapper must not alter either render filter stack.
         local ok, a, b, c = pcall(fn, ...)
         WSZC.CUHudFiltered = prevFiltered
+        WSZC.CUStatusIconFiltered = prevStatusFiltered
         if not ok then error(a, 0) end
         return a, b, c
     end
@@ -945,10 +995,14 @@ end
 WSZC.CUHudFilterEnabled = CUHudFilterEnabled
 
 hook.Add("PreDrawHUD", "WSZC_CUHudFilterPre", function()
-    if CUHudFilterEnabled() then WSZC.CUHudFiltered = true end
+    if CUHudFilterEnabled() then
+        WSZC.CUHudFiltered = true
+        WSZC.CUStatusIconFiltered = true
+    end
 end)
 hook.Add("PostDrawHUD", "WSZC_CUHudFilterPost", function()
     WSZC.CUHudFiltered = false
+    WSZC.CUStatusIconFiltered = false
 end)
 
 local function InstallInventoryProxy()
@@ -1013,9 +1067,11 @@ hook.Add("Think", "WSZC_CUInventoryLayout", function()
     -- module has loaded.  The server syncs only this extra customStatus key;
     -- native Statuses.GetActive() draws it before every arterial bleed icon.
     if WSZC.InstallAmputationStatus then WSZC.InstallAmputationStatus() end
+    if WSZC.InstallArterialBleedingStatus then WSZC.InstallArterialBleedingStatus() end
     WSZC.InstallMinigameTextFilter()
-    if not (cvHideInventory:GetBool() or cvHideUnitPanel:GetBool()) then return end
+    -- Status filtering is independent of the optional scanner/inventory hide.
     InstallDrawWrappers()
+    if not (cvHideInventory:GetBool() or cvHideUnitPanel:GetBool()) then return end
     -- If C:U's HUDPaint hook is missing/renamed, fall back to a whole-frame
     -- draw filter instead of leaving the panel visible.
     WSZC.CUHudUseFallback = not InstallHudFilter()
@@ -1766,8 +1822,9 @@ local function ApplyUnitmenuIcons()
     if not built then return false end
     for key, mat in pairs(built) do icons[key] = mat end
     -- Do NOT replace Icons.disinfected with infection.png: that still leaves a
-    -- processing slot on the hand and confuses it with a real infection.  The
-    -- native AddHudIcon filter above removes exactly that one entry instead.
+    -- processing slot and confuses it with a real infection.  AddHudIcon skips
+    -- the marked statuses and ordinary bleed; the arterial status has its own
+    -- distinct material and remains visible.
     icons._WSZCUnitmenuPatched = true
     return true
 end
@@ -2173,6 +2230,7 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     WSZC.NextUnitmenuInstall = now + 1
     WSZC.InstallMaterialTracker()
     if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
+    if WSZC.InstallArterialBleedingStatus then WSZC.InstallArterialBleedingStatus() end
     WSZC.InstallDisinfectedIconFilter()
     PatchActionButtonOffset()
     WSZC.InstallNeckMoodle()

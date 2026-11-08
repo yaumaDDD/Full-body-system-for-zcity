@@ -960,9 +960,11 @@ return treated == 0
     and ply._limbs.hand_R.infection == 0
 ''')
     check("R58 final dressing completes aftercare even if extraction bleeding clotted", zero_aftercare)
-    check("S16 processing icon is filtered alone; infection and disinfect mechanics survive",
+    check("S16 marked icons + ordinary bleed are filtered; infection/disinfect mechanics survive",
           "function WSZC.InstallDisinfectedIconFilter()" in layout_s
-          and "mat == icons.disinfected" in layout_s
+          and "HIDDEN_NATIVE_STATUS_KEYS" in layout_s
+          and "WSZC.IsHiddenNativeStatusIcon(mat, nativeIcons)" in layout_s
+          and "WSZC_ARTERIAL_BLEEDING" in shared_s
           and 'icons.disinfected = Material("casunknown-images/icons/infection.png"' not in layout_s
           and "state.disinfectTime = 0" in organism_s
           and "state.infectionSpeed = 0" in organism_s)
@@ -1570,6 +1572,18 @@ return ok and #WoundSystem.Statuses.GetActive(state) == 0
 ''')
     check("R43 native client status resolves the red internal-bleed icon only above zero", native_internal_icon)
 
+    native_arterial_icon = status_client.execute(r'''
+assert(WSZC.InstallArterialBleedingStatus())
+local state = { customStatuses = { WSZC_ARTERIAL_BLEEDING = 12 } }
+local active = WoundSystem.Statuses.GetActive(state)
+local ok = #active == 1 and active[1].id == "WSZC_ARTERIAL_BLEEDING"
+    and active[1].data.icon == "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png"
+    and active[1].data.type == "number" and active[1].data.order == -8000
+state.customStatuses.WSZC_ARTERIAL_BLEEDING = 0
+return ok and #WoundSystem.Statuses.GetActive(state) == 0
+''')
+    check("R96 arterial marker uses its own red blood material and disappears at zero", native_arterial_icon)
+
     neck_state = lua.execute(r'''
 local ply = MakePlayer()
 local h = WoundSystem.Health
@@ -1755,6 +1769,42 @@ return present, abdomenOnly and mechanicsUntouched, cleared, networked
     check("R74 internal marker is abdomen-only and preserves disinfection/infection/custom statuses", internal_bleeding_shadow[1])
     check("R75 stopping internal bleeding clears the marker and native status", internal_bleeding_shadow[2])
     check("R76 native WriteNet/ReadNet round-trip carries the abdomen marker to the client", internal_bleeding_shadow[3])
+
+    arterial_bleeding_shadow = lua.execute(r'''
+assert(WSZC.InstallArterialBleedingStatus())
+local ply = MakePlayer()
+local id = WSZC.ARTERIAL_BLEEDING_STATUS_ID
+ply.organism.wounds = {
+    { 2, vector_origin, angle_zero, "ValveBiped.Bip01_R_Forearm", 0, 0 },
+}
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local ordinaryOnly = ply._limbs.forearm_R.bleed > 0
+    and (not ply._limbs.forearm_R.customStatuses
+        or ply._limbs.forearm_R.customStatuses[id] == nil)
+
+ply.organism.arterialwounds = {
+    { 4, vector_origin, angle_zero, "ValveBiped.Bip01_R_Forearm", 0, 0, "rarmartery" },
+}
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local state = ply._limbs.forearm_R
+local active = WoundSystem.Statuses.GetActive(state)
+local present = state.customStatuses[id] == 12 and state.bleed > 12
+    and #active == 1 and active[1].id == id
+    and active[1].data.icon == "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png"
+    and (not ply._limbs.hand_R.customStatuses
+        or ply._limbs.hand_R.customStatuses[id] == nil)
+
+ply.organism.arterialwounds = {}
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local cleared = state.customStatuses[id] == nil and state.bleed > 0
+    and #WoundSystem.Statuses.GetActive(state) == 0
+return ordinaryOnly, present, cleared
+''')
+    check("R97 ordinary wound bleeding never creates an arterial marker", arterial_bleeding_shadow[0])
+    check("R98 real arterialwounds create the native red marker on the mapped limb", arterial_bleeding_shadow[1])
+    check("R99 closing the artery clears only its marker; ordinary bandage bleed remains", arterial_bleeding_shadow[2])
 
     standing_fall = lua.execute(r'''
 if type(WSZC.ApplyStandingFall) ~= "function" then return false, false, false end

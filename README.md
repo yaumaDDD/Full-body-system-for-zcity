@@ -178,8 +178,12 @@ white exterior кистей, швов и внешних white-anchors непос
 последнего обычного кровотечения native-сессия автоматически закрывается через
 `completed` → `onClose/AfterUse`, удаляя virtual slot и client overlay; расход
 по-прежнему равен реально удалённой severity без второго Consume. Ложный значок
-`disinfected/processing` пропускается только в native `AddHudIcon` — настоящие
-infection/bleed/fracture и действие `disinfectTime` сохраняются. Внешние контуры
+`disinfected/processing`, fracture/dislocation и след укола больше не рисуются
+в WoundView; infection/shrapnel и действие `disinfectTime` сохраняются. Обычная
+C:U капля скрыта: вместо неё сервер создаёт `WSZC_ARTERIAL_BLEEDING` только по
+реальным `org.arterialwounds`, с отдельной красной 48px иконкой. Закрытие артерии
+удаляет значок, а обычное кровотечение и лечение бинтом продолжают использовать
+прежний `state.bleed`. Внешние контуры
 сохраняют узкий alpha-fringe (`EDGE_AA_RADIUS=0.45`), но добавленный scoped
 LINEAR sampling УБРАН: WoundView снова использует родное texture sampling и
 вообще не изменяет render filter stack. Pinned geometry, head/neck seam `y=317`,

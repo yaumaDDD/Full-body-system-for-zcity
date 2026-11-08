@@ -700,6 +700,50 @@ local function ArterialBleedingOnLimb(ply, org, limbId)
     return total
 end
 
+-- Presentation-only arterial marker.  Never infer it from state.bleed: that
+-- value deliberately combines ordinary + arterial wounds for native physics
+-- and bandage UI.  The real organism wound list is the sole source here.
+function WSZC.SyncArterialBleedingShadow(ply, org, limbs)
+    local dirty = {}
+    if type(org) ~= "table" or type(limbs) ~= "table" then return dirty end
+    if not (WSZC.InstallArterialBleedingStatus and WSZC.InstallArterialBleedingStatus()) then
+        return dirty
+    end
+    local id = WSZC.ARTERIAL_BLEEDING_STATUS_ID
+    local amounts = {}
+    for _, wound in pairs(org.arterialwounds or {}) do
+        if type(wound) == "table" then
+            local severity = math.max(tonumber(wound[1]) or 0, 0)
+            local limbId = AuthoritativeWoundLimb(org, ArterialWoundLimb(ply, wound), limbs)
+            if limbId and severity > 0 then
+                amounts[limbId] = (amounts[limbId] or 0) + severity * ARTERIAL_WOUND_BLEED
+            end
+        end
+    end
+
+    for limbId, state in pairs(limbs) do
+        if type(state) == "table" then
+            local amount = amounts[limbId] or 0
+            local statuses = state.customStatuses
+            local current = type(statuses) == "table" and statuses[id] or nil
+            if amount > 0 then
+                if type(statuses) ~= "table" then
+                    statuses = {}
+                    state.customStatuses = statuses
+                end
+                if type(current) ~= "number" or math.abs(current - amount) > 0.01 then
+                    statuses[id] = amount
+                    dirty[limbId] = true
+                end
+            elseif current ~= nil then
+                statuses[id] = nil
+                dirty[limbId] = true
+            end
+        end
+    end
+    return dirty
+end
+
 --- Actual NORMAL bleeding that a bandage may treat.  Arterial bleeding is a
 --- separate rule: only a tourniquet can close it.  In authority mode never use
 --- the 4 Hz C:U shadow for this value; progress must describe real wounds.
@@ -2684,6 +2728,7 @@ function WSZC.RestoreBones(ply)
     -- ragdoll transition instead of waiting for the next 4 Hz shadow pass.
     SyncAmputationShadow(org, limbs)
     if WSZC.SyncInternalBleedingShadow then WSZC.SyncInternalBleedingShadow(org, limbs) end
+    if WSZC.SyncArterialBleedingShadow then WSZC.SyncArterialBleedingShadow(ply, org, limbs) end
     ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
     for limbId, map in pairs(LIMB_ORG) do
         local state = limbs[limbId]
@@ -3415,6 +3460,8 @@ local function PushShadow(ply, org)
     ply._WSZCShadowNext = now + 0.25 -- 4 Hz is plenty for a HUD
     local amputationDirty = SyncAmputationShadow(org, limbs)
     local internalBleedingDirty = WSZC.SyncInternalBleedingShadow(org, limbs)
+    local arterialBleedingDirty = WSZC.SyncArterialBleedingShadow
+        and WSZC.SyncArterialBleedingShadow(ply, org, limbs) or {}
 
     local bodyChanged = false
     local dirtyLimbs = {}
@@ -3567,6 +3614,7 @@ local function PushShadow(ply, org)
     if bodyChanged and h.SendCardioUpdate then pcall(h.SendCardioUpdate, ply, true) end
     if h.SendLimbUpdate then
         for limbId in pairs(amputationDirty) do dirtyLimbs[limbId] = true end
+        for limbId in pairs(arterialBleedingDirty) do dirtyLimbs[limbId] = true end
         if internalBleedingDirty then dirtyLimbs.abdomen = true end
         for limbId in pairs(dirtyLimbs) do pcall(h.SendLimbUpdate, ply, limbId, false) end
     end

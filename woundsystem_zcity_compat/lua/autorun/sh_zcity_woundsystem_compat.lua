@@ -554,6 +554,31 @@ function WSZC.InstallInternalBleedingStatus()
     return true
 end
 
+-- The ordinary C:U bleed icon is hidden in WoundView.  This DISTINCT material
+-- and native status are reserved for a real ZCity arterial wound, so ordinary
+-- state.bleed can remain available to bandage mechanics without painting a
+-- misleading artery marker.  Only a tourniquet closes the represented wound.
+WSZC.ARTERIAL_BLEEDING_STATUS_ID = "WSZC_ARTERIAL_BLEEDING"
+
+function WSZC.InstallArterialBleedingStatus()
+    local statuses = WoundSystem and WoundSystem.Statuses
+    if not (type(statuses) == "table" and type(statuses.Register) == "function") then
+        return false
+    end
+    local id = WSZC.ARTERIAL_BLEEDING_STATUS_ID
+    if type(statuses.Stored) == "table" and statuses.Stored[id] then return true end
+    statuses.Register(id, {
+        title = "Arterial bleeding",
+        desc = "An artery is open. Apply a tourniquet; an ordinary bandage cannot close it.",
+        icon = "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png",
+        type = "number",
+        order = -8000,
+        color = { 255, 255, 255 },
+        networkDecimals = 2,
+    })
+    return true
+end
+
 -- Short-lived context flag: `Org Think "Main"`, the ZCity damage hook and the
 -- ragdoll collision hook must see WB.IsBridged() == false so vanilla ZCity
 -- runs.  Medical SWEPs and minigames run OUTSIDE those wrappers and keep
@@ -675,4 +700,5 @@ hook.Add("InitPostEntity", "WSZC_SharedInit", function()
     PatchIsEnabled()
     PatchIsBridged()
     if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
+    if WSZC.InstallArterialBleedingStatus then WSZC.InstallArterialBleedingStatus() end
 end)

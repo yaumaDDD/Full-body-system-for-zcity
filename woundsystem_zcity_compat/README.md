@@ -329,14 +329,17 @@ map и irritation; обычные раны остаются. Откат рост
 помечается так же. Артериальная рана остаётся отдельной и требует жгута.
 
 На конечности сразу появляется штатная C:U `infection.png`, а на covered-ране
-`disinfectTime` обнуляется. Отдельный значок обработки `Icons.disinfected`
-больше **не рисуется вообще**: native `AddHudIcon` пропускает только этот один
-материал, поэтому infection/bleed/fracture и остальные медицинские иконки не
-затрагиваются. Wrapper получает локальную C:U таблицу `Icons` через upvalue
-(в том числе во вложенной функции), а точный material path служит fallback;
-глобальный `_G.Icons`, которого в живой C:U нет, больше не нужен. Обычный
-серверный `disinfectTime` и его сопротивление заражению
-сохраняются — скрыт именно визуальный индикатор, а не эффект обеззараживания.
+`disinfectTime` обнуляется. По отметкам владельца из WoundView убраны значки
+`disinfected`, fracture/dislocation, injection и обычные bleed: native
+`AddHudIcon` не добавляет их в раскладку, а draw-фильтр закрывает отдельно
+рисуемый след укола. Infection/shrapnel и мини-игры не затрагиваются. Вместо
+обычной капли сервер создаёт native status `WSZC_ARTERIAL_BLEEDING` только для
+положительной раны в `org.arterialwounds`; отдельный material
+`zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png` не попадает под
+фильтр. После закрытия артерии статус исчезает, а обычный `state.bleed` и бинт
+остаются рабочими. Wrapper получает локальную C:U таблицу `Icons` через upvalue,
+а точный material path служит fallback. Серверный `disinfectTime` и его
+сопротивление заражению сохраняются — скрыт только визуальный индикатор.
 Серверный таймер идёт по анатомическим стадиям: **конечность 0–240 с → торс с
 240 с → мозг с 420 с → смерть с 600 с**. Значения `state.infection` показывают
 стадии штатным HUD, а `infectionSpeed=0` не даёт физиологии C:U добавить второй
@@ -1042,13 +1045,13 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  не переопределяются.
 - Проверено синтаксически (`luaparser`, 15 connector-owned файлов), статически,
  на заглушечном Lua-рантайме и через canonical ZCity WoundBridge из исходного
- ZIP. Актуальные suites: `tools/tests/test_wszc_regression.py` (**159/159**,
+ ZIP. Актуальные suites: `tools/tests/test_wszc_regression.py` (**160/160**,
  включая Lua 15/15, CRC/зеркало/манифест, pixel checks и 32 remote behavior
- tests), `test_gameplay_regression.py` (**114/114**),
+ tests), `test_gameplay_regression.py` (**118/118**),
  `test_bandage_regression.py` (**40/40**), `test_medical_regression.py`
  (**50/50**) и `test_compatibility_regression.py` (**44/44**:
  native/legacy/partial/missing API, independent feature gates, optional
- includes и Setup failure latch) — всего **407/407**.
+ includes и Setup failure latch) — всего **412/412**.
  Remote M16 проверяет ragdoll range/watchdog; M17 прогоняет настоящий advanced minigame-server:
  `operator→patient`, один расход слота медика и запрет input вне дистанции.
  Medical-suite отдельно проверяет canonical

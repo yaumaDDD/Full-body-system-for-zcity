@@ -1933,7 +1933,7 @@ end)()
 end)()
 ''')
 
-    rt('R38 native HUD skips only disinfect icon and never changes texture filtering', '''
+    rt('R38 native HUD hides marked statuses + ordinary bleed, keeps arterial and native sampling', '''
 (function()
     filterCalls = {}
     TEXFILTER = { LINEAR = 77 }
@@ -1946,6 +1946,9 @@ end)()
     Icons.disinfected = Material("native/disinfected")
     Icons.infectionneutral = Material("native/infection")
     Icons.smallbleed = Material("native/bleeding")
+    Icons.fracture = Material("native/fracture")
+    Icons.dislocate = Material("native/dislocation")
+    local arterial = Material("zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png")
     local handState = { disinfectTime = 120, infection = 4 }
     WoundSystemClientState = { PlayerLimbs = { hand_R = handState } }
 
@@ -1956,7 +1959,10 @@ end)()
         local items = {}
         AddHudIcon(items, Icons.disinfected)
         AddHudIcon(items, Icons.infectionneutral)
+        AddHudIcon(items, Icons.fracture)
+        AddHudIcon(items, Icons.dislocate)
         AddHudIcon(items, Icons.smallbleed)
+        AddHudIcon(items, arterial)
         NativeWoundViewIcons = items
     end
     hook.Add("HUDPaint", "WoundDollAndPanel", NativeWoundView)
@@ -1964,16 +1970,15 @@ end)()
     local installedAgain = WSZC.InstallDisinfectedIconFilter()
     hook._t["HUDPaint"]["WoundDollAndPanel"]()
 
-    local count, disinfected, infection, bleeding = 0, 0, 0, 0
+    local count, infection, arterialKept = 0, 0, 0
     for _, mat in ipairs(NativeWoundViewIcons or {}) do
         count = count + 1
-        if mat == Icons.disinfected then disinfected = disinfected + 1 end
         if mat == Icons.infectionneutral then infection = infection + 1 end
-        if mat == Icons.smallbleed then bleeding = bleeding + 1 end
+        if mat == arterial then arterialKept = arterialKept + 1 end
     end
     local filters = table.concat(filterCalls, ",")
-    return installed and installedAgain and count == 2 and disinfected == 0
-        and infection == 1 and bleeding == 1 and handState.disinfectTime == 120
+    return installed and installedAgain and count == 2
+        and infection == 1 and arterialKept == 1 and handState.disinfectTime == 120
         and handState.infection == 4
         and filters == "" -- no LINEAR smoothing / no filter-stack side effects
 end)()
@@ -1981,7 +1986,7 @@ end)()
 
     # Live C:U keeps Icons in a local upvalue, not in _G.  Exercise that exact
     # load shape and put AddHudIcon one closure below WoundDollAndPanel.
-    rt('R42 local/nested Icons and exact material path both filter only disinfect', '''
+    rt('R42 local/nested Icons and exact paths hide marked icons without hiding shrapnel/infection/arterial', '''
 (function()
     local nativeItems = {}
     local Icons = {
@@ -2008,14 +2013,36 @@ end)()
     local pathItems = {}
     local function AddHudIcon(items, mat) table.insert(items, mat) end
     local fracture = Material("casunknown-images/icons/fracturedbone.png")
+    local arterial = Material("zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png")
     local function PathNativeWoundView()
         AddHudIcon(pathItems, Material("casunknown-images/icons/disinfected.png"))
         AddHudIcon(pathItems, fracture)
+        AddHudIcon(pathItems, Material("wszc/unitmenu/status/bleeding_padded.png"))
+        AddHudIcon(pathItems, arterial)
     end
     hook.Add("HUDPaint", "WoundDollAndPanel", PathNativeWoundView)
     local pathInstalled = WSZC.InstallDisinfectedIconFilter()
     PathNativeWoundView()
-    return localIconsOK and pathInstalled and #pathItems == 1 and pathItems[1] == fracture
+    return localIconsOK and pathInstalled and #pathItems == 1 and pathItems[1] == arterial
+end)()
+''')
+
+    rt('R44 injection/ordinary bleed draw filter is WoundView-scoped and arterial is exempt', '''
+(function()
+    local oldFlag = WSZC.CUStatusIconFiltered
+    WSZC.CUStatusIconFiltered = true
+    WSZC._DrawMaterialName = "casunknown-images/icons/injectionwound.png"
+    local injectionHidden = WSZC.HiddenNativeStatusIconDraw()
+    WSZC._DrawMaterialName = "wszc/unitmenu/status/bleeding.png"
+    local ordinaryBloodHidden = WSZC.HiddenNativeStatusIconDraw()
+    WSZC._DrawMaterialName = "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png"
+    local arterialKept = not WSZC.HiddenNativeStatusIconDraw()
+        and WSZC.IsDollDrawMaterial(WSZC._DrawMaterialName)
+    WSZC.CUStatusIconFiltered = false
+    WSZC._DrawMaterialName = "casunknown-images/icons/injectionwound.png"
+    local outsideWoundViewKept = not WSZC.HiddenNativeStatusIconDraw()
+    WSZC.CUStatusIconFiltered = oldFlag
+    return injectionHidden and ordinaryBloodHidden and arterialKept and outsideWoundViewKept
 end)()
 ''')
 
