@@ -1093,9 +1093,9 @@ local cvHandPivotY = CreateClientConVar("zc_woundsystem_compat_hand_pivot_y", "0
 local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_screen", "0.34", true, false,
     "Legacy unused option: the compact hand is scaled, not screen-capped")
 local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "1", true, false,
-    "1 = hide the OS arrow only while the drawn minigame hand is active")
+    "1 = hide the OS cursor during every minigame while preserving mouse input")
 local cvHideHand = CreateClientConVar("zc_woundsystem_compat_hide_minigame_hand", "0", true, false,
-    "1 = hide the hand and use the standard OS arrow instead")
+    "1 = hide only the drawn hand artwork; does not re-enable the OS cursor")
 local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "1", true, false,
     "1 = pin the gameplay hand and its visible grip to the real cursor; 0 = C:U inertia + developer offsets")
 -- Archived 0/1 values from the former no-hand build survive a default change.
@@ -1304,8 +1304,8 @@ function WSZC.UnitmenuHandAlpha(fallback)
     return UnitmenuHandMaterials() and 255 or (fallback or 153)
 end
 
---- True only in the opt-in "drawn hand" mode.  Native games use this to
---- suppress their handgrasp* sprites when the arrow is the pointer.
+--- Controls ONLY the drawn hand artwork.  The OS cursor is hidden separately
+--- during every active game, including when this returns false.
 function WSZC.ShowMinigameHand()
     return not cvHideHand:GetBool()
 end
@@ -2007,11 +2007,29 @@ local function WorldPanel()
     return nil
 end
 
+local function SetMinigameOverlayCursors(cursor)
+    local names = {
+        "WSZCBandageMinigame", "WSZCSyringeMinigame",
+        "WoundSystemDislocationMinigame", "WoundSystemShrapnelMinigame",
+        "WoundSystemAEDMinigame", "WoundSystemBandageMinigame",
+        "WoundSystemSyringeMinigame", "WoundSystemSelfHarmMinigame",
+    }
+    for _, name in ipairs(names) do
+        local mg = _G[name]
+        local panel = type(mg) == "table" and mg.overlay or nil
+        local valid = panel and (not IsValid or IsValid(panel))
+        if valid and type(panel.SetCursor) == "function" then
+            pcall(panel.SetCursor, panel, cursor)
+        end
+    end
+end
+
 -- A blank VGUI cursor hides only the OS arrow; mouse input and gui.MousePos()
--- remain enabled.  It is allowed exclusively when the visible hand is the
--- pointer.  hide_minigame_hand 1 is therefore a safe standard-arrow fallback.
+-- remain enabled.  Apply it to the world AND each game's overlay: some GMod
+-- builds prefer the hovered overlay's cursor over the world cursor.  Hiding
+-- the hand artwork is independent and must never bring the arrow back.
 function WSZC.BlankMinigameCursor()
-    if not cvHideCursor:GetBool() or not WSZC.ShowMinigameHand() then
+    if not cvHideCursor:GetBool() then
         WSZC.RestoreMinigameCursor(true)
         return false
     end
@@ -2022,6 +2040,7 @@ function WSZC.BlankMinigameCursor()
         if ok and value and value ~= "blank" then savedCursor = value end
     end
     pcall(panel.SetCursor, panel, "blank")
+    SetMinigameOverlayCursors("blank")
     cursorHidden = true
     return true
 end
@@ -2031,6 +2050,7 @@ function WSZC.RestoreMinigameCursor(force)
     -- Force "arrow", not `savedCursor`: that value could itself be "blank"
     -- from a previous session.
     if panel then pcall(panel.SetCursor, panel, "arrow") end
+    SetMinigameOverlayCursors("arrow")
     cursorHidden = false
     return true
 end
@@ -2039,7 +2059,7 @@ function WSZC.SyncMinigameCursor()
     local active = (WSZC.MinigameActive and WSZC.MinigameActive())
         or (WSZC.WSZCMinigameActive and WSZC.WSZCMinigameActive())
         or (WSZC.NativeMinigameActive and WSZC.NativeMinigameActive())
-    if active and cvHideCursor:GetBool() and WSZC.ShowMinigameHand() then
+    if active and cvHideCursor:GetBool() then
         return WSZC.BlankMinigameCursor()
     end
     WSZC.RestoreMinigameCursor(true)

@@ -610,8 +610,8 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_hide_minigame_text` | этот аддон (client) | `1` — убрать заголовок / счётчик / три строки инструкций / `Press RMB/ESC to exit` и верхнюю панель во **всех** 5 C:U + 2 WSZC мини-играх. **Тёмное затемнение заднего фона (`Clip.DrawBackdrop`) сохранено** — по запросу владельца «во всех мини играх было затемнение заднего фона как раньше». AED-статус `WoundSystemAEDStatus` убран только внутри активной мини-игры. **`minigameshrapnel.png` — передний слой раны, НЕ удаляется.** Иконки, осколок, рука, пинцет, `bandageOuter`, уведомления ZCity, красный death-текст, капли и `Icons.*` остаются. `0` — вернуть как было. |
 | `zc_woundsystem_compat_handanim` | этот аддон (client) | `1` — человеческие `wszc/minigame/hand_idle.png` / `hand_click.png` 512×1260 в вертикальной CU-позе; `0` — родная рука C:U. |
 | `zc_woundsystem_compat_handanim_scale` | этот аддон (client) | `1` — без дополнительного множителя поверх общего `hand_cursor_scale 0.55`; диапазон `0.2..1.5`. |
-| `zc_woundsystem_compat_hide_minigame_hand` | этот аддон (client) | `0` — показывать руку; `1` — прежний режим без руки, со стандартной стрелкой. |
-| `zc_woundsystem_compat_hide_minigame_cursor` | этот аддон (client) | `1` — скрывать OS-стрелку только во время активной мини-игры с рукой; hand draw и cursor watchdog применяют `blank`, не переключаясь периодически на `arrow`; на выходе и при `hide_minigame_hand 1` стрелка восстанавливается. |
+| `zc_woundsystem_compat_hide_minigame_hand` | этот аддон (client) | `0` — показывать руку; `1` — скрыть только картинку руки, не меняя режим курсора. |
+| `zc_woundsystem_compat_hide_minigame_cursor` | этот аддон (client) | `1` — скрывать OS-курсор во время **каждой** активной мини-игры; `blank` применяется к world panel и overlay, mouse input сохраняется. `hide_minigame_hand 1` стрелку не возвращает; `0` — явно разрешить OS-курсор. |
 | `zc_woundsystem_compat_hand_pivot_x` / `..._hand_pivot_y` | этот аддон (client) | `0.4` / `0.1` — точка захвата на коже между пальцами; native `MG.handDrawW/H` и хитбоксы не меняются. |
 | `zc_woundsystem_compat_hand_pin_cursor` | этот аддон (client) | `1` по умолчанию: каждый Think синхронизирует `gui.MousePos()`, MG gameplay grip и видимый pivot, отключая C:U offset `100/400`, spring и collision-сдвиг; `0` — прежние HandPhysics/инерция/developer offsets. |
 | `zc_woundsystem_compat_hand_mode_revision` | этот аддон (client) | Служебная миграция `6`: устанавливает scale `0.55`, zoom `0.85` и реальный cursor pin, сохраняет CU pivot/rotation/hitbox, затем не перезаписывает пользовательские настройки. |
@@ -1003,8 +1003,13 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  клиентах: offline fixtures не являются таким тестом.
 - В C:U одна action-точка на лимб: если на конечности одновременно есть
  осколки и вывих, приоритет остаётся у `REMOVE SHRAPNEL`; после извлечения
- осколков появится `FIX DISLOCATION`. Радиальный пункт ZCity
- `hg_fixdislocation` работает независимо от WoundView.
+ осколков появится `FIX DISLOCATION`. При активном WSZC старые radial-пункты
+ `DislocatedJoint*` скрываются, а `hg_fixdislocation` / `WB.FixDislocation`
+ блокируются и на сервере — случайного мгновенного лечения в обход мини-игры
+ больше нет. В самой игре успех проверяется по фактически нарисованной кости:
+ `WSZC_DislocationVisualComplete` повторно валидирует native session ID и
+ socket tolerance на сервере, затем сразу снимает вывих и закрывает сессию.
+ Дополнительный удар или отпускание ЛКМ при идеальном стыке не требуются.
 - Скрытие инвентаря отключает и подбор мировых медпредметов C:U (`E`/`F`):
  медицинские предметы берутся через SWEP'ы и инвентарь ZCity.
 - Показатели в панели C:U — теневая проекция (4 Гц), а не самостоятельная симуляция.
@@ -1020,13 +1025,13 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  не переопределяются.
 - Проверено синтаксически (`luaparser`, 15 connector-owned файлов), статически,
  на заглушечном Lua-рантайме и через canonical ZCity WoundBridge из исходного
- ZIP. Актуальные suites: `tools/tests/test_wszc_regression.py` (**155/155**,
+ ZIP. Актуальные suites: `tools/tests/test_wszc_regression.py` (**158/158**,
  включая Lua 15/15, CRC/зеркало/манифест, pixel checks и 32 remote behavior
- tests), `test_gameplay_regression.py` (**106/106**),
+ tests), `test_gameplay_regression.py` (**112/112**),
  `test_bandage_regression.py` (**40/40**), `test_medical_regression.py`
  (**50/50**) и `test_compatibility_regression.py` (**44/44**:
  native/legacy/partial/missing API, independent feature gates, optional
- includes и Setup failure latch) — всего **395/395**.
+ includes и Setup failure latch) — всего **404/404**.
  Remote M16 проверяет ragdoll range/watchdog; M17 прогоняет настоящий advanced minigame-server:
  `operator→patient`, один расход слота медика и запрет input вне дистанции.
  Medical-suite отдельно проверяет canonical
@@ -1226,8 +1231,9 @@ hitbox'ы отдельно не меняются, экранного cap нет.
 (`..._hide_minigame_cursor 1`), повторно скрывается при каждой отрисовке руки
 и после КАЖДОГО срабатывания cursor watchdog, восстанавливается на выходе.
 Watchdog больше не ставит `arrow` каждые 0.05 с поверх `blank`. Для старого
-режима C:U с инерцией используется `..._hand_pin_cursor 0`; для обычной стрелки
-без руки — `..._hide_minigame_hand 1`.
+режима C:U с инерцией используется `..._hand_pin_cursor 0`.
+`..._hide_minigame_hand 1` скрывает только картинку руки: OS-курсор остаётся
+`blank` во время игры. Явный возврат стрелки — `..._hide_minigame_cursor 0`.
 
 **Фон WoundView.** `WoundDollAndPanel` рисует полноэкранный `woundbg` с альфой
 150, а `DrawConsciousnessBlackout` — чёрный квад поверх всего: отсюда
@@ -1628,7 +1634,9 @@ GMod не запускался — принятие по свежему live-с�
    `100/400` и spring/collision отставание в этом режиме отключены. Значение `0`
    возвращает HandPhysics, инерцию, наклон и developer offsets;
    системная стрелка скрыта только во время активной мини-игры и возвращается
-   на выходе. Для прежнего arrow-only режима: `..._hide_minigame_hand 1`.
+   на выходе. `..._hide_minigame_hand 1` отключает только спрайт руки, а не скрытие
+   OS-курсора; для видимой стрелки нужно явно поставить
+   `..._hide_minigame_cursor 0`.
    Актуальная миграция `..._hand_mode_revision 6` заменяет слишком большой
    scale `1.0` общим `0.55` во всех мини-играх, оставляя pivot/центр/rotation
    и hitbox'ы C:U. Обычная стрелка подавляется при каждой отрисовке руки и
@@ -1675,19 +1683,15 @@ GMod не запускался — принятие по свежему live-с�
    `cx/cy`, длины, POT-ширины, габарит `377..988 × 217..864`, симметрия
    `cx_R+cx_L=1500`, чёрный цвет и обводка по форме не изменились.
 
-2. **Курсор в мини-играх.** Прежняя ошибка была не в самом `blank`, а в том,
-   что стрелку скрывали при уже отключённой руке: игрок оставался вообще без
-   указателя. Теперь `SyncMinigameCursor()` разрешает `blank` только при
-   активной мини-игре и `ShowMinigameHand() == true`; при
-   `hide_minigame_hand 1`, после закрытия и для мёртвого игрока всегда
-   восстанавливается `arrow`. `WSZC_MinigameCursor` (Think) проверяет
-   `vgui.CursorVisible()` и перезапускает clicker после C:U watchdog /
-   радиального меню ZCity, не выключая mouse input. `UnitmenuHandMat()`
-   дополнительно вызывает `SyncMinigameCursor()` на КАЖДОЙ отрисовке руки,
-   поэтому стрелка не возвращается между периодическими Think-проверками.
-   Старые archived no-hand настройки мигрирует `MigrateHumanHandDefaults()` (revision 6),
-   поэтому обновление не оставляет прежнюю комбинацию «нет руки + blank».
-   Ручной выбор arrow-only сохраняется и больше не перезаписывается.
+2. **Курсор в мини-играх.** `SyncMinigameCursor()` теперь применяет `blank`
+   при КАЖДОЙ активной мини-игре независимо от `ShowMinigameHand()`: и к world
+   panel, и к overlay конкретной игры, поскольку часть GMod-сборок берёт cursor
+   именно с overlay. `hide_minigame_hand 1` отключает только рисунок руки и
+   больше не возвращает стрелку. Mouse input, `gui.MousePos()` и clicker
+   сохраняются. После закрытия и для мёртвого игрока `arrow` восстанавливается;
+   явный откат скрытия — `hide_minigame_cursor 0`. `UnitmenuHandMat()` и
+   cursor watchdog повторно применяют `blank`, поэтому C:U/ZCity не могут
+   вернуть системную стрелку между кадрами.
 
 3. **Морфин / фентанил / обезболивающие.** Настоящая причина найдена в
    `z_city/lua/homigrad/woundbridge/sv_woundbridge.lua` и

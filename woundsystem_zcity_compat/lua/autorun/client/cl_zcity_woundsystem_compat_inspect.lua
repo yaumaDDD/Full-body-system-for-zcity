@@ -150,6 +150,31 @@ hook.Add("radialOptions", "ZCity_WoundBridge_Inspect_WSZC", function()
     RepointOrAddOption()
 end)
 
+function WSZC.IsLegacyRadialMedicalOption(option)
+    if type(option) ~= "table" or option._WSZCInspect or option._WSZCRemoteInspect then
+        return false
+    end
+    local label = string.lower(tostring(option[2] or ""))
+    return string.find(label, "dislocation", 1, true) ~= nil
+        or string.find(label, "вывих", 1, true) ~= nil
+        or string.find(label, "вправ", 1, true) ~= nil
+end
+
+-- ZCity's DislocatedJoint/DislocatedJoint2 hooks add the OLD random-chance
+-- hg_fixdislocation treatment.  This id sorts after them (and after our two
+-- inspection providers), so every 0.25 s radial rebuild is filtered as well.
+-- Inspection and remote WSZC treatment remain; non-medical gestures/phrases
+-- are untouched.  The server separately blocks the command, so a direct bind
+-- or a stale already-open menu cannot bypass this filter.
+hook.Add("radialOptions", "zzzz_WSZC_DisableLegacyMedicine", function()
+    if not WSZC.LegacyRadialMedicineBlocked or not WSZC.LegacyRadialMedicineBlocked() then return end
+    local options = hg and hg.radialOptions
+    if type(options) ~= "table" then return end
+    for i = #options, 1, -1 do
+        if WSZC.IsLegacyRadialMedicalOption(options[i]) then table.remove(options, i) end
+    end
+end)
+
 -- Handy for binds/diagnostics; uses exactly the same C:U panel as the button.
 concommand.Add("wszc_open_wounds", function()
     WSZC.OpenCUWoundMenu()

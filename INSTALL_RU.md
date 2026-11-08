@@ -81,7 +81,7 @@
 | Рука мини-игры действительно совпадает с курсором | `zc_woundsystem_compat_hand_pin_cursor 1` (по умолчанию): каждый Think `gui.MousePos()`, `handScreenX/Y`, grab/orbit и видимый pivot синхронизируются; C:U offset `100/400`, spring и collision clamp не сдвигают руку. `0` — прежние HandPhysics, инерция, боль и developer offsets |
 | Светлый фон WoundView | `zc_woundsystem_compat_hide_woundview_backdrop 1` гасит полноэкранный `woundbg`/blackout только пока `WoundSystemHealthHUDOpen == true` |
 | Положение и захват сохраняют C:U | Canvas `512×1260`, pivot `0.4 / 0.1` и прежний `rot`; визуальные `w/h` умножаются на `0.55`, а центр пересчитывается так, чтобы повёрнутые пальцы оставались на `handScreenX/Y` (или реальном курсоре в pin-режиме). Native hitbox не изменяется отдельно |
-| В мини-игре видна рука, системный курсор не мигает | `zc_woundsystem_compat_hide_minigame_cursor 1`; hand draw и watchdog удерживают `blank` без периодического `arrow`, стрелка возвращается на выходе. `..._hide_minigame_hand 1` — arrow-only режим |
+| В мини-игре нет системного курсора, управление мышью сохраняется | `zc_woundsystem_compat_hide_minigame_cursor 1`; `blank` удерживается на world panel и overlay в каждой активной игре, стрелка возвращается на выходе. `..._hide_minigame_hand 1` скрывает только рисунок руки; видимая стрелка включается только явным `..._hide_minigame_cursor 0` |
 | После смерти не «залипают» мини-игры/курсор/лок движения | включается вместе с `zc_woundsystem_compat_minigames 1` |
 | Потеря сознания закрывает WSZC и нативные мини-игры, overlay, WoundView, cursor/view/input; conscious ragdoll не закрывает | серверный force-close `WSZC_MinigameForceClose`; проверяется владелец сессии, а не пациент медика. `FakeRagdoll/fake` — posture; death/otrub/NW unconscious/`consciousness < 0.4` — incapacity. FakeUp сохраняет игру, настоящий respawn закрывает её принудительно |
 | Любой неизвлечённый fragment наращивает реальную боль и кровотечение | `zc_woundsystem_compat_shrapnel_lodged_effects 1`; последний extracted fragment удаляет tagged-рану/source/irritation |
@@ -414,7 +414,9 @@ GMod не запускался — принятие по свежему live-с�
    `100/400` и spring/collision отставание в этом режиме отключены. Значение `0`
    возвращает HandPhysics, инерцию, наклон и developer offsets;
    системная стрелка скрыта только во время активной мини-игры и возвращается
-   на выходе. Для прежнего arrow-only режима: `..._hide_minigame_hand 1`.
+   на выходе. `..._hide_minigame_hand 1` отключает только спрайт руки, а не скрытие
+   OS-курсора; для видимой стрелки нужно явно поставить
+   `..._hide_minigame_cursor 0`.
    Актуальная миграция `..._hand_mode_revision 6` заменяет слишком большой
    scale `1.0` общим `0.55` во всех мини-играх, оставляя pivot/центр/rotation
    и hitbox'ы C:U. Обычная стрелка подавляется при каждой отрисовке руки и
@@ -461,19 +463,15 @@ GMod не запускался — принятие по свежему live-с�
    `cx/cy`, длины, POT-ширины, габарит `377..988 × 217..864`, симметрия
    `cx_R+cx_L=1500`, чёрный цвет и обводка по форме не изменились.
 
-2. **Курсор в мини-играх.** Прежняя ошибка была не в самом `blank`, а в том,
-   что стрелку скрывали при уже отключённой руке: игрок оставался вообще без
-   указателя. Теперь `SyncMinigameCursor()` разрешает `blank` только при
-   активной мини-игре и `ShowMinigameHand() == true`; при
-   `hide_minigame_hand 1`, после закрытия и для мёртвого игрока всегда
-   восстанавливается `arrow`. `WSZC_MinigameCursor` (Think) проверяет
-   `vgui.CursorVisible()` и перезапускает clicker после C:U watchdog /
-   радиального меню ZCity, не выключая mouse input. `UnitmenuHandMat()`
-   дополнительно вызывает `SyncMinigameCursor()` на КАЖДОЙ отрисовке руки,
-   поэтому стрелка не возвращается между периодическими Think-проверками.
-   Старые archived no-hand настройки мигрирует `MigrateHumanHandDefaults()` (revision 6),
-   поэтому обновление не оставляет прежнюю комбинацию «нет руки + blank».
-   Ручной выбор arrow-only сохраняется и больше не перезаписывается.
+2. **Курсор в мини-играх.** `SyncMinigameCursor()` теперь применяет `blank`
+   при КАЖДОЙ активной мини-игре независимо от `ShowMinigameHand()`: и к world
+   panel, и к overlay конкретной игры, поскольку часть GMod-сборок берёт cursor
+   именно с overlay. `hide_minigame_hand 1` отключает только рисунок руки и
+   больше не возвращает стрелку. Mouse input, `gui.MousePos()` и clicker
+   сохраняются. После закрытия и для мёртвого игрока `arrow` восстанавливается;
+   явный откат скрытия — `hide_minigame_cursor 0`. `UnitmenuHandMat()` и
+   cursor watchdog повторно применяют `blank`, поэтому C:U/ZCity не могут
+   вернуть системную стрелку между кадрами.
 
 3. **Морфин / фентанил / обезболивающие.** Настоящая причина найдена в
    `z_city/lua/homigrad/woundbridge/sv_woundbridge.lua` и

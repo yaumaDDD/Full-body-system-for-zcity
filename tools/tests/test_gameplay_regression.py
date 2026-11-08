@@ -124,6 +124,19 @@ check("S14 conscious ragdoll is not an incapacitated minigame operator",
 check("S15 a generic Fake transition closes only a genuinely incapacitated operator",
       'hook.Add("Fake", "WSZC_MinigameUnconscious"' in server_mg_s
       and 'if PlayerIncapacitated(ply) then' in server_mg_s.split('hook.Add("Fake", "WSZC_MinigameUnconscious"', 1)[1])
+check("S17 legacy radial reduction is blocked at both bridge and command levels",
+      'function WSZC.InstallLegacyRadialMedicineBlock' in organism_s
+      and 'wb.FixDislocation = legacyFixDislocationWrapper' in organism_s
+      and 'concommand.Add("hg_fixdislocation"' in organism_s
+      and 'WSZC.InstallLegacyRadialMedicineBlock()' in organism_s)
+check("S18 rendered reduction is server-validated and closes the native session",
+      'function WSZC.HandleDislocationVisualComplete' in organism_s
+      and 'WSZC.DislocationVisualAligned(x, y)' in organism_s
+      and 'session.id ~= sessionId' in organism_s
+      and 'WSZC.RemoteMedicalValidPair(operator, target)' in organism_s
+      and 'state.dislocated = false' in organism_s
+      and 'WSZC.CUCloseDislocationSession, target, "complete"' in organism_s
+      and 'net.Receive("WSZC_DislocationVisualComplete"' in server_mg_s)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -1924,6 +1937,93 @@ return committed, missKept
 ''')
     check("R82 accepted native dislocation success commits to ZCity immediately", native_reduction[0])
     check("R83 unsuccessful native dislocation input cannot clear the ZCity injury", native_reduction[1])
+
+    visual_fn_start = shared_s.index('function WSZC.DislocationVisualAligned')
+    visual_fn_end = shared_s.index('\nend\n', visual_fn_start) + 5
+    lua.execute(shared_s[visual_fn_start:visual_fn_end])
+    visual_reduction = lua.execute(r'''
+WSZC.Ready = true
+WSZC.RemoteNativeSessions = {}
+local closed = {}
+WSZC.CUCloseDislocationSession = function(target, reason)
+    closed[target] = (closed[target] or 0) + 1
+    WSZC.CUSessions.Dislocation[target] = nil
+end
+local function Injured(sessionId)
+    local p = MakePlayer()
+    p._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+        dislocated = true, dislocationTimer = 35 }
+    p.organism.rarmdislocation = true
+    WSZC.SyncOrganismShadow(p, p.organism)
+    WSZC.CUSessions = WSZC.CUSessions or { Dislocation = {} }
+    WSZC.CUSessions.Dislocation[p] = {
+        id = sessionId, limbId = "arm_R", boneX = 800, boneY = 400,
+        boneVelX = 20, boneVelY = -10, dislocationTimer = 35,
+    }
+    return p
+end
+WSZC.CUSessions = { Dislocation = {} }
+local selfPatient = Injured(501)
+local selfOK = WSZC.HandleDislocationVisualComplete(selfPatient, 501, 421.82, 229.82)
+local selfCommitted = selfOK and selfPatient._limbs.arm_R.dislocated == false
+    and selfPatient._limbs.arm_R.dislocationTimer == 0
+    and selfPatient.organism.rarmdislocation == false
+    and closed[selfPatient] == 1 and WSZC.CUSessions.Dislocation[selfPatient] == nil
+
+local rejected = Injured(502)
+local wrongId = WSZC.HandleDislocationVisualComplete(rejected, 999, 421.82, 229.82)
+local far = WSZC.HandleDislocationVisualComplete(rejected, 502, 521.82, 229.82)
+local rejectionHeld = wrongId == false and far == false
+    and rejected._limbs.arm_R.dislocated == true
+    and rejected.organism.rarmdislocation == true and closed[rejected] == nil
+
+local medic, remotePatient = MakePlayer(), Injured(503)
+WSZC.RemoteNativeSessions[remotePatient] = { Dislocation = { operator = medic } }
+WSZC.RemoteMedicalValidPair = function(operator, target)
+    return operator == medic and target == remotePatient
+end
+local remoteOK = WSZC.HandleDislocationVisualComplete(medic, 503, 426.82, 229.82)
+local remoteCommitted = remoteOK and remotePatient._limbs.arm_R.dislocated == false
+    and remotePatient.organism.rarmdislocation == false
+    and closed[remotePatient] == 1 and closed[medic] == nil
+    and WSZC.RemoteNativeSessions[remotePatient] == nil
+return selfCommitted, rejectionHeld, remoteCommitted
+''')
+    check("R90 rendered perfect socket commits native + ZCity reduction immediately", visual_reduction[0])
+    check("R91 wrong-session and non-aligned visual packets cannot heal", visual_reduction[1])
+    check("R92 rendered remote reduction treats the patient and clears operator metadata", visual_reduction[2])
+
+    legacy_block = lua.execute(r'''
+local previousCommand, previousWB = concommand, hg.WoundBridge
+local previousBlocked = WSZC.LegacyRadialMedicineBlocked
+local previousWrapper = WSZC._LegacyFixDislocationCommandWrapper
+local blocked = true
+WSZC.LegacyRadialMedicineBlocked = function() return blocked end
+local bridgeCalls, commandCalls = 0, 0
+local wb = { FixDislocation = function() bridgeCalls = bridgeCalls + 1 return "legacy_bridge" end }
+hg.WoundBridge = wb
+local commands = { hg_fixdislocation = function()
+    commandCalls = commandCalls + 1
+    return "legacy_command"
+end }
+concommand = {
+    GetTable = function() return commands end,
+    Add = function(name, callback) commands[name] = callback end,
+}
+WSZC._LegacyFixDislocationCommandWrapper = nil
+WSZC.InstallLegacyRadialMedicineBlock()
+WSZC.InstallLegacyRadialMedicineBlock() -- reapply must not stack wrappers
+local blockedBridge = wb.FixDislocation(nil, {}) == true and bridgeCalls == 0
+local blockedCommand = commands.hg_fixdislocation(nil, nil, {}) == true and commandCalls == 0
+blocked = false
+local fallbackBridge = wb.FixDislocation(nil, {}) == "legacy_bridge" and bridgeCalls == 1
+local fallbackCommand = commands.hg_fixdislocation(nil, nil, {}) == "legacy_command" and commandCalls == 1
+concommand, hg.WoundBridge = previousCommand, previousWB
+WSZC.LegacyRadialMedicineBlocked = previousBlocked
+WSZC._LegacyFixDislocationCommandWrapper = previousWrapper
+return blockedBridge and blockedCommand and fallbackBridge and fallbackCommand
+''')
+    check("R93 ready gate blocks radial bridge/command; unsupported state preserves fallback", legacy_block)
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

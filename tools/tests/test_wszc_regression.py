@@ -61,6 +61,9 @@ organism_s = ORGANISM.read_text(encoding='utf-8')
 remote_server_s = REMOTE_SERVER.read_text(encoding='utf-8')
 remote_client_s = REMOTE_CLIENT.read_text(encoding='utf-8')
 minigames_s = (CLIENT / 'cl_zcity_woundsystem_compat_minigames.lua').read_text(encoding='utf-8')
+inspect_s = (CLIENT / 'cl_zcity_woundsystem_compat_inspect.lua').read_text(encoding='utf-8')
+shared_s = (CONN / 'lua/autorun/sh_zcity_woundsystem_compat.lua').read_text(encoding='utf-8')
+server_minigames_s = (SERVER / 'sv_zcity_woundsystem_compat_minigames.lua').read_text(encoding='utf-8')
 bandage_client_s = (CLIENT / 'wszc_cl_bandage.lua').read_text(encoding='utf-8')
 generator_s = src('tools/build_unitmenu_materials.py')
 readme_s = src('README.md')
@@ -100,14 +103,24 @@ check('S08 compact hand anchors the rotated pivot, aspect and native rotation',
       and 'WSZC.HandRectForCursor(x, y, w, h, rot)' in layout_s
       and 'origRectRotated(nx, ny, nw, nh, rot, ...)' in layout_s
       and 'UnitmenuHandRotatedCenter' not in layout_s)
-check('S09 blank cursor is hand-only, active-only, with an arrow fallback',
+check('S09 every active minigame blanks world + overlay cursor, even without hand art',
       'function WSZC.BlankMinigameCursor()' in layout_s
-      and 'if not cvHideCursor:GetBool() or not WSZC.ShowMinigameHand() then' in layout_s
+      and 'if not cvHideCursor:GetBool() then' in layout_s
       and 'panel.SetCursor, panel, "arrow"' in layout_s
       and 'panel.SetCursor, panel, "blank"' in layout_s
-      and 'if active and cvHideCursor:GetBool() and WSZC.ShowMinigameHand() then' in layout_s
+      and 'if active and cvHideCursor:GetBool() then' in layout_s
+      and 'SetMinigameOverlayCursors("blank")' in layout_s
+      and 'SetMinigameOverlayCursors("arrow")' in layout_s
+      and 'if active and cvHideCursor:GetBool() and WSZC.ShowMinigameHand() then' not in layout_s
       and 'if WSZC.SyncMinigameCursor then WSZC.SyncMinigameCursor() end' in layout_s
       and 'WSZC.RestoreMinigameCursor(true)' in layout_s)
+check('S09b radial legacy medicine is filtered and rendered reduction has a namespaced packet',
+      'zzzz_WSZC_DisableLegacyMedicine' in inspect_s
+      and 'WSZC.IsLegacyRadialMedicalOption' in inspect_s
+      and 'WSZC_DislocationVisualCompletion' in minigames_s
+      and 'net.WriteFloat(x)' in minigames_s and 'net.WriteFloat(y)' in minigames_s
+      and '"WSZC_DislocationVisualComplete"' in server_minigames_s
+      and 'function WSZC.DislocationVisualAligned' in shared_s)
 check('S10 glass shrapnel has both damage hooks',
       'hook.Add("EntityTakeDamage", "WSZC_GlassStrikePre"' in organism_s
       and 'hook.Add("PostEntityTakeDamage", "WSZC_GlassStrike"' in organism_s)
@@ -963,7 +976,14 @@ gui = { EnableScreenClicker = function(on) clickerOn = on end,
 clickerOn = false
 WoundSystemHealthHUDOpen = false
 input = { IsMouseDown = function() return false end, IsKeyDown = function() return false end }
-net = { Receive = function() end, Start = function() end, SendToServer = function() end }
+netMessages, currentNetMessage = {}, nil
+net = {
+    Receive = function() end,
+    Start = function(name) currentNetMessage = { name = name, writes = {} } end,
+    WriteUInt = function(value, bits) table.insert(currentNetMessage.writes, { "uint", value, bits }) end,
+    WriteFloat = function(value) table.insert(currentNetMessage.writes, { "float", value }) end,
+    SendToServer = function() table.insert(netMessages, currentNetMessage) end,
+}
 MOUSE_LEFT, MOUSE_RIGHT, KEY_ESCAPE = 107, 108, 70
 clipCalls, textCalls = {}, {}
 WoundSystem = { MinigameClip = {
@@ -1029,6 +1049,9 @@ WSZC = { WSZCMinigameActive = function() return false end }
     lua.execute((CLIENT / 'wszc_unitmenu_geometry.lua').read_text(encoding='utf-8'))
     lua.execute(layout_s)
     lua.execute(minigames_s)
+    visual_fn_start = shared_s.index('function WSZC.DislocationVisualAligned')
+    visual_fn_end = shared_s.index('\nend\n', visual_fn_start) + 5
+    lua.execute(shared_s[visual_fn_start:visual_fn_end])
 
     def rt(name, code):
         try:
@@ -1185,18 +1208,22 @@ end)()
 end)()
 ''')
 
-    rt('R12 hide_minigame_hand 1 is a safe standard-arrow fallback', '''
+    rt('R12 hiding hand art never restores the OS cursor; overlay is blank too', '''
 (function()
     convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "1"
     convars["zc_woundsystem_compat_hide_minigame_hand"]._v = "1"
-    cursorValue = "blank"
-    WoundSystemShrapnelMinigame = { active = true }
+    cursorValue = "arrow"
+    local overlayCursor = "arrow"
+    local overlay = { SetCursor = function(_, value) overlayCursor = value end }
+    WoundSystemShrapnelMinigame = { active = true, overlay = overlay }
     WSZC.SyncMinigameCursor()
-    local fallback = cursorValue == "arrow"
-        and WSZC.BlankMinigameCursor() == false and cursorValue == "arrow"
-    WoundSystemShrapnelMinigame = { active = false }
+    local hidden = cursorValue == "blank" and overlayCursor == "blank"
+        and WSZC.BlankMinigameCursor() == true
+    WoundSystemShrapnelMinigame = { active = false, overlay = overlay }
+    WSZC.SyncMinigameCursor()
+    local restored = cursorValue == "arrow" and overlayCursor == "arrow"
     convars["zc_woundsystem_compat_hide_minigame_hand"]._v = "0"
-    return fallback
+    return hidden and restored
 end)()
 ''')
 
@@ -1218,6 +1245,35 @@ end)()
     WoundSystemShrapnelMinigame = { active = false }
     LocalPlayer = old
     return cursorValue == "arrow"
+end)()
+''')
+
+    rt('R14b rendered dislocation alignment sends one immediate session packet', '''
+(function()
+    local oldGetGlobalBool = GetGlobalBool
+    GetGlobalBool = function(key, fallback)
+        if key == "WSZC_Ready" then return true end
+        return fallback
+    end
+    netMessages = {}
+    WoundSystemDislocationMinigame = {
+        active = true, closeRequested = false, sessionId = 77,
+        boneDrawX = 421.82, boneDrawY = 229.82,
+        boneX = 600, boneY = 400, -- deliberately different server-prediction copy
+    }
+    hook._t["Think"]["WSZC_DislocationVisualCompletion"]()
+    local sentAligned = #netMessages == 1
+        and netMessages[1].name == "WSZC_DislocationVisualComplete"
+        and netMessages[1].writes[1][2] == 77
+        and netMessages[1].writes[2][2] == 421.82
+        and netMessages[1].writes[3][2] == 229.82
+    WoundSystemDislocationMinigame.boneDrawX = 700
+    WoundSystemDislocationMinigame._WSZCNextVisualComplete = 0
+    hook._t["Think"]["WSZC_DislocationVisualCompletion"]()
+    local rejectedFar = #netMessages == 1
+    WoundSystemDislocationMinigame = { active = false }
+    GetGlobalBool = oldGetGlobalBool
+    return sentAligned and rejectedFar
 end)()
 ''')
 
@@ -2053,6 +2109,45 @@ if LuaRuntime is not None:
         except Exception as exc:
             check('REMOTE_' + mode.upper() + '_HARNESS_LOAD', False)
             print('ERR REMOTE_' + mode.upper() + '_HARNESS_LOAD', type(exc).__name__, str(exc)[:300])
+
+if LuaRuntime is not None:
+    radial_lua = LuaRuntime(unpack_returned_tuples=True)
+    radial_lua.execute(r'''
+CLIENT = true; SERVER = false
+WSZC = {}
+Blocked = true
+concommand = { Add = function() end }
+CreateClientConVar = function() return { GetBool = function() return true end } end
+GetConVar = function() return nil end
+GetGlobalBool = function() return true end
+hook = { _t = {}, Add = function(event, name, fn)
+    hook._t[event] = hook._t[event] or {}; hook._t[event][name] = fn
+end }
+timer = { Simple = function() end }
+hg = { radialOptions = {} }
+''')
+    radial_lua.execute(inspect_s)
+    radial_filter = radial_lua.execute(r'''
+WSZC.LegacyRadialMedicineBlocked = function() return Blocked end
+local function legacy(label) return { function() end, label } end
+hg.radialOptions = {
+    legacy("Fix dislocation (leg)"),
+    legacy("Fix Steven's dislocation (arm)"),
+    { function() end, "Do Gesture\nRMB - Menu" },
+    { function() end, "Dislocation inspection", _WSZCInspect = true },
+    { function() end, "Dislocation patient", _WSZCRemoteInspect = true },
+}
+hook._t["radialOptions"]["zzzz_WSZC_DisableLegacyMedicine"]()
+local filtered = #hg.radialOptions == 3
+    and hg.radialOptions[1][2] == "Do Gesture\nRMB - Menu"
+    and hg.radialOptions[2]._WSZCInspect == true
+    and hg.radialOptions[3]._WSZCRemoteInspect == true
+Blocked = false
+hg.radialOptions[#hg.radialOptions + 1] = legacy("Fix dislocation (leg)")
+hook._t["radialOptions"]["zzzz_WSZC_DisableLegacyMedicine"]()
+return filtered and #hg.radialOptions == 4
+''')
+    check('R44 ready-only radial filter removes legacy reduction, preserves WSZC/gestures', radial_filter)
 
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)

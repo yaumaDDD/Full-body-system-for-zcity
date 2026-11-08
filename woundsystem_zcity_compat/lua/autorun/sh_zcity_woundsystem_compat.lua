@@ -470,6 +470,34 @@ function WSZC.OrganismAuthority()
     return GetGlobalBool("WSZC_OrganismAuthority", true) == true
 end
 
+-- While the connector is active, ZCity's chance-based radial medicine is not
+-- a second treatment authority.  The C:U/WoundView action opens the native
+-- reduction minigame instead.  Both the client option filter and the server
+-- command/bridge wrappers use this same readiness predicate.
+function WSZC.LegacyRadialMedicineBlocked()
+    if SERVER then return WSZC.Ready == true end
+    return GetGlobalBool and GetGlobalBool("WSZC_Ready", false) == true or false
+end
+
+-- Native C:U predicts bone motion on the client and then simulates it again on
+-- the server.  Those positions can diverge, so a socket that looks perfectly
+-- aligned can still be rejected by the server's copy.  This predicate uses the
+-- SAME finish point/tolerance as native C:U, but is evaluated on the rendered
+-- position and then revalidated by the server before committing the reduction.
+function WSZC.DislocationVisualAligned(x, y)
+    x, y = tonumber(x), tonumber(y)
+    if not (x and y) or x ~= x or y ~= y
+        or x == math.huge or x == -math.huge
+        or y == math.huge or y == -math.huge then return false end
+    local constants = WoundSystem and WoundSystem.Health
+        and WoundSystem.Health.Constants or nil
+    local finishX = constants and tonumber(constants.DislocationFinishX) or 421.82
+    local finishY = constants and tonumber(constants.DislocationFinishY) or 229.82
+    local successTimer = constants and tonumber(constants.DislocationSuccessTimer) or 3
+    local dx, dy = x - finishX, y - finishY
+    return math.sqrt(dx * dx + dy * dy) * 0.2 < math.max(successTimer, 0.001)
+end
+
 ---------------------------------------------------------------------------
 -- Amputation is NOT an arterial-bleeding alias
 ---------------------------------------------------------------------------

@@ -4247,8 +4247,57 @@ function WSZC.InstallDirectSwepHealAdapters()
     return installedCount
 end
 
+-- The radial DislocatedJoint options call hg_fixdislocation, whose old
+-- WoundBridge branch performs a chance-based instant reduction.  That is a
+-- second medical path around the real C:U minigame.  Block BOTH the public
+-- bridge function and the console command while WSZC is ready.  Returning
+-- true from WB.FixDislocation is intentional: stock sv_organism.lua treats it
+-- as "handled" and returns before its legacy implementation.
+local legacyFixDislocationWrapper
+function WSZC.InstallLegacyRadialMedicineBlock()
+    local blocked = WSZC.LegacyRadialMedicineBlocked
+        and WSZC.LegacyRadialMedicineBlocked() or false
+    local wb = WB()
+    if wb and type(wb.FixDislocation) == "function"
+        and wb.FixDislocation ~= legacyFixDislocationWrapper then
+        local original = wb.FixDislocation
+        legacyFixDislocationWrapper = function(fixer, args)
+            if WSZC.LegacyRadialMedicineBlocked
+                and WSZC.LegacyRadialMedicineBlocked() then return true end
+            return original(fixer, args)
+        end
+        wb.FixDislocation = legacyFixDislocationWrapper
+    end
+
+    if concommand and concommand.GetTable and concommand.Add then
+        local commands = concommand.GetTable()
+        local entry = commands and commands.hg_fixdislocation
+        local callback = type(entry) == "table" and (entry[1] or entry.callback) or entry
+        if type(callback) == "function" and callback ~= WSZC._LegacyFixDislocationCommandWrapper then
+            local original = callback
+            WSZC._LegacyFixDislocationCommandWrapper = function(ply, ...)
+                if WSZC.LegacyRadialMedicineBlocked
+                    and WSZC.LegacyRadialMedicineBlocked() then return true end
+                return original(ply, ...)
+            end
+            concommand.Add("hg_fixdislocation", WSZC._LegacyFixDislocationCommandWrapper)
+        end
+    end
+    if timer and timer.Create then
+        local timerName = "WSZC_LegacyRadialMedicineBlock"
+        local exists = timer.Exists and timer.Exists(timerName)
+        if not exists then
+            timer.Create(timerName, 5, 0, function()
+                if WSZC.InstallLegacyRadialMedicineBlock then WSZC.InstallLegacyRadialMedicineBlock() end
+            end)
+        end
+    end
+    return blocked, wb ~= nil
+end
+
 local function InstallMedicalBridge()
     WSZC.InstallTourniquetRemovalBridge()
+    WSZC.InstallLegacyRadialMedicineBlock()
     local wb = WB()
     if not (wb and wb.SwepHeal) then return false end
     PatchBridgePlayerResolver(wb)
@@ -4854,6 +4903,106 @@ function WSZC.InstallSpawnContextGuard()
     return installedAny
 end
 
+-- Shared by the ordinary native receiver wrapper and the rendered-position
+-- completion packet below.  Only a real C:U true -> false transition may clear
+-- the authoritative ZCity group; a client prediction alone never calls this.
+function WSZC.CommitNativeDislocationReduction(ply, limbId)
+    if not (Authority() and IsValid(ply) and type(ply.organism) == "table") then return false end
+    local map = LIMB_ORG[limbId]
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
+    local state = type(limbs) == "table" and limbs[limbId] or nil
+    if not (map and map.dis and type(state) == "table") then return false end
+    if state.dislocated == true or ply.organism[map.dis] ~= true then return false end
+
+    ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
+    ply._WSZCExpectedDislocation[limbId] = true
+    if not WSZC.SyncDislocation(ply, ply.organism, limbs, false) then return false end
+
+    -- Close the race with RestoreBones()/spawn timers and make the completed
+    -- reduction visible immediately instead of waiting for the 4 Hz shadow.
+    ply.fullsend = true
+    ply._WSZCShadowNext = 0
+    if hg.send_organism then pcall(hg.send_organism, ply.organism, ply) end
+    if hg.send_bareinfo then pcall(hg.send_bareinfo, ply.organism) end
+    if cvShadow and cvShadow:GetBool() then pcall(PushShadow, ply, ply.organism) end
+    return true
+end
+
+-- Native C:U uses client-predicted rendering but a second server-side physics
+-- copy.  Accept the position the player actually sees only inside a live native
+-- session and only when it satisfies the same socket tolerance.  The server
+-- still owns the limb transition, happiness, update and session close.  Remote
+-- treatment resolves the patient through RemoteNativeSessions and revalidates
+-- the operator pair; no limb id or patient entity is trusted from the packet.
+function WSZC.HandleDislocationVisualComplete(operator, sessionId, x, y)
+    if not (WSZC.Ready and Authority() and IsValid(operator) and operator:Alive()) then return false end
+    if not WSZC.DislocationVisualAligned or not WSZC.DislocationVisualAligned(x, y) then return false end
+    x, y = tonumber(x), tonumber(y)
+    if not x or not y or x < -500 or x > 900 or y < -500 or y > 500 then return false end
+    sessionId = math.floor(tonumber(sessionId) or 0)
+    if sessionId <= 0 then return false end
+
+    local sessions = WSZC.CUSessions
+    local byPatient = type(sessions) == "table" and sessions.Dislocation or nil
+    if type(byPatient) ~= "table" or type(WSZC.CUCloseDislocationSession) ~= "function" then return false end
+    local target, session = operator, byPatient[operator]
+    if not session or session.id ~= sessionId then
+        target, session = nil, nil
+        for patient, byKind in pairs(WSZC.RemoteNativeSessions or {}) do
+            local meta = type(byKind) == "table" and byKind.Dislocation or nil
+            local candidate = byPatient[patient]
+            if meta and meta.operator == operator and candidate and candidate.id == sessionId then
+                target, session = patient, candidate
+                break
+            end
+        end
+    end
+    if not (target and session and IsValid(target) and target:Alive()) then return false end
+    if target ~= operator and not (WSZC.RemoteMedicalValidPair
+        and WSZC.RemoteMedicalValidPair(operator, target)) then return false end
+
+    local h = H()
+    local state = h and h.GetLimbState and h.GetLimbState(target, session.limbId) or nil
+    local map = LIMB_ORG[session.limbId]
+    if type(state) ~= "table" or state.dislocated ~= true then return false end
+    if not (map and map.dis and BoneAnchor(session.limbId, "dislocation")) then return false end
+    if type(target.organism) ~= "table" or target.organism[map.dis] ~= true then return false end
+
+    local previousTimer = state.dislocationTimer
+    session.boneX, session.boneY = x, y
+    session.boneVelX, session.boneVelY = 0, 0
+    session.dislocationTimer = 0
+    state.dislocated = false
+    state.dislocationTimer = 0
+    if not WSZC.CommitNativeDislocationReduction(target, session.limbId) then
+        -- Never report/close a visual success if the authoritative ZCity
+        -- transition failed.  Restore native prediction and the update marker.
+        state.dislocated = true
+        state.dislocationTimer = previousTimer
+        if target._WSZCExpectedDislocation then
+            target._WSZCExpectedDislocation[session.limbId] = nil
+        end
+        if h.SendLimbUpdate then pcall(h.SendLimbUpdate, target, session.limbId, true) end
+        return false
+    end
+    if h.SendLimbUpdate then pcall(h.SendLimbUpdate, target, session.limbId, true) end
+    if WoundSystemHappiness and WoundSystemHappiness.Add then
+        pcall(WoundSystemHappiness.Add, target, 3)
+    end
+    pcall(WSZC.CUCloseDislocationSession, target, "complete")
+
+    -- Do not leave the remote operator marked busy until the next watchdog.
+    if byPatient[target] == nil and type(WSZC.RemoteNativeSessions) == "table" then
+        local byKind = WSZC.RemoteNativeSessions[target]
+        if type(byKind) == "table" then
+            byKind.Dislocation = nil
+            if next(byKind) == nil then WSZC.RemoteNativeSessions[target] = nil end
+        end
+    end
+    return true
+end
+
 local nativeDislocationWrapper
 function WSZC.InstallNativeDislocationBridge()
     if type(net) ~= "table" or type(net.Receivers) ~= "table" then return false end
@@ -4879,30 +5028,10 @@ function WSZC.InstallNativeDislocationBridge()
         local a, b, c, d = original(len, ply, ...)
         if type(limbs) ~= "table" or type(ply.organism) ~= "table" then return a, b, c, d end
 
-        local changed = false
         for limbId in pairs(wasDislocated) do
-            local state = limbs[limbId]
-            local map = LIMB_ORG[limbId]
-            -- The native receiver is the sole authority here.  Client-side
-            -- boneDrawX/Y never enters this decision: only an actual server
-            -- true -> false transition (its < SuccessTimer branch) can commit.
-            if map and map.dis and type(state) == "table" and state.dislocated ~= true
-                and ply.organism[map.dis] == true then
-                ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
-                ply._WSZCExpectedDislocation[limbId] = true
-                if WSZC.SyncDislocation(ply, ply.organism, limbs, false) then
-                    changed = true
-                end
-            end
-        end
-        if changed then
-            -- Close the race with RestoreBones()/spawn timers and make the
-            -- completed reduction visible immediately instead of 250 ms later.
-            ply.fullsend = true
-            ply._WSZCShadowNext = 0
-            if hg.send_organism then pcall(hg.send_organism, ply.organism, ply) end
-            if hg.send_bareinfo then pcall(hg.send_bareinfo, ply.organism) end
-            if cvShadow and cvShadow:GetBool() then pcall(PushShadow, ply, ply.organism) end
+            -- The native receiver has already changed the actual server limb.
+            -- Commit only that true -> false transition, never boneDrawX/Y.
+            WSZC.CommitNativeDislocationReduction(ply, limbId)
         end
         return a, b, c, d
     end

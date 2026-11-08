@@ -45,6 +45,7 @@ local NET_STRINGS = {
     "WSZC_SyringeState",
     "WSZC_SyringeClose",
     "WSZC_SyringeInput",
+    "WSZC_DislocationVisualComplete",
 }
 
 if util and util.AddNetworkString then
@@ -1278,6 +1279,14 @@ hook.Add("Think", "WSZC_MinigameWatch", function()
                 StopAllMinigames(ply, "unconscious", true)
             end
         end
+    end
+end)
+
+net.Receive("WSZC_DislocationVisualComplete", function(_, ply)
+    local sessionId = net.ReadUInt(24)
+    local x, y = net.ReadFloat(), net.ReadFloat()
+    if WSZC.HandleDislocationVisualComplete then
+        WSZC.HandleDislocationVisualComplete(ply, sessionId, x, y)
     end
 end)
 

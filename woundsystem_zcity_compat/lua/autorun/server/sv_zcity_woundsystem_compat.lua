@@ -1269,6 +1269,7 @@ local function Attempt()
     SetGlobalBool("WSZC_OrganismAuthority", WSZC.OrganismAuthority())
     if WSZC.PatchIsEnabled then WSZC.PatchIsEnabled() end
     if WSZC.PatchIsBridged then WSZC.PatchIsBridged() end
+    if WSZC.InstallLegacyRadialMedicineBlock then WSZC.InstallLegacyRadialMedicineBlock() end
     if WSZC.InstallOrganismMode then WSZC.InstallOrganismMode() end
 
     if WSZC.OrganismAuthority() then

@@ -290,6 +290,32 @@ hook.Add("Think", "WSZC_MinigameViewWatch", function()
     end
 end)
 
+-- C:U draws boneDrawX/Y, but its server tests a separately simulated boneX/Y.
+-- Once the RENDERED bone is inside the native socket tolerance, ask the server
+-- to validate and complete this exact session immediately.  No click release,
+-- extra hit or arbitrary client-selected limb is required.  The receiver
+-- repeats the tolerance check and owns the actual state transition.
+hook.Add("Think", "WSZC_DislocationVisualCompletion", function()
+    local mg = WoundSystemDislocationMinigame
+    if type(mg) ~= "table" or mg.active ~= true or mg.closeRequested == true then return end
+    if not (GetGlobalBool and GetGlobalBool("WSZC_Ready", false) == true) then return end
+    if not WSZC.DislocationVisualAligned then return end
+    local x = tonumber(mg.boneDrawX) or tonumber(mg.boneX)
+    local y = tonumber(mg.boneDrawY) or tonumber(mg.boneY)
+    if not WSZC.DislocationVisualAligned(x, y) then
+        mg._WSZCNextVisualComplete = 0
+        return
+    end
+    local now = CurTime and CurTime() or 0
+    if now < (mg._WSZCNextVisualComplete or 0) then return end
+    mg._WSZCNextVisualComplete = now + 0.1
+    net.Start("WSZC_DislocationVisualComplete")
+        net.WriteUInt(tonumber(mg.sessionId) or 0, 24)
+        net.WriteFloat(x)
+        net.WriteFloat(y)
+    net.SendToServer()
+end)
+
 -- Belt and braces for the viewmodel: some ZCity SWEPs draw their held item
 -- through a custom render hook that ignores PreDrawViewModel.  SetNoDraw on
 -- the viewmodel entity is applied once on each state change, never per frame.

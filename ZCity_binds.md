@@ -57,17 +57,22 @@
 Источник: `lua/homigrad/cl_hud.lua:209-268, 391-458, 460-520`.
 
 Пункты меню собираются хуком `radialOptions`: фразы, снаряжение/броня,
-меню патронов, перезарядка с пола, сошки, вправление вывихов (radial `hg_fixdislocation`
-остаётся ванильным; дополнительно из WoundView доступна ручная мини-игра
-`FIX DISLOCATION`), ПНО,
-«Examine Body» (заменён компат-аддоном на «Проверить травмы»), крафт инженера,
+меню патронов, перезарядка с пола, сошки, ПНО и т.д. При активном WSZC старые
+медицинские пункты `DislocatedJoint*` удаляются из меню, а серверные
+`hg_fixdislocation` / `WB.FixDislocation` блокируются, включая прямой bind.
+Вправление выполняется только через ручную мини-игру `FIX DISLOCATION` в
+WoundView; «Examine Body» заменён на «Проверить травмы», крафт инженера,
 запрос поддержки/авиаудара, скан фурри, змейка и т.д.
 
 Мини-игра `FIX DISLOCATION` из WoundView — родная C:U, но компат уменьшает её
 клип (`zc_woundsystem_compat_native_minigame_zoom`, по умолчанию `0.85`) и
 стартовое смещение кости (`zc_woundsystem_compat_dislocation_start`, по
-умолчанию `35`), чтобы кость была на экране и нажималась. Общий размер спрайта руки
-во всех мини-играх — `zc_woundsystem_compat_hand_cursor_scale` (0.55).
+умолчанию `35`), чтобы кость была на экране и нажималась. Когда нарисованная
+кость попадает в native-допуск стыка, namespaced `WSZC_DislocationVisualComplete`
+немедленно запрашивает завершение; сервер проверяет живую сессию/ID/допуск и
+сразу снимает вывих, не требуя дополнительного удара или отпускания ЛКМ.
+Общий размер спрайта руки во всех мини-играх —
+`zc_woundsystem_compat_hand_cursor_scale` (0.55).
 
 Внешний вид куклы WoundView и руки мини-игр теперь берётся из архива
 `для переделывания интерфейса.zip`: 15 исходных слоёв `zcity_delta/unitmenu/limbs`,
@@ -93,9 +98,10 @@
 `100/400`, spring и collision clamp отключены. Значение `0` возвращает HandPhysics
 и developer offsets C:U. Точка захвата
 `..._hand_pivot_x 0.4` / `..._hand_pivot_y 0.1`, системный курсор
-скрыт только во время игры (`..._hide_minigame_cursor 1`). Спрайты:
-`wszc/minigame/hand_idle.png` / `hand_click.png`; arrow-only откат:
-`..._hide_minigame_hand 1`.
+скрыт во время каждой игры (`..._hide_minigame_cursor 1`) на world panel и
+overlay. Спрайты: `wszc/minigame/hand_idle.png` / `hand_click.png`;
+`..._hide_minigame_hand 1` отключает только их отрисовку и не возвращает
+стрелку. Явный arrow-режим — `..._hide_minigame_cursor 0`.
 
 Расход ZCity-бинта соответствует оригинальному `SWEP:Bandage`: физический
 `swep.modeValues[idx]` уменьшается на фактически удалённую severity. Закрытие
