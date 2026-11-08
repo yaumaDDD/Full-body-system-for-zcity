@@ -166,6 +166,9 @@ wszc_compat_status
 `active_adapter` и server-only contracts берутся из replicated server-статуса,
 а не из отсутствующих на клиенте `sv_*.lua`. После неудачной попытки лечения
 серверный статус показывает `last_minigame_start` с точной причиной отказа.
+Для Workshop/GitHub-сборок без вызова WoundBridge внутри `SWEP:Heal` коннектор
+автоматически ставит прямой медицинский адаптер; `direct_medical_adapters` и
+`last_medical_heal` показывают его установку и маршрут последнего применения.
 `runtime:` — источник C:U и bridge (`embedded/external/missing`), а строки
 `core/inspection/medicine/external_minigames/remote/organism_extensions` —
 фактически доступные функции и причину отключения. Если embedded loader был

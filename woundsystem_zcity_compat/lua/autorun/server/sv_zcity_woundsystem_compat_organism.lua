@@ -4195,6 +4195,58 @@ local function PatchBloodBagTake(wb)
     return true
 end
 
+-- Some Workshop/GitHub ZCity builds ship the medical SWEPs without the
+-- supplied WoundBridge call at the top of SWEP:Heal.  The connector's embedded
+-- bridge can then be fully ready while a bandage never reaches it.  Adapt the
+-- registered medical SWEP tables directly instead of depending on that one
+-- source-line.  A non-nil bridge result (including false for an opened game or
+-- a rejected treatment) is authoritative; nil preserves the original legacy
+-- Heal for NPCs/unknown modes.  Supplied SWEPs with their own bridge call are
+-- safe too: a handled bridge call returns before their original Heal runs.
+local directHealAdapters = setmetatable({}, { __mode = "k" })
+
+function WSZC.InstallDirectSwepHealAdapters()
+    local wb = WB()
+    if not (wb and type(wb.SwepHeal) == "function")
+        or type(weapons) ~= "table" or type(weapons.GetStored) ~= "function" then return 0 end
+
+    local classes = { weapon_medkit_sh = true }
+    for class in pairs(type(wb.SwepSpecs) == "table" and wb.SwepSpecs or {}) do
+        classes[class] = true
+    end
+
+    local installedCount = 0
+    for class in pairs(classes) do
+        local stored = weapons.GetStored(class)
+        if type(stored) == "table" and type(stored.Heal) == "function"
+            and not directHealAdapters[stored] then
+            local weaponClass = class
+            local original = stored.Heal
+            directHealAdapters[stored] = true
+            stored._WSZCDirectHealOriginal = original
+            stored.Heal = function(self, ent, mode, bone)
+                local bridge = WB()
+                local supported = type(WSZC.Supports) ~= "function" or WSZC.Supports("medicine")
+                if WSZC.Ready and Authority() and supported
+                    and bridge and type(bridge.SwepHeal) == "function" then
+                    local a, b, c = bridge.SwepHeal(self, ent, mode, bone)
+                    WSZC.LastMedicalHealRoute = weaponClass .. " -> bridge (" .. tostring(a) .. ")"
+                    if a ~= nil then return a, b, c end
+                end
+                WSZC.LastMedicalHealRoute = weaponClass .. " -> legacy"
+                return original(self, ent, mode, bone)
+            end
+            installedCount = installedCount + 1
+        end
+    end
+
+    if installedCount > 0 then
+        WSZC.DirectMedicalAdapterCount = (WSZC.DirectMedicalAdapterCount or 0) + installedCount
+        Debug("direct Workshop medical SWEP adapters installed: %d", installedCount)
+    end
+    return installedCount
+end
+
 local function InstallMedicalBridge()
     WSZC.InstallTourniquetRemovalBridge()
     local wb = WB()
@@ -4203,6 +4255,7 @@ local function InstallMedicalBridge()
     PatchBodyDrugSpecs(wb)
     PatchBloodBagTake(wb)
     InstallTimedEffectBridge()
+    WSZC.InstallDirectSwepHealAdapters()
     if wb._WSZCSwepHealPatched then return true end
     wb._WSZCSwepHealPatched = true
     local original = wb.SwepHeal

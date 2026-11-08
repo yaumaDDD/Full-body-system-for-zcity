@@ -346,6 +346,12 @@ function WSZC.CompatibilityStatusLines()
     if WSZC._EmbeddedBridgeLoadError then
         lines[#lines + 1] = "  embedded_bridge_error=" .. tostring(WSZC._EmbeddedBridgeLoadError)
     end
+    if SERVER and WSZC.DirectMedicalAdapterCount then
+        lines[#lines + 1] = "  direct_medical_adapters=" .. tostring(WSZC.DirectMedicalAdapterCount)
+    end
+    if SERVER and WSZC.LastMedicalHealRoute then
+        lines[#lines + 1] = "  last_medical_heal=" .. tostring(WSZC.LastMedicalHealRoute)
+    end
     if SERVER and WSZC.LastMinigameStartResult then
         lines[#lines + 1] = "  last_minigame_start=" .. tostring(WSZC.LastMinigameStartResult)
     end

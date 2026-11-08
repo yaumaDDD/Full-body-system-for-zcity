@@ -105,6 +105,11 @@ check("S10 all canonical medicine shares the connector's living-patient ragdoll 
       and "entOrg == ply.organism and entOrg.owner == ply" in organism_s
       and "PatchBridgePlayerResolver(wb)" in organism_s
       and "WSZC.PatchBridgePlayerResolver = PatchBridgePlayerResolver" in organism_s)
+medical_install = organism_s.split("local function InstallMedicalBridge()", 1)[1]
+check("S11 direct Workshop adapters refresh before the idempotent bridge return",
+      "function WSZC.InstallDirectSwepHealAdapters()" in organism_s
+      and medical_install.index("WSZC.InstallDirectSwepHealAdapters()")
+      < medical_install.index("if wb._WSZCSwepHealPatched then return true end"))
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -1008,6 +1013,39 @@ end
 return true
 ''')
     check("R38 continuous bandage/syringe minigames keep medic and standing/ragdoll patient separate", remote_minigames)
+
+    direct_workshop_heal = lua.execute(r'''
+local legacyCalls, bridgeCalls = 0, 0
+local stored = {}
+stored.Heal = function(self, ent, mode, bone)
+    legacyCalls = legacyCalls + 1
+    return "legacy", mode
+end
+weapons = { GetStored = function(class)
+    if class == "weapon_bandage_sh" then return stored end
+    return nil
+end }
+hg.WoundBridge.SwepHeal = function(self, ent, mode, bone)
+    bridgeCalls = bridgeCalls + 1
+    if mode == 99 then return nil end
+    return false
+end
+WSZC.Ready = true
+AuthorityFlag = true
+local installed = WSZC.InstallDirectSwepHealAdapters()
+local swep = setmetatable({}, { __index = stored })
+local patient = MakePlayer()
+local blocked = swep:Heal(patient, 1)
+local blockedOK = blocked == false and bridgeCalls == 1 and legacyCalls == 0
+local fallback, fallbackMode = swep:Heal(patient, 99)
+local fallbackOK = fallback == "legacy" and fallbackMode == 99
+    and bridgeCalls == 2 and legacyCalls == 1
+local again = WSZC.InstallDirectSwepHealAdapters()
+return installed == 1 and blockedOK and fallbackOK and again == 0
+    and WSZC.DirectMedicalAdapterCount == 1
+    and WSZC.LastMedicalHealRoute == "weapon_bandage_sh -> legacy"
+''')
+    check("R39 direct Workshop Heal adapter reaches bridge without double legacy", direct_workshop_heal)
 
 failed = [name for name, ok in results if not ok]
 print(f"TEST_OK {len(results) - len(failed)} / {len(results)}")
