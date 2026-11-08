@@ -57,7 +57,9 @@ local function OpenCUHealthPanel()
     -- Open (not toggle): pressing the radial button must never close an already
     -- open C:U panel.  ToggleHealthHUD / woundsys_open_panel are fallbacks for
     -- a future C:U build that only exposes the older entry points.
-    if WoundSystem.OpenHealthHUD then
+    if WSZC.OpenHealthHUDForInspection then
+        WSZC.OpenHealthHUDForInspection()
+    elseif WoundSystem.OpenHealthHUD then
         WoundSystem.OpenHealthHUD()
     elseif WoundSystem.ToggleHealthHUD then
         WoundSystem.ToggleHealthHUD()
@@ -75,6 +77,100 @@ function WSZC.OpenCUWoundMenu()
         if not (WoundSystem and WoundSystem.Health) then return end
         OpenCUHealthPanel()
     end)
+end
+
+-- Native C:U rejects OpenHealthHUD() while CardioState.unconscious OR the
+-- networked unconscious flag is set, and ToggleHUDInput force-closes an already
+-- open panel on every Think.  That makes even READ-ONLY inspection impossible
+-- after a brain injury.  Mask those two CLIENT-ONLY inputs only while executing
+-- C:U's own open/input functions.  The server organism, real ragdoll, damage
+-- and minigame incapacity guards are never changed.
+local function FindNamedTable(fn, wanted, seen, depth)
+    if type(fn) ~= "function" or not (debug and debug.getupvalue) then return nil end
+    seen, depth = seen or {}, depth or 0
+    if depth > 4 or seen[fn] then return nil end
+    seen[fn] = true
+    for i = 1, 64 do
+        local ok, name, value = pcall(debug.getupvalue, fn, i)
+        if not ok or not name then break end
+        if name == wanted and type(value) == "table" then return value end
+        if type(value) == "function" then
+            local found = FindNamedTable(value, wanted, seen, depth + 1)
+            if found then return found end
+        end
+    end
+    return nil
+end
+
+local function CallWithInspectionAccess(ply, cardio, fn, ...)
+    if type(cardio) ~= "table" or type(fn) ~= "function" then return false end
+    if not (ply and ply.GetNWBool and ply.SetNWBool) then return false end
+    local oldNW = ply:GetNWBool("WoundSystemUnconscious", false)
+    local oldUnconscious = cardio.unconscious
+    cardio.unconscious = false
+    pcall(ply.SetNWBool, ply, "WoundSystemUnconscious", false)
+    local ok, err = pcall(fn, ...)
+    cardio.unconscious = oldUnconscious
+    pcall(ply.SetNWBool, ply, "WoundSystemUnconscious", oldNW)
+    if not ok then
+        if WSZC.Warn then WSZC.Warn("inspection input bridge failed: " .. tostring(err)) end
+        return false
+    end
+    return true
+end
+
+function WSZC.InstallUnconsciousInspectionBridge()
+    if type(hook) ~= "table" or type(hook.GetTable) ~= "function" then return false end
+    local hooks = hook.GetTable()
+    local original = hooks and hooks.Think and hooks.Think.ToggleHUDInput or nil
+    if type(original) ~= "function" then return false end
+    if original == WSZC._InspectionThinkWrapper and WSZC._InspectionThinkCardio then return true end
+    local cardio = FindNamedTable(original, "CardioState")
+    if not cardio then return false end
+
+    local function wrapped(...)
+        local ply = LocalPlayer()
+        if WSZC._InspectionWhileUnconscious == true and IsValid(ply) and ply:Alive()
+            and CompatInspectEnabled() then
+            local ok = CallWithInspectionAccess(ply, cardio, original, ...)
+            if not ok or WoundSystemHealthHUDOpen ~= true then
+                WSZC._InspectionWhileUnconscious = nil
+            end
+            return ok
+        end
+        return original(...)
+    end
+    WSZC._InspectionThinkWrapper = wrapped
+    WSZC._InspectionThinkCardio = cardio
+    hook.Add("Think", "ToggleHUDInput", wrapped)
+    return true
+end
+
+function WSZC.OpenHealthHUDForInspection()
+    local ply = LocalPlayer()
+    if not IsValid(ply) or not ply:Alive() then return false end
+    local opener = WoundSystem and (WoundSystem.OpenHealthHUD or WoundSystem.ToggleHealthHUD) or nil
+    if type(opener) ~= "function" then return false end
+    local cardio = FindNamedTable(opener, "CardioState")
+    local unconscious = (cardio and cardio.unconscious == true)
+        or (ply.GetNWBool and ply:GetNWBool("WoundSystemUnconscious", false) == true)
+    if not unconscious then
+        WSZC._InspectionWhileUnconscious = nil
+        opener()
+        return WoundSystemHealthHUDOpen == true
+    end
+
+    -- Install the Think half BEFORE opening; otherwise native closes the panel
+    -- again on the next frame.  Without private-state access, fail back to the
+    -- unmodified native function instead of inventing a second health UI.
+    if not WSZC.InstallUnconsciousInspectionBridge() then
+        opener()
+        return false
+    end
+    local ok = CallWithInspectionAccess(ply, cardio, opener)
+    local opened = ok and WoundSystemHealthHUDOpen == true
+    WSZC._InspectionWhileUnconscious = opened or nil
+    return opened
 end
 
 -- Any other code that calls WB.OpenWoundView() should use the same C:U entry point.

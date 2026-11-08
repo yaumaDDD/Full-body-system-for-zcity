@@ -567,6 +567,13 @@ SWEP. В authority-режиме каждая такая доза дополни�
   **себя**; для пациента используется отдельная «Лечить игрока» и тот же WoundView.
 - Перед открытием выдерживается `0.12 c`, чтобы круговое меню ZCity успело
   закрыться и не перехватить курсор.
+- Травма мозга/`unconscious` больше не делает осмотр живого персонажа
+  недоступным. `WSZC.OpenHealthHUDForInspection()` находит native `CardioState`
+  даже через remote-wrapper и только на время C:U open/`ToggleHUDInput`
+  маскирует `CardioState.unconscious` + client `WoundSystemUnconscious`. Оба
+  значения восстанавливаются сразу после вызова; серверный organism и запреты
+  мини-игр при incapacity не ослабляются. После закрытия обёртка делегирует
+  обычный C:U input и ничего не переоткрывает.
 - Команда `wszc_open_wounds` открывает ту же панель (для биндов и диагностики).
 - `zc_woundsystem_compat_inspect_button 0` убирает и наш пункт, и штатный
   `Examine Body`.
@@ -592,7 +599,7 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_disable_cu_fx` | этот аддон (client) | `1` — снять ВСЕ экранные/камерные/UI-эффекты C:U, оставить только эффекты ZCity; `0` — вернуть хуки C:U. |
 | `zc_woundsystem_compat_disable_cu_blood` | этот аддон (client + server) | `1` — убрать декоративную кровь C:U и вернуть ванильную кровь ZCity/Hemogen; `0` — вернуть как было. |
 | `zc_woundsystem_compat_shrapnel_only_shotgun_blast` | этот аддон (server) | `1` — осколки только от дробовика и взрыва, не от пистолетов/винтовок; `0` — старое поведение (любой `DMG_BULLET`). |
-| `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа и сохраняет структуру ZCity (`otrub`/`fake`/`canmove`), но полностью очищает раны/шрапнель/C:U residue; `0` — исходный ZCity reset. |
+| `zc_woundsystem_compat_preserve_reset_structure` | этот аддон (server) | `1` — `reset organism` не поднимает персонажа: сохраняет conscious ragdoll (`fake`/`needfake`), но очищает раны/мозговую травму/оглушение/шрапнель/C:U residue; `0` — исходный ZCity reset. |
 | `zc_woundsystem_compat_shrapnel_lodged_effects` | этот аддон (server) | `1` — любой неизвлечённый fragment наращивает tagged ZCity-рану, боль и кровотечение; `0` — отключить только этот рост. |
 | `zc_woundsystem_compat_fullscreen_minigame` | этот аддон (client) | `1` — мини-игры бинта/шприца на весь экран; `0` — исходный квадрат ~760 px C:U. |
 | `zc_woundsystem_compat_minigame_zoom` | этот аддон (client) | `0.85` — умеренно отдалённый размер мини-игры; диапазон `0.7..1.8`. |
@@ -792,13 +799,17 @@ player→FakeRagdoll или collision-proxy→player, дедуплицирует
 
 `WSZC.InstallResetStructureGuard()` оборачивает `hg.organism.Clear` и
 `WB.ResetOrganism`: на время `ResetOrganism` `WB.RestoreRagdoll` подменяется на
-no-op (иначе отложенный таймер поднял бы игрока уже после обёртки), а только
-`otrub / needotrub / fake / needfake / alive / otrub_start / unconscious`
-сохраняются и возвращаются после очистки. Травмы, blood/pain и `health`
-очищаются как обычно. После восстановления повторно шлются
-`hg.send_organism` / `hg.send_bareinfo` и обновляется shadow C:U.
-При явном reset `SnapshotZCityStructure(..., false)` и `ClearAllShrapnel()` не
-оставляют ни фрагментов, ни tagged-ран, ни source/irritation/C:U residue.
+no-op (иначе отложенный таймер поднял бы игрока уже после обёртки). При
+ordinary ragdoll transition сохраняются прежние down/injury flags, но при
+**явном** reset возвращаются только `fake / needfake`. Старые
+`alive/otrub/needotrub/unconscious/otrub_start/uncon_timer` не переживают
+очистку: персонаж остаётся в conscious ragdoll, а не вечно оглушённым после
+травмы мозга. Травмы, blood/pain и `health` очищаются как обычно.
+`SnapshotZCityStructure(..., false, true)` и `ClearAllShrapnel()` не оставляют
+ни фрагментов, ни tagged-ран, ни source/irritation/C:U residue.
+`RestoreZCityStructure(..., false, true)` сразу снимает
+`WoundSystemUnconscious`, обновляет C:U shadow вне 4 Hz throttle и повторно
+шлёт `hg.send_organism` / `hg.send_bareinfo`, поэтому осмотр снова доступен.
 Очистка применяется к АКТУАЛЬНОМУ `ply.organism` после native reset; при
 `false`/ошибке WB выполняется родной `hg.organism.Clear` fallback с traceback.
 Death-ragdoll разрешается через `organism.owner`; штатный `reset_org` получает
@@ -1025,13 +1036,13 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
  не переопределяются.
 - Проверено синтаксически (`luaparser`, 15 connector-owned файлов), статически,
  на заглушечном Lua-рантайме и через canonical ZCity WoundBridge из исходного
- ZIP. Актуальные suites: `tools/tests/test_wszc_regression.py` (**158/158**,
+ ZIP. Актуальные suites: `tools/tests/test_wszc_regression.py` (**159/159**,
  включая Lua 15/15, CRC/зеркало/манифест, pixel checks и 32 remote behavior
- tests), `test_gameplay_regression.py` (**112/112**),
+ tests), `test_gameplay_regression.py` (**113/113**),
  `test_bandage_regression.py` (**40/40**), `test_medical_regression.py`
  (**50/50**) и `test_compatibility_regression.py` (**44/44**:
  native/legacy/partial/missing API, independent feature gates, optional
- includes и Setup failure latch) — всего **404/404**.
+ includes и Setup failure latch) — всего **406/406**.
  Remote M16 проверяет ragdoll range/watchdog; M17 прогоняет настоящий advanced minigame-server:
  `operator→patient`, один расход слота медика и запрет input вне дистанции.
  Medical-suite отдельно проверяет canonical
@@ -1160,15 +1171,16 @@ dislocation, AED) **по умолчанию НЕ растягиваются**:
 экран («я осколок рожаю или че, где нижняя часть откуда он достается?»).
 `fullscreen_native 1` оставляет прежнее растяжение доступным как опцию.
 
-**Бег после травмы и «Reset organism».** `RESET_KEEP` сохранял не только
-«лежачую» структуру, но и `canmove`, `stun`, `consciousness`, `brain` — то есть
-штрафы движения от травмы переживали ресет, и ZCity / `HG_MovementCalc_2`
-навсегда оставляли скорость ходьбы. Теперь сохраняются только `otrub`,
-`needotrub`, `fake`, `needfake`, `alive`, `otrub_start`, `unconscious`
-(персонаж по-прежнему не встаёт сам), чтобы снова можно было быстро бегать, а `WSZC.ClearMovementPenalties()`
-явно снимает `canmove=false`, `stun`, `pain` и числовые повреждения в
-`org.legs`. Вызывается во всех трёх путях: `hg.organism.Clear` стоя,
-`hg.organism.Clear` лёжа и `WB.ResetOrganism`.
+**Бег после травмы и «Reset organism».** Обычный ragdoll/FakeUp transition
+по-прежнему сохраняет `otrub / needotrub / fake / needfake / alive /
+otrub_start / unconscious`, потому что там травма не должна исчезать. Явный
+admin reset теперь сохраняет только физические `fake / needfake`: старые
+`alive=false`, `brain`, `otrub`, `unconscious`, `otrub_start/uncon_timer` после
+падения и черепно-мозговой травмы не восстанавливаются. Персонаж остаётся лёжа,
+но становится conscious; blackout и `WoundSystemUnconscious` снимаются сразу,
+без ожидания 4 Hz shadow. `WSZC.ClearMovementPenalties()` отдельно убирает
+`canmove=false`, `stun`, `pain` и числовые повреждения в `org.legs`, поэтому
+после вставания не остаётся вечный walking speed.
 
 **Скриншот 5.** «I don't want to experience this EVER AGAIN!» — это
 статусное сообщение ZCity (`sh_status_messages.lua:219`), а не экран смерти

@@ -57,9 +57,11 @@ limb из `hitgroup/dmgstack/HitBones`, включая голову, торс и
 В круговом селекторе ZCity добавлена кнопка «Проверить травмы»: она открывает
 родную панель осмотра C:U (`WoundSystem.OpenHealthHUD`), а не новый интерфейс.
 Штатный пункт ZCity `Examine Body` перехватывается и переименовывается, дубля
-нет; поведение самоосмотра не изменено. При наведении на живого игрока или его
-ragdoll (до 256 units) отдельный пункт **«Лечить игрока»** открывает **тот же
-WoundView для пациента**.
+нет. Живой персонаж может открыть осмотр и при `unconscious` после травмы
+мозга: connector лишь на время native open/Think маскирует два client-only
+флага, а серверное оглушение, ragdoll и incapacity-проверки мини-игр не меняет.
+При наведении на живого игрока или его ragdoll (до 256 units) отдельный пункт
+**«Лечить игрока»** открывает **тот же WoundView для пациента**.
 
 Remote treatment не имеет собственного doll, HUD или patient banner: используются
 те же 17 native limb id, включая `neck` и `pelvis`, та же анатомия, материалы,
@@ -245,6 +247,10 @@ aftercare и отсутствие двойного Consume проверены ч
   ZCity-визуалы повязок/жгутов, residue и C:U limb-state. Отдельно обнуляется
   `brokenribs`: родной ZCity reset очищает `chest`, но забывает это производное
   поле, из-за чего красная иконка перелома рёбер возвращалась после ресета.
+  После падения/травмы мозга явный reset больше не восстанавливает старые
+  `alive=false`, `otrub`, `unconscious` и таймеры оглушения: сохраняются только
+  `fake/needfake`, поэтому персонаж остаётся лёжа, но conscious, а осмотр и
+  `WoundSystemUnconscious=false` восстанавливаются немедленно.
   Внутренний `ragdoll → standing` (`OverrideSpawn`) сохраняет весь organism: native и
   third-party поля, wounds/arterialwounds, ампутации, шрапнель и инфекцию.
   Настоящий respawn и явный reset эту медицинскую структуру не сохраняют.
@@ -634,15 +640,16 @@ dislocation, AED) **по умолчанию НЕ растягиваются**:
 экран («я осколок рожаю или че, где нижняя часть откуда он достается?»).
 `fullscreen_native 1` оставляет прежнее растяжение доступным как опцию.
 
-**Бег после травмы и «Reset organism».** `RESET_KEEP` сохранял не только
-«лежачую» структуру, но и `canmove`, `stun`, `consciousness`, `brain` — то есть
-штрафы движения от травмы переживали ресет, и ZCity / `HG_MovementCalc_2`
-навсегда оставляли скорость ходьбы. Теперь сохраняются только `otrub`,
-`needotrub`, `fake`, `needfake`, `alive`, `otrub_start`, `unconscious`
-(персонаж по-прежнему не встаёт сам), чтобы снова можно было быстро бегать, а `WSZC.ClearMovementPenalties()`
-явно снимает `canmove=false`, `stun`, `pain` и числовые повреждения в
-`org.legs`. Вызывается во всех трёх путях: `hg.organism.Clear` стоя,
-`hg.organism.Clear` лёжа и `WB.ResetOrganism`.
+**Бег после травмы и «Reset organism».** Обычный ragdoll/FakeUp transition
+по-прежнему сохраняет `otrub / needotrub / fake / needfake / alive /
+otrub_start / unconscious`, потому что там травма не должна исчезать. Явный
+admin reset теперь сохраняет только физические `fake / needfake`: старые
+`alive=false`, `brain`, `otrub`, `unconscious`, `otrub_start/uncon_timer` после
+падения и черепно-мозговой травмы не восстанавливаются. Персонаж остаётся лёжа,
+но становится conscious; blackout и `WoundSystemUnconscious` снимаются сразу,
+без ожидания 4 Hz shadow. `WSZC.ClearMovementPenalties()` отдельно убирает
+`canmove=false`, `stun`, `pain` и числовые повреждения в `org.legs`, поэтому
+после вставания не остаётся вечный walking speed.
 
 **Скриншот 5.** «I don't want to experience this EVER AGAIN!» — это
 статусное сообщение ZCity (`sh_status_messages.lua:219`), а не экран смерти

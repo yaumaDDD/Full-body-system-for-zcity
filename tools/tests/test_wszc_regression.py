@@ -2149,6 +2149,62 @@ return filtered and #hg.radialOptions == 4
 ''')
     check('R44 ready-only radial filter removes legacy reduction, preserves WSZC/gestures', radial_filter)
 
+    unconscious_inspection = radial_lua.execute(r'''
+IsValid = function(v) return v ~= nil end
+local ply = { alive = true, nw = true }
+ply.Alive = function(self) return self.alive end
+ply.GetNWBool = function(self, key, fallback)
+    if key == "WoundSystemUnconscious" then return self.nw end
+    return fallback
+end
+ply.SetNWBool = function(self, key, value)
+    if key == "WoundSystemUnconscious" then self.nw = value end
+end
+LocalPlayer = function() return ply end
+hook.GetTable = function() return hook._t end
+hg.WoundBridge = {}
+WoundSystem = { Health = {} }
+local CardioState = { unconscious = true }
+local GUIState = { hudOpen = false }
+WoundSystemHealthHUDOpen = false
+function WoundSystem.OpenHealthHUD()
+    local lp = LocalPlayer()
+    if not IsValid(lp) or not lp:Alive() then return end
+    if CardioState.unconscious or lp:GetNWBool("WoundSystemUnconscious", false) then return end
+    GUIState.hudOpen = true
+    WoundSystemHealthHUDOpen = true
+end
+local function NativeThink()
+    if CardioState.unconscious or ply:GetNWBool("WoundSystemUnconscious", false) then
+        GUIState.hudOpen = false
+        WoundSystemHealthHUDOpen = false
+    else
+        WoundSystemHealthHUDOpen = GUIState.hudOpen
+    end
+end
+hook.Add("Think", "ToggleHUDInput", NativeThink)
+
+-- Prove the representative native guard really closes the panel first.
+GUIState.hudOpen = true; WoundSystemHealthHUDOpen = true
+NativeThink()
+local nativeBlocked = GUIState.hudOpen == false and WoundSystemHealthHUDOpen == false
+-- Remote treatment leaves a transparent OpenHealthHUD wrapper installed.
+local nativeOpen = WoundSystem.OpenHealthHUD
+WoundSystem.OpenHealthHUD = function(...) return nativeOpen(...) end
+local opened = WSZC.OpenHealthHUDForInspection()
+local restoredAfterOpen = opened and CardioState.unconscious == true and ply.nw == true
+hook.GetTable().Think.ToggleHUDInput()
+local stayedOpen = GUIState.hudOpen == true and WoundSystemHealthHUDOpen == true
+    and WSZC._InspectionWhileUnconscious == true
+    and CardioState.unconscious == true and ply.nw == true
+GUIState.hudOpen = false; WoundSystemHealthHUDOpen = false
+hook.GetTable().Think.ToggleHUDInput()
+local closedCleanly = WSZC._InspectionWhileUnconscious == nil
+    and GUIState.hudOpen == false and CardioState.unconscious == true and ply.nw == true
+return nativeBlocked and restoredAfterOpen and stayedOpen and closedCleanly
+''')
+    check('R45 brain-injury unconscious inspection opens, survives Think and closes cleanly', unconscious_inspection)
+
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)
 passed = sum(1 for _, ok in results if ok)

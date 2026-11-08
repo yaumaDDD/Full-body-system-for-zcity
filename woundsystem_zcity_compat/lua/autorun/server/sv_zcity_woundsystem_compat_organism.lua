@@ -4418,15 +4418,29 @@ local RESET_KEEP = {
     "alive", "otrub_start", "unconscious",
 }
 
+-- An EXPLICIT admin reset is different from a FakeUp spawn.  Preserve the
+-- physical ragdoll, but never restore brain-death/unconscious flags after the
+-- native clear: doing so re-applies the blackout and blocks OpenHealthHUD().
+local RESET_EXPLICIT_KEEP = { "fake", "needfake" }
+
 local SHRAPNEL_SHADOW_KEYS = {
     "wszc_shrapnel", "wszc_shrapnel_floor", "wszc_shrapnel_irritation",
     "wszc_shrapnel_sources", "wszc_bandaged_shrapnel", "wszc_infection",
     "wszc_shrapnel_aftercare", "wszc_shrapnel_closed", "wszc_shrapnel_aftercare_closed",
 }
 
-local function SnapshotZCityStructure(org, preserveShrapnel)
+local function SnapshotZCityStructure(org, preserveShrapnel, explicitReset)
     local snap = {}
-    for _, key in ipairs(RESET_KEEP) do snap[key] = org[key] end
+    local keys = explicitReset and RESET_EXPLICIT_KEEP or RESET_KEEP
+    for _, key in ipairs(keys) do snap[key] = org[key] end
+    if explicitReset then
+        local owner = org.owner
+        local down = org.otrub == true or org.needotrub == true
+            or org.fake == true or org.needfake == true
+            or (IsValid(owner) and IsValid(owner.FakeRagdoll))
+        -- Conscious does NOT mean standing: retain just the ragdoll request.
+        snap.fake, snap.needfake = down == true, down == true
+    end
     -- Only a ragdoll transition keeps fragments.  An EXPLICIT admin reset
     -- passes false and therefore cannot resurrect them after Clear().
     if preserveShrapnel ~= false then
@@ -4623,17 +4637,27 @@ local function ClearMovementPenalties(org)
 end
 WSZC.ClearMovementPenalties = ClearMovementPenalties
 
-local function RestoreZCityStructure(org, snap, preserveMovement)
+local function RestoreZCityStructure(org, snap, preserveMovement, explicitReset)
     if type(org) ~= "table" or type(snap) ~= "table" then return end
     for key, value in pairs(snap) do org[key] = value end
-    if not preserveMovement then ClearMovementPenalties(org) end
     local owner = org.owner
+    if explicitReset then
+        -- These are injuries/lifecycle state, not the physical ragdoll.  In
+        -- particular brain >= 0.7 can set alive=false and brain trauma leaves
+        -- otrub/unconscious set; neither may survive an explicit full reset.
+        if IsValid(owner) and owner.Alive then org.alive = owner:Alive() == true end
+        org.otrub, org.needotrub, org.unconscious = false, false, false
+        org.otrub_start, org.uncon_timer = nil, 0
+        if IsValid(owner) then owner._WSZCShadowNext = 0 end
+    end
+    if not preserveMovement then ClearMovementPenalties(org) end
     if IsValid(owner) then owner.fullsend = true end
     if hg then
         if hg.send_organism then pcall(hg.send_organism, org) end
         if hg.send_bareinfo then pcall(hg.send_bareinfo, org) end
     end
     -- Keep the C:U shadow (HUD / NWBool) in sync with the ZCity structure.
+    -- Explicit reset bypasses the 4 Hz throttle so inspection is unblocked NOW.
     if cvShadow and cvShadow:GetBool() and IsValid(owner) then
         pcall(PushShadow, owner, org)
     end
@@ -4669,7 +4693,7 @@ function WSZC.InstallResetStructureGuard()
             or (IsValid(owner) and IsValid(owner.FakeRagdoll))
             or org.otrub == true or org.fake == true)
         local preserveTransition = not explicit and not genuineSpawn and not deadOwner
-        local snap = SnapshotZCityStructure(org, preserveTransition)
+        local snap = SnapshotZCityStructure(org, preserveTransition, explicit)
         local ragdollSnap = fakeUpSpawn and SnapshotRagdollOrganism(org) or nil
         CarryShrapnelShadow(owner, org)
         local a, b, c = originalClear(org, ...)
@@ -4680,7 +4704,7 @@ function WSZC.InstallResetStructureGuard()
             -- an ordinary Fake/FakeUp transition.  No carry table, no shrapnel
             -- snapshot and no tagged wound is allowed to survive it.
             WSZC.ClearAllShrapnel(owner, org)
-            RestoreZCityStructure(org, snap)
+            RestoreZCityStructure(org, snap, false, true)
             return a, b, c
         end
 
@@ -4738,7 +4762,7 @@ function WSZC.InstallResetStructureGuard()
             if IsValid(ply) then ply._WSZCExplicitReset = true end
             WSZC._ExplicitResetDepth = (WSZC._ExplicitResetDepth or 0) + 1
             CarryShrapnelShadow(ply, org)
-            local snap = type(org) == "table" and SnapshotZCityStructure(org, false) or nil
+            local snap = type(org) == "table" and SnapshotZCityStructure(org, false, true) or nil
 
             -- Suppress only WB's explicit stand-up call, and ALWAYS restore the
             -- function, including a native error.  Keep a real traceback in the

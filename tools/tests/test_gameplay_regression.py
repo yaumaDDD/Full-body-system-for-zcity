@@ -53,7 +53,7 @@ check("S03 every lodged piece grows a real wound; explicit reset clears it",
       "function WSZC.TickLodgedShrapnel" in organism_s
       and "wound.wszcShrapnel = SHRAPNEL_WOUND_TAG" in organism_s
       and "function WSZC.ClearAllShrapnel" in organism_s
-      and "SnapshotZCityStructure(org, false)" in organism_s
+      and "SnapshotZCityStructure(org, false, true)" in organism_s
       and "_ExplicitResetDepth" in organism_s)
 check("S04 added WoundView cards are rolled back; native geometry remains",
       "zc_woundsystem_compat_woundview_polish" not in layout_s
@@ -475,8 +475,17 @@ local transitionKept = ply.organism.otrub == true
     and ply.organism.wszc_bandaged_shrapnel.hand_R.infection == 12
     and ply.organism.wszc_infection == 12
 ply.organism.blood, ply.organism.pain = 1200, 80
+-- Reproduce the reported high-fall brain injury immediately before reset.
+ply.organism.brain, ply.organism.alive = 0.85, false
+ply.organism.unconscious, ply.organism.otrub_start = true, 80
+ply.organism.needotrub, ply.organism.uncon_timer = true, 20
+ply.organism.fake, ply.organism.needfake = true, true
+ply._body.unconscious = true
+ply._nw.WoundSystemUnconscious = true
+ply._WSZCShadowNext = 1000 -- prove explicit reset bypasses the 4 Hz throttle
 local resetResult = hg.WoundBridge.ResetOrganism(ply)
-local explicitCleared = resetResult == true and restoreCalls == 0 and ply.organism.otrub == true
+local explicitCleared = resetResult == true and restoreCalls == 0 and ply.organism.otrub == false
+    and ply.organism.fake == true and ply.organism.needfake == true
     and ply.organism.blood == 5000
     and (ply.organism.wszc_shrapnel == nil or (ply.organism.wszc_shrapnel.hand_R or 0) == 0)
     and ply.organism.wszc_shrapnel_sources == nil
@@ -486,6 +495,15 @@ local explicitCleared = resetResult == true and restoreCalls == 0 and ply.organi
     and ply.organism.bleed == 0 and ply._limbs.hand_R.shrapnel == 0
     and ply._limbs.hand_R.isBandaged == false and ply._limbs.hand_R.infection == 0
     and next(ply.bandaged_limbs) == nil and next(ply.tourniquets) == nil
+local brainReset = resetResult == true and restoreCalls == 0
+    and ply.organism.alive == true and (tonumber(ply.organism.brain) or 0) == 0
+    and ply.organism.otrub == false and ply.organism.needotrub == false
+    and ply.organism.unconscious == false and ply.organism.otrub_start == nil
+    and ply.organism.uncon_timer == 0
+    and ply.organism.fake == true and ply.organism.needfake == true
+    and ply._body.unconscious == false
+    and ply:GetNWBool("WoundSystemUnconscious", true) == false
+    and ply._WSZCShadowNext < 1000
 ResetDebug = { result = resetResult, restoreCalls = restoreCalls,
     otrub = ply.organism.otrub, blood = ply.organism.blood, pain = ply.organism.pain,
     shrapnel = ply.organism.wszc_shrapnel, sources = ply.organism.wszc_shrapnel_sources,
@@ -495,10 +513,11 @@ ResetDebug = { result = resetResult, restoreCalls = restoreCalls,
     limbShrapnel = ply._limbs.hand_R.shrapnel, limbBandaged = ply._limbs.hand_R.isBandaged,
     limbInfection = ply._limbs.hand_R.infection,
     bandages = next(ply.bandaged_limbs), tourniquets = next(ply.tourniquets) }
-return transitionKept, explicitCleared
+return transitionKept, explicitCleared, brainReset
 ''')
     check("R06 ordinary ragdoll clear still preserves fragments", reset[0])
     check("R07 explicit reset fully clears fragments and medical residue", reset[1])
+    check("R94 brain-injury reset clears death/unconscious state but keeps conscious ragdoll", reset[2])
     if not reset[1]:
         debug = lua.globals().ResetDebug
         print("RESET_DEBUG", {k: debug[k] for k in (
