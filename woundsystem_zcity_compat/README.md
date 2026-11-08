@@ -14,6 +14,23 @@ Workshop/GitHub API имеют приоритет; embedded-загрузчик �
 собственный versioned lexical contract (`embedded_bridge=yes`): damage proxies,
 BestLimb и native bandage cost не зависят от debug library.
 
+### Автономный бинт коннектора
+
+`lua/weapons/weapon_wszc_bandage.lua` регистрирует отдельный класс
+`weapon_wszc_bandage`. Он наследуется от `weapon_base`, а не от ZCity
+`weapon_bandage_sh`, поэтому аптечка, шприцы, жгут и оригинальные медицинские
+SWEP остаются нетронутыми. Выдача в server console или консоли администратора:
+`give weapon_wszc_bandage`.
+
+ЛКМ открывает namespaced WSZC bandage session для себя, ПКМ — для живого
+игрока под прицелом. Этот путь **не вызывает `WB.SwepHeal`**: рана выбирается
+по реальному `organism`, лечение идёт во время намотки, а `1 severity` раны
+списывает ровно `1 modeValues` бинта. Пустой предмет удаляется только после
+закрытия сессии; неиспользованный бинт остаётся. Обычная кровоточащая рана или
+aftercare обязательны; artery-only по-прежнему обрабатывается жгутом.
+Оригинальные ZCity медицинские SWEP продолжают использовать direct adapter с
+приоритетом external medical API и прежней защитой от двойного Heal.
+
 ## Адаптивная совместимость со сборками
 
 `WSZC.RefreshCapabilities()` проверяет реальные контракты, а не версию или название
@@ -1001,14 +1018,15 @@ viewmodel в Think, пока `WSZC.MinigameActive()`. ZCity SWEP (бинт, шп
 - Хуки сторонних аддонов (`PreHomigradDamage`, `HomigradDamage`,
  `PostEntityTakeDamage`, `simple eye gore`, `zcitygore`, `project hemogen blood`)
  не переопределяются.
-- Проверено синтаксически (`luaparser`, 13 файлов), статически, на заглушечном
- Lua-рантайме и через canonical ZCity WoundBridge из исходного ZIP. Актуальные
- suites: `tools/tests/test_wszc_regression.py` (**155/155**, включая Lua 13/13,
- CRC/зеркало/манифест, pixel checks и 32 remote behavior tests),
- `test_gameplay_regression.py` (**93/93**), `test_bandage_regression.py`
- (**35/35**), `test_medical_regression.py` (**48/48**) и
- `test_compatibility_regression.py` (**26/26**: native/legacy/partial/missing API,
- independent feature gates, optional includes и Setup failure latch) — всего **357/357**.
+- Проверено синтаксически (`luaparser`, 15 connector-owned файлов), статически,
+ на заглушечном Lua-рантайме и через canonical ZCity WoundBridge из исходного
+ ZIP. Актуальные suites: `tools/tests/test_wszc_regression.py` (**155/155**,
+ включая Lua 15/15, CRC/зеркало/манифест, pixel checks и 32 remote behavior
+ tests), `test_gameplay_regression.py` (**106/106**),
+ `test_bandage_regression.py` (**40/40**), `test_medical_regression.py`
+ (**50/50**) и `test_compatibility_regression.py` (**44/44**:
+ native/legacy/partial/missing API, independent feature gates, optional
+ includes и Setup failure latch) — всего **395/395**.
  Remote M16 проверяет ragdoll range/watchdog; M17 прогоняет настоящий advanced minigame-server:
  `operator→patient`, один расход слота медика и запрет input вне дистанции.
  Medical-suite отдельно проверяет canonical
@@ -1043,8 +1061,8 @@ camelCase-копий (архив в lowercase, Linux-клиент регистр
 аддон C:U тоже полный. Три `resource/fonts/*.ttf` и три `shaders/fxc/*.vcs`
 перенесены из исходного C:U ZIP в коннектор побайтово; full pack удаляет их
 старые копии из папки C:U. После добавления isolated runtime standalone ZIP
-содержит **752 файла**: 653 материала, 6 C:U resource payloads, 88 Lua
-(13 connector + 71 C:U + 3 WoundBridge + bootstrap), документацию и
+содержит **753 файла**: 653 материала, 6 C:U resource payloads, 89 Lua
+(14 connector + 71 C:U + 3 WoundBridge + bootstrap), документацию и
 `VENDOR_RUNTIME.sha256`. Исходные ZIP-аддоны не меняются; генератор
 `tools/embed_runtime.py --check` подтверждает provenance всех 74 vendored Lua.
 
@@ -1246,6 +1264,9 @@ woundsystem_zcity_compat/
         ├── cu/                                       # 71 изолированный C:U Lua
         └── zcity/woundbridge/                        # 3 изолированных WoundBridge Lua
 ```
+
+Отдельный `lua/weapons/weapon_wszc_bandage.lua` добавляет автономный бинт;
+он не входит в vendor runtime и не заменяет ZCity `weapon_bandage_sh`.
 
 ## Диагностика
 

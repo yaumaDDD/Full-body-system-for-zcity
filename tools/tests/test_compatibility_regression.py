@@ -134,8 +134,8 @@ with ZipFile(connector_zip) as packed, ZipFile(full_zip) as full:
     )
     source_count = sum(1 for path in CONN.rglob("*") if path.is_file() and "__pycache__" not in path.parts)
     check("S09 rebuilt ZIPs contain one physical copy of relocated C:U resources",
-          packaged_relocated_ok and len(connector_names) == source_count == 752
-          and len(full_names) == 2855)
+          packaged_relocated_ok and len(connector_names) == source_count == 753
+          and len(full_names) == 2856)
 
 vendor_check = subprocess.run(
     [sys.executable, str(ROOT / "tools/embed_runtime.py"), "--check"],

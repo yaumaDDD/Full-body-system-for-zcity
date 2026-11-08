@@ -727,6 +727,101 @@ WSZC.StartExternalMinigameImpl = StartMinigame
 WSZC.StopExternalMinigameImpl = StopExternal
 WSZC.StopMinigame = StopMinigame
 
+-- Connector-owned medical entrypoint.  Unlike both WB.SwepHeal adapters this
+-- path does not depend on any Workshop SWEP:Heal implementation.  The physical
+-- weapon only supplies owner/capacity; the session, treatment and consumption
+-- are created directly here.  It is exposed as weapon_wszc_bandage so the
+-- original ZCity class hierarchy remains untouched.
+local STANDALONE_BANDAGE_SPEC = {
+    kind = "bandage", item = "GAUZE", rate = 25, mg = { kind = "bandage" },
+}
+
+local function StandaloneBandageReject(owner, reason)
+    WSZC.LastMedicalHealRoute = "weapon_wszc_bandage -> standalone (" .. tostring(reason) .. ")"
+    WSZC.LastMinigameStartResult = "standalone: " .. tostring(reason)
+    if IsValid(owner) and owner.PrintMessage then
+        pcall(owner.PrintMessage, owner, HUD_PRINTCENTER or 2, tostring(reason))
+    end
+    return false
+end
+
+function WSZC.UseStandaloneBandage(swep, target)
+    local owner = IsValid(swep) and swep.GetOwner and swep:GetOwner() or nil
+    if not (IsValid(owner) and owner:IsPlayer() and owner:Alive()) then
+        return StandaloneBandageReject(owner, "invalid operator")
+    end
+    if not WSZC.Ready then return StandaloneBandageReject(owner, "connector not ready") end
+    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then
+        return StandaloneBandageReject(owner, "no living patient")
+    end
+    if target ~= owner and (type(WSZC.RemoteMedicalValidPair) ~= "function"
+        or not WSZC.RemoteMedicalValidPair(owner, target)) then
+        return StandaloneBandageReject(owner, "patient is too far away")
+    end
+
+    swep.modeValues = type(swep.modeValues) == "table" and swep.modeValues or { 40 }
+    swep.modeValuesdef = type(swep.modeValuesdef) == "table" and swep.modeValuesdef or { { 40, true } }
+    local def = swep.modeValuesdef[1]
+    if type(def) == "table" then def = def[1] end
+    def = tonumber(def) or 40
+    local remaining = math.max(tonumber(swep.modeValues[1]) or 0, 0)
+    if remaining <= 0.0005 then return StandaloneBandageReject(owner, "bandage is empty") end
+
+    local limbId = WSZC.BestBandageLimb
+        and WSZC.BestBandageLimb(target, STANDALONE_BANDAGE_SPEC, nil) or nil
+    if not limbId then return StandaloneBandageReject(owner, "no ordinary bleeding wound") end
+
+    local items = WoundSystem and WoundSystem.Items
+    local maxDur = (items and items.GetMax and items.GetMax("GAUZE")) or 100
+    local amount = remaining / math.max(def, 0.0001) * maxDur
+    local appliedLive = 0
+    local health = WSZC.H
+    local data
+    data = {
+        kind = "bandage", itemId = "GAUZE", limbId = limbId, amount = amount,
+        swep = swep, idx = 1, spec = STANDALONE_BANDAGE_SPEC, target = target,
+        maxDur = maxDur, live = true, oneDose = false,
+        _WSZCSetAppliedLive = function(value)
+            appliedLive = math.max(tonumber(value) or 0, 0)
+        end,
+        onProgress = function(ply, session, durCost)
+            -- Used only outside the organism-authority native-cost path.  The
+            -- authoritative path consumes exact ZCity severity in
+            -- ProcessNativeBandageInput and deliberately never calls this.
+            if not IsValid(swep) or not IsValid(target) then return end
+            local start = math.max(session.startAmount or amount, 0.0001)
+            durCost = math.min(tonumber(durCost) or 0, math.max(start - appliedLive, 0))
+            if durCost <= 0 then return end
+            local H = WSZC.H or health
+            if not (H and H.ApplyItemToBody) then return end
+            local ok = H.ApplyItemToBody(target, "GAUZE", limbId, durCost)
+            if not ok then return end
+            appliedLive = appliedLive + durCost
+            swep.modeValues[1] = math.max(remaining * (1 - appliedLive / start), 0)
+            if swep.SetNetVar then pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues) end
+        end,
+        onClose = function()
+            -- Keep the native appliedLive closure reachable and remove only a
+            -- genuinely exhausted physical item, never an unused bandage.
+            local _ = appliedLive
+            if not IsValid(swep) or (tonumber(swep.modeValues[1]) or 0) > 0.0005 then return end
+            if IsValid(owner) and owner.SelectWeapon then pcall(owner.SelectWeapon, owner, "weapon_hands_sh") end
+            swep:Remove()
+        end,
+    }
+
+    local started = StartMinigame(owner, data)
+    WSZC.LastMedicalHealRoute = "weapon_wszc_bandage -> standalone (" .. tostring(started) .. ")"
+    if started and WSZC.MinigameSessions[owner] then
+        WSZC.MinigameSessions[owner].remote = target ~= owner
+    end
+    if not started then
+        -- StartMinigame already recorded the precise gate/rejection reason.
+        return false
+    end
+    return true
+end
+
 -- Namespaced remote sessions have no physical ZCity SWEP in the patient's
 -- hands. Revalidate operator -> patient range/alive state for every input,
 -- exactly as the native-session/AED timer paths do.

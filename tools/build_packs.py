@@ -15,7 +15,7 @@ only the parts this repository owns:
     external Workshop/GitHub APIs still take priority at runtime
   * root docs (README_INSTALL.md / ZCity_binds.md / WORKSHOP_IDS.txt)
   * garrysmod/cfg/zcity_binds.cfg
-  * MANIFEST.txt (counts + sha256 of the 88 connector/vendor Lua files)
+  * MANIFEST.txt (counts + sha256 of the 89 connector/vendor Lua files)
 
 No upstream Lua is modified except the single already-patched line in
 z_city/lua/homigrad/woundbridge/sv_woundbridge.lua.  C:U's six font/shader
@@ -147,7 +147,7 @@ def main():
     conn = collect_connector()
     lua = [r for r in conn if r.endswith('.lua')]
     mats = [r for r in conn if r.startswith('materials/')]
-    assert len(lua) == 88, ('connector + embedded Lua count', len(lua))
+    assert len(lua) == 89, ('connector + embedded Lua count', len(lua))
     assert len(mats) >= 653, ('connector material count', len(mats))
     embedded_cu = [r for r in lua if r.startswith('lua/wszc_vendor/cu/')]
     embedded_bridge = [r for r in lua if r.startswith('lua/wszc_vendor/zcity/woundbridge/')]

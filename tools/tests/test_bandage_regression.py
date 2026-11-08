@@ -17,6 +17,7 @@ SERVER = CONN / "lua/autorun/server/sv_zcity_woundsystem_compat.lua"
 MINIGAMES = CONN / "lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua"
 CLIENT_MINIGAMES = CONN / "lua/autorun/client/cl_zcity_woundsystem_compat_minigames.lua"
 BANDAGE = CONN / "lua/autorun/client/wszc_cl_bandage.lua"
+STANDALONE = CONN / "lua/weapons/weapon_wszc_bandage.lua"
 
 results = []
 
@@ -32,6 +33,7 @@ server_s = SERVER.read_text(encoding="utf-8")
 minigames_s = MINIGAMES.read_text(encoding="utf-8")
 client_minigames_s = CLIENT_MINIGAMES.read_text(encoding="utf-8")
 bandage_s = BANDAGE.read_text(encoding="utf-8")
+standalone_s = STANDALONE.read_text(encoding="utf-8")
 
 check("S01 bandage treats ordinary wounds; only tourniquet clears arteries",
       "function WSZC.ApplyBandageToOrganism" in organism_s
@@ -67,6 +69,15 @@ check("S05 reverse unwrap has independent angular progress and no item cost",
       and 'return -- no durability, bleeding treatment or foreign onProgress' in minigames_s
       and '"UNWRAP " .. tostring(percent) .. "%"' in bandage_s
       and 'matInfection' in bandage_s)
+check("S06 standalone bandage owns its SWEP and bypasses Workshop Heal",
+      'SWEP.Base = "weapon_base"' in standalone_s
+      and 'SWEP.Base = "weapon_bandage_sh"' not in standalone_s
+      and 'WB.SwepHeal(' not in standalone_s
+      and 'function SWEP:PrimaryAttack()' in standalone_s
+      and 'function SWEP:SecondaryAttack()' in standalone_s
+      and 'UseStandalone(self, false)' in standalone_s
+      and 'UseStandalone(self, true)' in standalone_s
+      and 'function WSZC.UseStandaloneBandage' in minigames_s)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -1055,6 +1066,116 @@ debug = previousDebug
 return ok and result == true
 ''')
     check("R26 embedded native bandage keeps exact cost without debug upvalues", no_debug)
+
+    standalone = server_lua.execute(r'''
+WSZC.MinigameSessions = {}
+local patient = BandagePatientFactory()
+WSZC.RealAddShrapnel(patient, "hand_R", 3, "shotgun")
+local swep = NativeBandageSwepFactory(40)
+swep.GetOwner = function() return patient end
+swep.GetClass = function() return "weapon_wszc_bandage" end
+swep.Remove = function(self) self.removed = true end
+local previousHg = hg
+hg = { WoundBridge = { SwepHeal = function()
+    error("standalone bandage called WB.SwepHeal")
+end } }
+WSZC.Ready = true
+WSZC.BridgeEnabled = function() return true end
+WSZC.Bridged = function() return true end
+local ok, result = pcall(function()
+    local started = WSZC.UseStandaloneBandage(swep, patient)
+    local session = WSZC.MinigameSessions[patient]
+    if not session then return false end
+    sent, readQueue = {}, { session.id, 360 }
+    receivers["WSZC_BandageInput"](0, patient)
+    return started and session.nativeBandage
+        and swep.modeValues[1] == 36 and math.abs(session.deferredUsed - 10) < 0.001
+        and WSZC.RealGetBandageBleeding(patient, "hand_R") == 0
+        and WSZC.LastMedicalHealRoute == "weapon_wszc_bandage -> standalone (true)"
+        and string.find(WSZC.LastMinigameStartResult or "", "opened bandage", 1, true) ~= nil
+        and swep.removed ~= true
+end)
+hg = previousHg
+return ok and result == true
+''')
+    check("R27 standalone connector bandage bypasses Workshop Heal with exact cost", standalone)
+
+    standalone_remote = server_lua.execute(r'''
+WSZC.MinigameSessions = {}
+local operator, patient = BandagePatientFactory(), BandagePatientFactory()
+WSZC.RealAddShrapnel(patient, "hand_R", 3, "shotgun")
+local swep = NativeBandageSwepFactory(40)
+swep.GetOwner = function() return operator end
+swep.GetClass = function() return "weapon_wszc_bandage" end
+swep.Remove = function(self) self.removed = true end
+local pairChecked = false
+WSZC.RemoteMedicalValidPair = function(medic, target)
+    pairChecked = medic == operator and target == patient
+    return pairChecked
+end
+WSZC.Ready = true
+WSZC.BridgeEnabled = function() return true end
+WSZC.Bridged = function() return true end
+local started = WSZC.UseStandaloneBandage(swep, patient)
+local session = WSZC.MinigameSessions[operator]
+if not session then return false end
+sent, readQueue = {}, { session.id, 360 }
+receivers["WSZC_BandageInput"](0, operator)
+return started and pairChecked and session.remote and session.target == patient
+    and session.nativeBandage and swep.modeValues[1] == 36
+    and math.abs(session.deferredUsed - 10) < 0.001
+    and WSZC.RealGetBandageBleeding(patient, "hand_R") == 0
+    and WSZC.RealGetBandageBleeding(operator, "hand_R") == 0
+    and swep.removed ~= true
+''')
+    check("R28 standalone remote session treats the patient, not the medic", standalone_remote)
+
+    standalone_swep = server_lua.execute(r'''
+local previousSwep, previousAddCS = SWEP, AddCSLuaFile
+local previousHg = hg
+local previousUse = WSZC.UseStandaloneBandage
+SWEP = { Primary = {}, Secondary = {} }
+AddCSLuaFile = function() end
+''' + standalone_s + r'''
+local class = SWEP
+local operator, patient = BandagePatientFactory(), BandagePatientFactory()
+local traced = { marker = true }
+local calls, getPlayerCalls, traceCalls = {}, 0, 0
+WSZC.UseStandaloneBandage = function(swep, target)
+    calls[#calls + 1] = { swep = swep, target = target }
+    return true
+end
+hg = { WoundBridge = {
+    GetPlayer = function(ent)
+        getPlayerCalls = getPlayerCalls + 1
+        return ent == traced and patient or nil
+    end,
+    SwepHeal = function() error("standalone SWEP called WB.SwepHeal") end,
+} }
+operator.GetEyeTrace = function()
+    traceCalls = traceCalls + 1
+    return { Entity = traced }
+end
+local swep = setmetatable({
+    GetOwner = function() return operator end,
+    SetNextPrimaryAttack = function() end,
+    SetNextSecondaryAttack = function() end,
+}, { __index = class })
+local ok, result = pcall(function()
+    swep:Initialize()
+    swep:PrimaryAttack()
+    swep:SecondaryAttack()
+    return class.Base == "weapon_base" and #calls == 2
+        and calls[1].swep == swep and calls[1].target == operator
+        and calls[2].swep == swep and calls[2].target == patient
+        and getPlayerCalls == 1 and traceCalls == 1
+        and swep.modeValues[1] == 40 and swep.modeValuesdef[1][1] == 40
+end)
+WSZC.UseStandaloneBandage = previousUse
+SWEP, AddCSLuaFile, hg = previousSwep, previousAddCS, previousHg
+return ok and result == true
+''')
+    check("R29 real standalone SWEP LMB/RMB route self and traced patient", standalone_swep)
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

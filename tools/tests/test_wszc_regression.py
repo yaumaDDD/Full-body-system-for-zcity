@@ -564,7 +564,7 @@ try:
             ast.parse(Path(f).read_text(encoding='utf-8'))
         except Exception as exc:
             bad.append((f, str(exc)[:120]))
-    check('S15 ALL_LUA_OK %d/%d' % (len(lua_files) - len(bad), len(lua_files)), not bad and len(lua_files) == 14)
+    check('S15 ALL_LUA_OK %d/%d' % (len(lua_files) - len(bad), len(lua_files)), not bad and len(lua_files) == 15)
 except ImportError:
     print('SKIP S15 luaparser unavailable')
 
@@ -858,7 +858,7 @@ def validate_zips():
         assert z.testzip() is None
         full = {i.filename: z.read(i.filename) for i in z.infolist()}
     conn_files = {p.relative_to(CONN).as_posix(): p.read_bytes() for p in CONN.rglob('*') if p.is_file()}
-    assert len(conn_files) == len(compat) == 752
+    assert len(conn_files) == len(compat) == 753
     assert all(compat['woundsystem_zcity_compat/' + r] == d for r, d in conn_files.items())
     mirror = {n[len('garrysmod/addons/casualties_unknown_health_system_beta/materials/'):]: d
               for n, d in full.items()
@@ -876,7 +876,7 @@ def validate_zips():
     assert b'Not completed - nothing was applied' in embedded_bridge
     manifest = full['MANIFEST.txt'].decode('utf-8')
     shas = re.findall(r'woundsystem_zcity_compat/lua/[^\s]+\.lua\s+([0-9a-f]{64})', manifest)
-    assert len(shas) == 88
+    assert len(shas) == 89
     assert all(hashlib.sha256(d).hexdigest() in shas for r, d in conn_files.items() if r.endswith('.lua'))
     shipped_layout = full['garrysmod/addons/woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua'].decode('utf-8')
     assert 'HandRectForCursor' in shipped_layout
@@ -896,7 +896,7 @@ def validate_zips():
     # +4 neck/pelvis PNGs in the connector and +4 in the C:U material mirror.
     # Six fonts/shaders moved C:U -> connector without changing the old total.
     # The isolated embedded runtime adds 75 Lua files + one provenance manifest.
-    assert len(full) == 2855
+    assert len(full) == 2856
     declared_total = re.search(r'Всего файлов в архиве:\s*(\d+)', manifest)
     assert declared_total and int(declared_total.group(1)) == len(full)
     return True
