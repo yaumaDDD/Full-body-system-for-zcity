@@ -118,10 +118,11 @@ end
 --- its isolated namespace is preferred consistently on that realm.
 function WSZC.ResolveCUPath(path)
     if type(WoundSystem) == "table" and WoundSystem._WSZCEmbedded == true then
-        local vendored = "wszc_vendor/cu/" .. tostring(path)
-        if not (file and file.Exists) or file.Exists(vendored, "LUA") then
-            return vendored
-        end
+        -- Server replication selects ONE runtime for both realms.  A client's
+        -- file.Exists(..., LUA) may not see an AddCSLuaFile cache entry even
+        -- though include() can load it; falling back to an external path here
+        -- would silently mix two C:U namespaces and lose minigame modules.
+        return "wszc_vendor/cu/" .. tostring(path)
     end
     return path
 end
@@ -345,6 +346,9 @@ function WSZC.CompatibilityStatusLines()
     if WSZC._EmbeddedBridgeLoadError then
         lines[#lines + 1] = "  embedded_bridge_error=" .. tostring(WSZC._EmbeddedBridgeLoadError)
     end
+    if SERVER and WSZC.LastMinigameStartResult then
+        lines[#lines + 1] = "  last_minigame_start=" .. tostring(WSZC.LastMinigameStartResult)
+    end
     for _, feature in ipairs(FEATURES) do
         local failed = Compatibility.failures[feature]
         local supported = caps[feature] == true and not Compatibility.failures.core and not failed
@@ -367,11 +371,30 @@ end
 
 -- Optional C:U source files differ between builds.  Missing optional artwork
 -- or hand physics must degrade locally, never abort the whole autorun file.
+WSZC.OptionalIncludeStatus = WSZC.OptionalIncludeStatus or {}
+
 function WSZC.OptionalInclude(path)
     path = WSZC.ResolveCUPath and WSZC.ResolveCUPath(path) or path
-    if file and file.Exists and not file.Exists(path, "LUA") then return nil, false end
-    if not include then return nil, false end
+    local embedded = type(WoundSystem) == "table" and WoundSystem._WSZCEmbedded == true
+    local exists
+    if file and file.Exists then exists = file.Exists(path, "LUA") == true end
+    -- Keep the cheap missing-file guard for unknown external addons.  For the
+    -- selected embedded runtime, however, include() is authoritative: GMod's
+    -- client LUA search may hide a server-downloaded cache entry from
+    -- file.Exists even though the file is available to include().
+    if exists == false and not embedded then
+        WSZC.OptionalIncludeStatus[path] = { ok = false, exists = false, reason = "missing" }
+        return nil, false
+    end
+    if not include then
+        WSZC.OptionalIncludeStatus[path] = { ok = false, exists = exists, reason = "include unavailable" }
+        return nil, false
+    end
     local ok, result = pcall(include, path)
+    WSZC.OptionalIncludeStatus[path] = {
+        ok = ok, exists = exists, resultType = type(result),
+        reason = not ok and tostring(result) or nil,
+    }
     if ok then return result, true end
     if not Compatibility.notes["include:" .. path] then
         Compatibility.notes["include:" .. path] = true
@@ -398,6 +421,18 @@ if concommand and concommand.Add then
         end
         WSZC.PrintCompatibilityStatus(ply)
     end)
+    -- A dedicated server exports same-named Lua server commands to clients;
+    -- they can shadow the shared status command and print realm=server even
+    -- when the client runtime is healthy.  This client-only name cannot be
+    -- intercepted by that forwarding rule.
+    if CLIENT then
+        concommand.Add("wszc_compat_client_status", function()
+            WSZC.PrintCompatibilityStatus()
+            if type(WSZC.PrintMinigameClientStatus) == "function" then
+                WSZC.PrintMinigameClientStatus()
+            end
+        end)
+    end
 end
 
 ---------------------------------------------------------------------------

@@ -502,23 +502,42 @@ local function HasMinigame(ply)
     return CUSessionActive(ply)
 end
 
+local function StartResult(ok, reason)
+    WSZC.LastMinigameStartResult = tostring(reason)
+    if not ok then Debug("start rejected: %s", tostring(reason)) end
+    return ok
+end
+
 local function StartMinigame(ply, data)
-    if not (WSZC.Ready and BridgeEnabled() and OwnMinigamesEnabled() and HealthEnabled()) then return false end
-    if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
-    if PlayerIncapacitated(ply) then return false end
-    if HasMinigame(ply) then return true end
-    if type(data) ~= "table" then return false end
+    if not WSZC.Ready then return StartResult(false, "connector not ready") end
+    if not BridgeEnabled() then
+        return StartResult(false, "bridge disabled (zc_woundsystem_bridge/woundsys_enabled)")
+    end
+    if not OwnMinigamesEnabled() then
+        return StartResult(false, "minigames disabled by convar/capability")
+    end
+    if not HealthEnabled() then return StartResult(false, "C:U health disabled") end
+    if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then
+        return StartResult(false, "invalid/dead operator")
+    end
+    if PlayerIncapacitated(ply) then return StartResult(false, "operator incapacitated") end
+    if HasMinigame(ply) then return StartResult(true, "already active") end
+    if type(data) ~= "table" then return StartResult(false, "missing data") end
 
     local kind = data.kind
-    if kind ~= "bandage" and kind ~= "syringe" then return false end
-    if type(data.onProgress) ~= "function" or type(data.onClose) ~= "function" then return false end
+    if kind ~= "bandage" and kind ~= "syringe" then
+        return StartResult(false, "unsupported kind=" .. tostring(kind))
+    end
+    if type(data.onProgress) ~= "function" or type(data.onClose) ~= "function" then
+        return StartResult(false, "missing callbacks")
+    end
 
     -- `spec` is an upvalue of the bridge closures.  `spec.mg` is ZCity's
     -- minigame-capable marker, but after the owner's correction it is not
     -- sufficient by itself: one-dose specs still stay instant.
     local spec = ClosureValue(data, "spec")
     if type(spec) ~= "table" or type(spec.mg) ~= "table" or spec.mg.kind ~= kind then
-        return false
+        return StartResult(false, "invalid spec/minigame marker")
     end
 
     -- The owner explicitly wants one-dose / vehicle / body items to stay
@@ -532,25 +551,33 @@ local function StartMinigame(ply, data)
             if ok then className = class end
         end
         Debug("instant fallback for %s (one-dose ZCity item)", tostring(className))
-        return false
+        return StartResult(false, "intentional instant item=" .. tostring(className))
     end
 
     local H = WSZC.H
-    if type(H) ~= "table" or type(H.ApplyItemToBody) ~= "function" then return false end
+    if type(H) ~= "table" or type(H.ApplyItemToBody) ~= "function" then
+        return StartResult(false, "ApplyItemToBody unavailable")
+    end
 
     local target = ClosureValue(data, "target")
-    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then return false end
-    if not Bridged(target) then return false end
+    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then
+        return StartResult(false, "invalid/dead target")
+    end
+    if not Bridged(target) then return StartResult(false, "target not bridged") end
 
     local limbId = data.limbId
-    if type(limbId) ~= "string" or limbId == "" then return false end
+    if type(limbId) ~= "string" or limbId == "" then
+        return StartResult(false, "missing limb")
+    end
     if H.InitPlayer and H.GetLimbs and not H.GetLimbs(target) then pcall(H.InitPlayer, target) end
-    if limbId ~= "body" and H.GetLimbState and not H.GetLimbState(target, limbId) then return false end
+    if limbId ~= "body" and H.GetLimbState and not H.GetLimbState(target, limbId) then
+        return StartResult(false, "unknown limb=" .. tostring(limbId))
+    end
 
     local Items = WoundSystem and WoundSystem.Items
     local itemId = NormalizeItemId(data.itemId)
     local item = Items and Items.Get and Items.Get(itemId)
-    if not item then return false end
+    if not item then return StartResult(false, "unknown item=" .. tostring(itemId)) end
 
     local maxDur = tonumber(ClosureValue(data, "maxDur"))
     if not maxDur or maxDur <= 0 then
@@ -637,7 +664,7 @@ local function StartMinigame(ply, data)
     Debug("opened %s session %s owner=%s target=%s item=%s limb=%s amount=%.2f live=%s oneDose=%s",
         kind, tostring(id), tostring(ply), tostring(target), itemId, limbId,
         startAmount, tostring(session.live), tostring(session.oneDose))
-    return true
+    return StartResult(true, "opened " .. kind .. " #" .. tostring(id))
 end
 
 --- Covered shrapnel cannot be exposed by a click.  Start the SAME client

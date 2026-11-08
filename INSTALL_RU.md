@@ -158,8 +158,14 @@ wszc_compat_status
 ```
 
 Первая строка содержит профиль совместимости и `realm=server/client`.
-На клиенте `ready`, `active_adapter` и server-only contracts берутся из
-replicated server-статуса, а не из отсутствующих на клиенте `sv_*.lua`.
+Для клиентской диагностики на dedicated server используйте отдельную команду
+`wszc_compat_client_status`: одноимённая server concommand может перехватывать
+обычный `wszc_compat_status` и печатать `realm=server`. Client-only команда также
+показывает загрузку bandage/syringe, pending packets, Lua-cache includes и то,
+что полный HealthGUI не требуется для независимых мини-игр. На клиенте `ready`,
+`active_adapter` и server-only contracts берутся из replicated server-статуса,
+а не из отсутствующих на клиенте `sv_*.lua`. После неудачной попытки лечения
+серверный статус показывает `last_minigame_start` с точной причиной отказа.
 `runtime:` — источник C:U и bridge (`embedded/external/missing`), а строки
 `core/inspection/medicine/external_minigames/remote/organism_extensions` —
 фактически доступные функции и причину отключения. Если embedded loader был

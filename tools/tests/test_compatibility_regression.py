@@ -287,6 +287,10 @@ end
 ''')
     lua.execute(shared_s)
     lua.execute(mg_s)
+    lua.globals().SHARED_SOURCE = shared_s
+    lua.globals().CLIENT_MINIGAMES_SOURCE = (
+        CONN / "lua/autorun/client/cl_zcity_woundsystem_compat_minigames.lua"
+    ).read_text(encoding="utf-8")
 
     def embedded_runtime(server=True, initial=""):
         runtime = LuaRuntime(unpack_returned_tuples=True)
@@ -775,6 +779,73 @@ return rejectedPartial and ok and ready == true and WSZC.SetupDone == true
     and WSZC.Fn == refs.Fn and WSZC.Const == refs.Const
     and type(replaced.Fn) == "table" and type(replaced.Const) == "table"
     and type(H.HandleDamage) == "function" and type(H.ApplyItemToBody) == "function"
+'''))
+
+    runtime_check("R32 embedded optional include trusts the downloadable Lua cache", lambda: lua.execute(r'''
+ResetEnvironment()
+WoundSystem = { _WSZCEmbedded = true }
+includeCalls = 0
+file.Exists = function() return false end
+include = function(path)
+    includeCalls = includeCalls + 1
+    INCLUDED = path
+    return { loaded = true }
+end
+local expected = "wszc_vendor/cu/woundsystem/client/minigames/sh_handphysics.lua"
+local resolved = WSZC.ResolveCUPath("woundsystem/client/minigames/sh_handphysics.lua")
+local result, ok = WSZC.OptionalInclude("woundsystem/client/minigames/sh_handphysics.lua")
+local status = WSZC.OptionalIncludeStatus[expected]
+return resolved == expected and INCLUDED == expected and includeCalls == 1
+    and ok == true and result.loaded == true
+    and status and status.ok == true and status.exists == false
+    and status.resultType == "table"
+'''))
+
+    runtime_check("R33 a rejected server minigame start exposes its exact reason", lambda: lua.execute(r'''
+ResetEnvironment()
+WSZC.Ready = nil
+WSZC.LastMinigameStartResult = nil
+local started = WSZC.StartExternalMinigameImpl(nil, {})
+local text = table.concat(WSZC.CompatibilityStatusLines(), "\n")
+return started == false and WSZC.LastMinigameStartResult == "connector not ready"
+    and string.find(text, "last_minigame_start=connector not ready", 1, true) ~= nil
+'''))
+
+    runtime_check("R34 client-only status and minigames do not require health GUI", lambda: lua.execute(r'''
+ResetEnvironment()
+SERVER, CLIENT = false, true
+WSZC._SharedLoaded = nil
+COMMANDS = {}
+assert(load(SHARED_SOURCE))()
+WoundSystem = {
+    _WSZCEmbedded = true,
+    MinigameClip = {},
+    Items = { Get = function() return {} end },
+}
+WoundSystemHealthHUDOpen = nil
+WSZC._MinigameClientLoaded = nil
+includeCalls = 0
+include = function() includeCalls = includeCalls + 1; return {} end
+file.Exists = function() return false end
+assert(load(CLIENT_MINIGAMES_SOURCE))()
+local activate = hook._t.InitPostEntity.WSZC_MinigameClientInit
+activate()
+local logs = {}
+print = function(...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[#parts + 1] = tostring(select(i, ...)) end
+    logs[#logs + 1] = table.concat(parts, " ")
+end
+COMMANDS.wszc_compat_client_status()
+local text = table.concat(logs, "\n")
+return type(COMMANDS.wszc_compat_client_status) == "function"
+    and WSZC.MinigameClientReady == true and WSZC.MinigameClientAttempts == 1
+    and includeCalls == 2
+    and string.find(text, "realm=client", 1, true) ~= nil
+    and string.find(text, "client minigame runtime:", 1, true) ~= nil
+    and string.find(text, "loaded=yes ready=yes attempts=1", 1, true) ~= nil
+    and string.find(text, "health_gui_optional=no", 1, true) ~= nil
+    and string.find(text, "hud_global_optional=no", 1, true) ~= nil
 '''))
 
 failed = [name for name, ok in results if not ok]

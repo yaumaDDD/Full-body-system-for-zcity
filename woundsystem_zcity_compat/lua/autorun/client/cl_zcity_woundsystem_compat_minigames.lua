@@ -555,13 +555,56 @@ net.Receive("WSZC_BandageState", function()
     end
 end)
 
+local function ClientYesNo(value) return value and "yes" or "no" end
+
+function WSZC.MinigameClientStatusLines()
+    local bandage, syringe = WSZCBandageMinigame, WSZCSyringeMinigame
+    local hpPath = WSZC.ResolveCUPath
+        and WSZC.ResolveCUPath("woundsystem/client/minigames/sh_handphysics.lua")
+        or "woundsystem/client/minigames/sh_handphysics.lua"
+    local clipPath = WSZC.ResolveCUPath
+        and WSZC.ResolveCUPath("woundsystem/client/minigames/cl_clip.lua")
+        or "woundsystem/client/minigames/cl_clip.lua"
+    local hpStatus = WSZC.OptionalIncludeStatus and WSZC.OptionalIncludeStatus[hpPath] or nil
+    local hpExists = file and file.Exists and file.Exists(hpPath, "LUA")
+    local clipExists = file and file.Exists and file.Exists(clipPath, "LUA")
+    return {
+        "[ZCity/CU compat] client minigame runtime:",
+        "  loaded=" .. ClientYesNo(WSZC._MinigameClientLoaded)
+            .. " ready=" .. ClientYesNo(WSZC.MinigameClientReady)
+            .. " attempts=" .. tostring(WSZC.MinigameClientAttempts or 0)
+            .. " hud_open=" .. ClientYesNo(WSZC.MinigameHUDOpen),
+        "  requirements: clip=" .. ClientYesNo(WoundSystem and WoundSystem.MinigameClip)
+            .. " items=" .. ClientYesNo(WoundSystem and WoundSystem.Items
+                and type(WoundSystem.Items.Get) == "function")
+            .. " health_gui_optional=" .. ClientYesNo(WoundSystem and WoundSystem.HealthGUI)
+            .. " hud_global_optional=" .. ClientYesNo(WoundSystemHealthHUDOpen ~= nil),
+        "  files: handphysics_exists=" .. tostring(hpExists)
+            .. " clip_exists=" .. tostring(clipExists)
+            .. " handphysics_include=" .. (hpStatus and ClientYesNo(hpStatus.ok) or "not_tried")
+            .. " handphysics_result=" .. (hpStatus and tostring(hpStatus.resultType) or "none")
+            .. (hpStatus and hpStatus.reason and (" error=" .. tostring(hpStatus.reason)) or ""),
+        "  games: bandage_loaded=" .. ClientYesNo(bandage and bandage._Loaded)
+            .. " bandage_active=" .. ClientYesNo(bandage and bandage.active)
+            .. " syringe_loaded=" .. ClientYesNo(syringe and syringe._Loaded)
+            .. " syringe_active=" .. ClientYesNo(syringe and syringe.active),
+        "  pending: bandage=" .. ClientYesNo(WSZC.PendingBandageOpen ~= nil)
+            .. " syringe=" .. ClientYesNo(WSZC.PendingSyringeOpen ~= nil),
+    }
+end
+
+function WSZC.PrintMinigameClientStatus()
+    for _, line in ipairs(WSZC.MinigameClientStatusLines()) do print(line) end
+end
+
 local function ClientReady()
+    -- Bandage/syringe need the clip renderer and item definitions.  The full
+    -- inspection GUI is optional: a missing/broken health panel must not leave
+    -- these independent namespaced minigames retrying forever without UI.
     return WoundSystem
         and WoundSystem.MinigameClip
         and WoundSystem.Items
-        and WoundSystem.Items.Get
-        and WoundSystem.HealthGUI
-        and WoundSystemHealthHUDOpen ~= nil
+        and type(WoundSystem.Items.Get) == "function"
 end
 
 local function Activate()
