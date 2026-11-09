@@ -847,7 +847,7 @@ Now = 2180
 WSZC.TickTourniquets(ply, ply.organism, 0.1)
 local cycle = ply._WSZCTourniquetCycles.thigh_R
 local matured = noOverwrite and beforeBoundary and cycle.mature == true
-    and cycle.arterial == nil and cycle.ordinary == nil and ply.messages == 1
+    and cycle.arterial == nil and cycle.ordinary == nil and ply.messages == 0
 local removed = WSZC.RemoveTourniquet(ply, "thigh_R")
 local remainsClosed = removed and #ply.organism.arterialwounds == 0
     and #ply.organism.wounds == 1 and ply.organism.wounds[1][1] == 7

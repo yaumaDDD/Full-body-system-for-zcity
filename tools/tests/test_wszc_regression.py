@@ -2368,9 +2368,10 @@ render = { SetScissorRect = function() end }
 RealFrameTime = function() return 0.1 end
 Lerp = function(t, a, b) return a + t * (b - a) end
 SetGuiMaterial = function() end
-DrawRectInt = function() end
-ActionLabels = 0
+ActionLabels, ActionPanels = 0, 0
 draw.SimpleText = function() ActionLabels = ActionLabels + 1 end
+surface.DrawTexturedRect = function() ActionPanels = ActionPanels + 1 end
+DrawRectInt = function(...) surface.DrawTexturedRect(...) end
 ActionRequests = {}
 RequestShrapnelMinigameStart = function(id) ActionRequests[#ActionRequests + 1] = "shrapnel" end
 RequestDislocationMinigameStart = function(id) ActionRequests[#ActionRequests + 1] = "dislocation" end
@@ -2379,6 +2380,11 @@ WSZC.InstallCUHudDrawWrappers()
 ''')
     lua.execute(native_gui[start:end])
     action_tooltips = lua.execute(r'''
+assert(WSZC.InstallActionPointVisualFilter())
+local installed = WoundSystemDrawLimbActionPoint
+WSZC.InstallActionPointVisualFilter()
+local stableAction = WoundSystemDrawLimbActionPoint == installed
+local oldRect, oldText = surface.DrawTexturedRect, draw.SimpleText
 local function click(state)
     WoundSystemActionButtonPos = { x = nil, y = nil }
     WoundSystemDrawLimbActionPoint("forearm_R", state, { x = 560, y = 460 },
@@ -2391,7 +2397,11 @@ click({ customStatuses = { SPLINTED = true } })
 local blocked = #QueuedActions == 0
 local usable = #ActionRequests == 4 and ActionRequests[1] == "shrapnel"
     and ActionRequests[2] == "dislocation" and ActionRequests[3] == "TOURNIQUET"
-    and ActionRequests[4] == "SPLINTED" and ActionLabels == 4
+    and ActionRequests[4] == "SPLINTED" and ActionLabels == 0 and ActionPanels == 0
+    and surface.DrawTexturedRect == oldRect and draw.SimpleText == oldText and stableAction
+surface.DrawTexturedRect(1, 2, 3, 4)
+draw.SimpleText("unrelated")
+local outside = ActionLabels == 1 and ActionPanels == 1
 local kept = WoundSystemQueueDirectTooltip("moodle_pain", "Pain", "Other tooltip", 10) == true
     and #QueuedActions == 1 and QueuedActions[1] == "moodle_pain"
     and WoundSystem.Client.QueueDirectTooltip("action_SHRAPNEL", "Title", "Description", 35) == false
@@ -2405,10 +2415,15 @@ WSZC.InstallCUHudDrawWrappers()
 local reload = WoundSystemQueueDirectTooltip("action_SHRAPNEL", "Title", "Description", 35) == false
     and WoundSystem.Client.QueueDirectTooltip == WoundSystemQueueDirectTooltip
     and WoundSystemQueueDirectTooltip("other", "Other", "", 10) == true
-return blocked, usable, kept and stable and reload
+-- A late native reload and an error must not leak the temporary draw hooks.
+WoundSystemDrawLimbActionPoint = function() error("simulated action draw failure") end
+WSZC.InstallActionPointVisualFilter()
+local ok = pcall(WoundSystemDrawLimbActionPoint)
+local errorRestored = not ok and surface.DrawTexturedRect == oldRect and draw.SimpleText == oldText
+return blocked, usable and outside and errorRestored, kept and stable and reload
 ''')
     check('R48 action hover descriptions are suppressed for all four native actions', action_tooltips[0])
-    check('R49 native action labels, hover and clicks remain usable', action_tooltips[1])
+    check('R49 action banner is hidden while clicks work; other drawing and errors are unaffected', action_tooltips[1])
     check('R50 unrelated tooltips survive; late load and reload keep filtering', action_tooltips[2])
 
     # Use C:U's actual status registry, colour and scratch-list code; the

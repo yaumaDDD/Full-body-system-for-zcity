@@ -709,6 +709,9 @@ return deathCleared, propertyWorks, cleanupFinally
 
     complications = lua.execute(r'''
 local ply = MakePlayer()
+local notices = {}
+ply.Notify = function(_, text) notices[#notices + 1] = text end
+ply.PrintMessage = function(_, kind, text) notices[#notices + 1] = text end
 WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
 local limb = ply._limbs.hand_R
 limb.isBandaged = false
@@ -859,7 +862,7 @@ local preDressedCovered = WSZC.IsShrapnelBandaged(preDressed, "hand_R")
     and preDressed._limbs.hand_R.infection >= 25
     and preDressed._limbs.hand_R.disinfectTime == 0
 return bandageAllowed, noRegrow, infected, unwrapGate, secondClickNative,
-    extractionPersists, rebandageCures, preDressedCovered, partialCovered, remoteGuard
+    extractionPersists, rebandageCures, preDressedCovered, partialCovered, remoteGuard, #notices == 0
 ''')
     check("R14 a complete bandage stops external bleeding with shrapnel still lodged", complications[0])
     check("R53 covered shrapnel never regrows or recreates its external wound", complications[1])
@@ -871,6 +874,7 @@ return bandageAllowed, noRegrow, infected, unwrapGate, secondClickNative,
     check("R22 a pellet into an already dressed limb is covered without external bleed", complications[7])
     check("R59 partial extraction can be re-bandaged without curing remaining infection", complications[8])
     check("R96 lowercase native shrapnel guard is idempotent and opens remote unwrap for medic", complications[9])
+    check("shrapnel bandaging and extraction do not emit instructional messages", complications[10])
 
     timed_bandage = lua.execute(r'''
 -- Real GAUZE: a 100-durability roll, 12 complete turns, one partial effect per
@@ -1034,6 +1038,9 @@ return completed, grace and resumed, oneTurn, aftercareStable, newHitOpens
 local ply = MakePlayer()
 ply._alive = true
 ply._kills = 0
+local notices = {}
+ply.Notify = function(_, text) notices[#notices + 1] = text end
+ply.PrintMessage = function(_, kind, text) notices[#notices + 1] = text end
 ply.Alive = function(self) return self._alive end
 ply.Kill = function(self) self._alive = false; self._kills = self._kills + 1 end
 WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
@@ -1059,11 +1066,12 @@ local fatal = entry.infectionAge == 600 and entry.terminal == true
     and ply._limbs.head.infection == 99 and ply.organism.brain == 1
     and ply.organism.alive == false and ply.organism.needfake == true
     and ply._kills == 1 and ply:Alive() == false
-return initialLimb, torsoStage, brainStage, beforeFatal and fatal
+return initialLimb, torsoStage, brainStage, beforeFatal and fatal, #notices == 0
 ''')
     check("R15 infection starts in the limb and reaches torso at 240 seconds", infection_timeline[0] and infection_timeline[1])
     check("R56 torso infection reaches the brain at 420 seconds", infection_timeline[2])
     check("R57 untreated covered shrapnel is fatal at 600 seconds, not before", infection_timeline[3])
+    check("infection progresses without instructional player notifications", infection_timeline[4])
 
     infection_all_parts = lua.execute(r'''
 local ids = { "head", "neck", "thorax", "abdomen", "pelvis",
