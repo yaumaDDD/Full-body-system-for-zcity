@@ -389,14 +389,30 @@ local function StartExternal(operator, target, kind, payload)
     return started == true
 end
 
+local function TargetDisplayName(target)
+    if not IsValid(target) then return "player" end
+    if type(target.GetPlayerName) == "function" then
+        local ok, rpName = pcall(target.GetPlayerName, target)
+        if ok and type(rpName) == "string" and rpName ~= "" then return rpName end
+    end
+    if type(target.Nick) == "function" then
+        local ok, nick = pcall(target.Nick, target)
+        if ok and type(nick) == "string" and nick ~= "" then return nick end
+    end
+    return "player"
+end
+
 local function SendState(operator, target, message)
     if not (IsValid(operator) and IsValid(target) and HealthReady()) then return end
+    if WSZC.SyncPatientShadowNow then
+        pcall(WSZC.SyncPatientShadowNow, target, true)
+    end
     local h = H()
     net.Start(message or "WSZC_RemoteMedicalState")
         net.WriteEntity(target)
         net.WriteTable(h.GetLimbs(target) or {})
         net.WriteTable(h.GetBody(target) or {})
-        net.WriteString(target.Nick and target:Nick() or "player")
+        net.WriteString(TargetDisplayName(target))
         net.WriteFloat(target.GetNWFloat and target:GetNWFloat("BloodAmount", 100) or 100)
         net.WriteFloat(target.GetNWFloat and target:GetNWFloat("WoundSystem_Happiness", 0) or 0)
     net.Send(operator)

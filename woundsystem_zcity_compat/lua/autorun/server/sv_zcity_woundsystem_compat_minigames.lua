@@ -395,10 +395,30 @@ local function CUSessionActive(ply)
     return false
 end
 
+local function IsRemoteOwnedNativeSession(ply, kind)
+    local remote = WSZC.RemoteNativeSessions
+    local byKind = type(remote) == "table" and remote[ply] or nil
+    local meta = type(byKind) == "table" and byKind[kind] or nil
+    return type(meta) == "table" and IsValid(meta.operator) and meta.operator ~= ply
+end
+
+local function HasAnyRemoteOwnedNativeSession(ply)
+    for _, kind in ipairs({ "Shrapnel", "Dislocation", "Aed" }) do
+        if IsRemoteOwnedNativeSession(ply, kind) then return true end
+    end
+    return false
+end
+
+local function HasActiveRemoteOperatorSession(ply)
+    local remote = WSZC.RemoteMedicalSessions
+    return type(remote) == "table" and remote[ply] ~= nil
+end
+
 local function StopCUSessions(ply, reason)
     local sessions = WSZC.CUSessions
     if type(sessions) ~= "table" then return end
     reason = reason or "disabled"
+    local keepRemoteOwned = IsValid(ply) and ply:Alive()
 
     if sessions.Bandage and sessions.Bandage[ply] and WSZC.CUCloseBandageSession then
         pcall(WSZC.CUCloseBandageSession, ply, reason)
@@ -406,21 +426,24 @@ local function StopCUSessions(ply, reason)
     if sessions.Syringe and sessions.Syringe[ply] and WSZC.CUCloseSyringeSession then
         pcall(WSZC.CUCloseSyringeSession, ply, reason)
     end
-    if sessions.Shrapnel and sessions.Shrapnel[ply] then
+    if sessions.Shrapnel and sessions.Shrapnel[ply]
+        and not (keepRemoteOwned and IsRemoteOwnedNativeSession(ply, "Shrapnel")) then
         if WSZC.CUCloseShrapnelSession then
             pcall(WSZC.CUCloseShrapnelSession, ply, reason)
         else
             sessions.Shrapnel[ply] = nil
         end
     end
-    if sessions.Dislocation and sessions.Dislocation[ply] then
+    if sessions.Dislocation and sessions.Dislocation[ply]
+        and not (keepRemoteOwned and IsRemoteOwnedNativeSession(ply, "Dislocation")) then
         if WSZC.CUCloseDislocationSession then
             pcall(WSZC.CUCloseDislocationSession, ply, reason)
         else
             sessions.Dislocation[ply] = nil
         end
     end
-    if sessions.Aed and sessions.Aed[ply] then
+    if sessions.Aed and sessions.Aed[ply]
+        and not (keepRemoteOwned and IsRemoteOwnedNativeSession(ply, "Aed")) then
         if WSZC.CUCloseAedSession then
             pcall(WSZC.CUCloseAedSession, ply, reason)
         else
@@ -433,7 +456,10 @@ local function HasNativeSession(ply)
     local sessions = WSZC.CUSessions
     if type(sessions) ~= "table" then return false end
     for _, kind in ipairs({ "Bandage", "Syringe", "Shrapnel", "Dislocation", "Aed" }) do
-        if type(sessions[kind]) == "table" and sessions[kind][ply] then return true end
+        if type(sessions[kind]) == "table" and sessions[kind][ply]
+            and not IsRemoteOwnedNativeSession(ply, kind) then
+            return true
+        end
     end
     return false
 end
@@ -493,14 +519,20 @@ end
 local function StopAllMinigames(ply, reason, forceClient)
     if not IsValid(ply) then return false end
     reason = tostring(reason or "disabled")
-    local had = WSZC.MinigameSessions[ply] ~= nil or HasNativeSession(ply)
+    local hadRemoteOp = HasActiveRemoteOperatorSession(ply)
+    local had = WSZC.MinigameSessions[ply] ~= nil or HasNativeSession(ply) or hadRemoteOp
+    if hadRemoteOp and type(WSZC.CloseRemoteMedical) == "function" then
+        pcall(WSZC.CloseRemoteMedical, ply, reason)
+    end
     StopMinigame(ply, reason)
     StopCUSessions(ply, reason)
-    local health = WSZC.H or (WoundSystem and WoundSystem.Health)
-    if health and type(health.CancelActiveMedicalSessions) == "function" then
-        pcall(health.CancelActiveMedicalSessions, ply, reason)
-    elseif type(WoundSystemCloseAllMedicalSessions) == "function" then
-        pcall(WoundSystemCloseAllMedicalSessions, ply, reason)
+    if not (ply:Alive() and HasAnyRemoteOwnedNativeSession(ply)) then
+        local health = WSZC.H or (WoundSystem and WoundSystem.Health)
+        if health and type(health.CancelActiveMedicalSessions) == "function" then
+            pcall(health.CancelActiveMedicalSessions, ply, reason)
+        elseif type(WoundSystemCloseAllMedicalSessions) == "function" then
+            pcall(WoundSystemCloseAllMedicalSessions, ply, reason)
+        end
     end
     -- This is also a safety net for a native session whose private close
     -- upvalue could not be captured: the client must never keep its overlay,
@@ -1416,7 +1448,7 @@ hook.Add("Think", "WSZC_MinigameWatch", function()
     -- sweep players too.  StopAllMinigames only networks when one exists.
     if player and player.GetAll then
         for _, ply in ipairs(player.GetAll()) do
-            if PlayerIncapacitated(ply) and HasNativeSession(ply) then
+            if PlayerIncapacitated(ply) and (HasNativeSession(ply) or HasActiveRemoteOperatorSession(ply)) then
                 StopAllMinigames(ply, "unconscious", true)
             end
         end

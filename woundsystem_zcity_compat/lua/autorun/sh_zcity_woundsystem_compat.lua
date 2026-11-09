@@ -197,13 +197,33 @@ function WSZC.RefreshCapabilities()
     local nativeExternal = WSZC.HasNativeExternalMinigameAPI(H)
 
     local minigameFiles = false
-    if file and file.Exists then
-        minigameFiles = file.Exists(WSZC.ResolveCUPath("woundsystem/client/minigames/sh_handphysics.lua"), "LUA")
-            and file.Exists(WSZC.ResolveCUPath("woundsystem/client/minigames/cl_clip.lua"), "LUA")
+    if SERVER and not CLIENT and WoundSystem and WoundSystem._WSZCEmbedded == true then
+        minigameFiles = true
+    elseif file and file.Exists then
+        local hpPath = WSZC.ResolveCUPath("woundsystem/client/minigames/sh_handphysics.lua")
+        local clipPath = WSZC.ResolveCUPath("woundsystem/client/minigames/cl_clip.lua")
+        minigameFiles = (file.Exists(hpPath, "LUA") or file.Exists("lua/" .. hpPath, "GAME"))
+            and (file.Exists(clipPath, "LUA") or file.Exists("lua/" .. clipPath, "GAME"))
     else
         -- GMod always exposes file.Exists.  Headless/limited hosts can still
         -- use the legacy adapter; OptionalInclude remains the final guard.
         minigameFiles = legacyAPI
+    end
+
+    local cuUI = type(WoundSystem and WoundSystem.OpenHealthHUD) == "function"
+        or type(WoundSystem and WoundSystem.ToggleHealthHUD) == "function"
+    if not cuUI and SERVER and not CLIENT and type(H) == "table" then
+        -- WoundSystem.OpenHealthHUD lives in client-only cl_health_gui.lua and
+        -- is never included in the SERVER Lua state.  Probe the downloadable
+        -- client UI script (or embedded bundle) so server-side WSZC.Supports("remote")
+        -- and status reporting remain true on real Garry's Mod servers.
+        if WoundSystem and WoundSystem._WSZCEmbedded == true then
+            cuUI = true
+        elseif file and file.Exists then
+            local guiPath = WSZC.ResolveCUPath("woundsystem/client/cl_health_gui.lua")
+            cuUI = file.Exists(guiPath, "LUA") == true
+                or file.Exists("lua/" .. guiPath, "GAME") == true
+        end
     end
 
     local caps = {
@@ -211,8 +231,7 @@ function WSZC.RefreshCapabilities()
             and type(WB.IsBridged) == "function" and type(WB.ApplyDamage) == "function",
         cu_health = type(H) == "table",
         cu_items = type(Items) == "table" and type(Items.Get) == "function",
-        cu_ui = type(WoundSystem and WoundSystem.OpenHealthHUD) == "function"
-            or type(WoundSystem and WoundSystem.ToggleHealthHUD) == "function",
+        cu_ui = cuUI == true,
         cu_native_api = nativeAPI == true,
         cu_legacy_api = legacyAPI == true,
         cu_embedded_bridge = embeddedLegacy == true,
@@ -236,7 +255,8 @@ function WSZC.RefreshCapabilities()
     caps.medicine = caps.core and (caps.cu_native_api or caps.zcity_medicine)
     caps.external_minigames = caps.core and (caps.cu_native_external
         or (caps.zcity_minigames and caps.cu_minigame_files))
-    caps.remote = caps.inspection and (caps.cu_native_state or caps.cu_legacy_api)
+    caps.remote = (CLIENT and caps.inspection or caps.core)
+        and (caps.cu_native_state or caps.cu_legacy_api)
     caps.organism_extensions = caps.core and caps.zcity_organism
 
     local usingServerCaps = ApplyServerCapabilities(caps)

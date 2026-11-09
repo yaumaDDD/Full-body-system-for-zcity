@@ -848,6 +848,40 @@ return type(COMMANDS.wszc_compat_client_status) == "function"
     and string.find(text, "hud_global_optional=no", 1, true) ~= nil
 '''))
 
+    runtime_check("R35 real server realm without client OpenHealthHUD keeps remote treatment supported", lambda: lua.execute(r'''
+SERVER, CLIENT = true, false
+WSZC._SharedLoaded = nil
+assert(load(SHARED_SOURCE))()
+ResetEnvironment()
+InstallLegacyContract()
+-- Real Garry's Mod servers never include client/cl_health_gui.lua, so
+-- WoundSystem.OpenHealthHUD and WoundSystem.ToggleHealthHUD are nil on SERVER.
+WoundSystem.OpenHealthHUD = nil
+WoundSystem.ToggleHealthHUD = nil
+local caps = WSZC.RefreshCapabilities()
+local serverSupportsRemote = caps.core == true
+    and caps.cu_ui == true
+    and caps.inspection == true
+    and caps.remote == true
+    and WSZC.Supports("remote") == true
+
+-- Even when file.Exists returns false on a packed mount, embedded C:U on SERVER
+-- still reports remote support, while a CLIENT without OpenHealthHUD does not.
+file.Exists = function() return false end
+WoundSystem._WSZCEmbedded = true
+local embeddedCaps = WSZC.RefreshCapabilities()
+local embeddedRemoteOK = embeddedCaps.remote == true and WSZC.Supports("remote") == true
+
+SERVER, CLIENT = false, true
+WoundSystem._WSZCEmbedded = nil
+local clientCaps = WSZC.RefreshCapabilities()
+local clientWithoutUIBlocked = clientCaps.cu_ui == false and clientCaps.remote == false
+    and WSZC.Supports("remote") == false
+SERVER, CLIENT = true, false
+file.Exists = function() return true end
+return serverSupportsRemote and embeddedRemoteOK and clientWithoutUIBlocked
+'''))
+
 failed = [name for name, ok in results if not ok]
 print(f"TEST_OK {len(results) - len(failed)} / {len(results)}")
 if failed:

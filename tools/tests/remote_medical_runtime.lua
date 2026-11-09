@@ -551,16 +551,37 @@ if MODE == "server" then
         Assert(WSZC.MinigameSessions[op] == nil)
     end)
 
-    Test("M18 NotifyRemotePatientUpdated pushes immediate state to active medic session", function()
+    Test("M18 NotifyRemotePatientUpdated pushes immediate state to active medic session and unconscious patient keeps remote shrapnel", function()
         Reset()
+        local syncCalls = 0
+        WSZC.SyncPatientShadowNow = function(target, skipNotify)
+            if target == patient and skipNotify == true then syncCalls = syncCalls + 1 end
+        end
         incoming, incomingIndex = { patient }, 0
         net.Receivers.WSZC_RemoteMedicalOpen(0, op)
+        Assert(syncCalls >= 1, "SendState must flush patient shadow before serializing")
         sent = {}
         now = now + 1
         WSZC.NotifyRemotePatientUpdated(patient, false)
         Equal(#sent, 1)
         Equal(sent[1].message, "WSZC_RemoteMedicalState")
         Equal(sent[1].recipient, op)
+
+        -- Start remote shrapnel on unconscious patient: patient's unconscious sweep must NOT close it!
+        patient.organism = { otrub = true, consciousness = 0 }
+        limbs[patient].thorax.shrapnel = 2
+        Action(patient, "WoundSystem_ShrapnelStart", { "thorax", 0 })
+        Assert(WSZC.CUSessions.Shrapnel[patient] ~= nil, "remote shrapnel session must start on unconscious patient")
+        WSZC.StopAllMinigames(patient, "unconscious", true)
+        Assert(WSZC.CUSessions.Shrapnel[patient] ~= nil, "unconscious patient sweep must NOT kill medic's remote shrapnel session")
+        -- Whereas if the MEDIC falls unconscious, their remote session IS closed cleanly.
+        op.organism = { otrub = true, consciousness = 0 }
+        WSZC.StopAllMinigames(op, "unconscious", true)
+        Assert(WSZC.CUSessions.Shrapnel[patient] == nil, "incapacitated medic must close their remote shrapnel session")
+        Assert(WSZC.RemoteMedicalSessions[op] == nil, "incapacitated medic must close their remote session")
+        op.organism = nil
+        patient.organism = nil
+        WSZC.SyncPatientShadowNow = nil
     end)
 else
     CLIENT, SERVER = true, false
@@ -860,17 +881,33 @@ else
         Assert(WSZC.RemoteMedical.FindPatient() == nil)
     end)
 
-    Test("C16 unconscious patient snapshot keeps medic conscious and immediate open skips timer delay", function()
+    Test("C16 Q radial option removes popup before open and opens unconscious patient WoundView", function()
         Reset()
         -- Guard OpenHealthHUD exactly like real C:U cl_health_gui.lua:2328
         local origOpen = WoundSystem.OpenHealthHUD
+        local popupRemovedBeforeOpen = false
         WoundSystem.OpenHealthHUD = function()
             if WoundSystemClientState.Cardio.unconscious then return end
+            if MENUPANELHUYHUY == nil then popupRemovedBeforeOpen = true end
             origOpen()
         end
-        outgoing = {}
-        Assert(WSZC.OpenRemotePatient(patient, true))
-        Equal(#outgoing, 1, "immediate open must transmit WSZC_RemoteMedicalOpen without waiting for timer")
+
+        patient.GetPlayerName = function() return "Wanda" end
+        local removedPopup = false
+        MENUPANELHUYHUY = {
+            valid = true,
+            SetMouseInputEnabled = function() end,
+            Close = function() end,
+            Remove = function(self) self.valid = false; removedPopup = true end,
+        }
+        hg.radialOptions = {}
+        hooks.radialOptionsZCity_WoundBridge_RemoteInspect_WSZC()
+        Equal(#hg.radialOptions, 1)
+        Assert(string.find(hg.radialOptions[1][2], "Wanda", 1, true) ~= nil, "radial option should show RP character name")
+        local retCode = hg.radialOptions[1][1](2) -- RMB in Q menu
+        Equal(retCode, 0, "radial callback must return 0 so both LMB and RMB close Q menu")
+        RunSimple()
+        Equal(#outgoing, 1)
         Equal(outgoing[1].name, "WSZC_RemoteMedicalOpen")
 
         local unconsciousCardio = {
@@ -878,6 +915,7 @@ else
             skills = { STR = 3, RES = 4, INT = 5 },
         }
         SendState(patient, patientLimbs, unconsciousCardio)
+        Assert(removedPopup and popupRemovedBeforeOpen, "fading radial popup must be removed before OpenHealthHUD grabs cursor")
         Assert(WSZC.RemoteMedical.active, "remote session must open even when patient is unconscious")
         Assert(WoundSystemHealthHUDOpen == true, "WoundView must open for an unconscious patient")
         Equal(WoundSystemClientState.Cardio.unconscious, false, "medic Cardio.unconscious must stay false")
@@ -885,6 +923,7 @@ else
 
         WSZC.RemoteMedical.Finish("done")
         Equal(WSZC.RemoteMedical.patientUnconscious, false)
+        patient.GetPlayerName = nil
         WoundSystem.OpenHealthHUD = origOpen
     end)
 end

@@ -2260,7 +2260,7 @@ return nativeBlocked and restoredAfterOpen and stayedOpen and closedCleanly
     check('R45 brain-injury unconscious inspection opens, survives Think and closes cleanly', unconscious_inspection)
 
     key_and_limb_ui = radial_lua.execute(r'''
-local patient = { alive = true, Nick = function() return "Bob" end }
+local patient = { alive = true, Nick = function() return "Bob" end, GetPlayerName = function() return "Wanda" end }
 local medic = {
     alive = true,
     Alive = function(self) return self.alive end,
@@ -2280,24 +2280,39 @@ input = {
     IsKeyDown = function(code) return code == 30 and tPressed end,
     IsMouseDown = function() return false end,
 }
-local remoteOpened, remoteImmediate = nil, nil
+local remoteOpened = nil
 WSZC.RemoteMedical = {
     active = true,
     target = patient,
     FindPatient = function() return patient end,
 }
-WSZC.OpenRemotePatient = function(target, immediate)
-    remoteOpened, remoteImmediate = target, immediate
+WSZC.OpenRemotePatient = function(target)
+    remoteOpened = target
     return true
 end
 WoundSystemHealthHUDOpen = false
-WSZC._LastInspectKeyDown = false
 WSZC.InstallUnconsciousInspectionBridge()
 tPressed = true
 hook.GetTable().Think.ToggleHUDInput()
-local keyOpenedRemote = (remoteOpened == patient and remoteImmediate == true)
+-- T must NOT hijack into remote inspection; remote WoundView opens from Q menu!
+local tDidNotHijackRemote = (remoteOpened == nil)
 
--- Contextual limb action pills dispatch WSZC_WoundViewTreat on click.
+-- Outside WoundView, PostDrawHUD must NOT draw any floating world prompt.
+local drawnOutside = 0
+surface = {
+    SetDrawColor = function() end,
+    DrawRect = function() drawnOutside = drawnOutside + 1 end,
+    DrawOutlinedRect = function() end,
+    PlaySound = function() end,
+}
+draw = { SimpleText = function() drawnOutside = drawnOutside + 1 end }
+ScrW = function() return 1920 end
+ScrH = function() return 1080 end
+hook.GetTable().PostDrawHUD.WSZC_WoundViewTreatHUD()
+local cleanWorldHUD = (drawnOutside == 0)
+
+-- Inside the remote patient's WoundView, contextual limb action pills dispatch WSZC_WoundViewTreat on click.
+WoundSystemHealthHUDOpen = true
 local packets = {}
 local current = nil
 net = {
@@ -2307,10 +2322,6 @@ net = {
     WriteUInt = function(v) current.vals[#current.vals + 1] = v end,
     SendToServer = function() end,
 }
-surface = { SetDrawColor = function() end, DrawRect = function() end, DrawOutlinedRect = function() end, PlaySound = function() end }
-draw = { SimpleText = function() end }
-ScrW = function() return 1920 end
-ScrH = function() return 1080 end
 WoundSystemActionButtonPos = { x = 600, y = 400 }
 _G.WoundSystemDrawLimbActionPoint = function() end
 WSZC.InstallLimbActionButtons()
@@ -2337,9 +2348,9 @@ local clickedFracture = #packets == 1
     and packets[1].vals[1] == patient
     and packets[1].vals[2] == "crus_R"
     and packets[1].vals[3] == "bandage_fracture"
-return keyOpenedRemote and hasAllThree and clickedFracture
+return tDidNotHijackRemote and cleanWorldHUD and hasAllThree and clickedFracture
 ''')
-    check('R46 T key opens remote patient immediately and WoundView limb pills trigger tourniquet/wound/fracture treatment', key_and_limb_ui)
+    check('R46 remote WoundView opens via Q-menu without world HUD clutter and limb pills treat remote patient', key_and_limb_ui)
 
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)

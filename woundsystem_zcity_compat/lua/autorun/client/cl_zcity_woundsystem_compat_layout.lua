@@ -660,10 +660,12 @@ function WSZC.WoundViewEmptyClick(mx, my, s)
     return true
 end
 
+local woundViewWasOpen = false
 local woundViewClickArmed = false
 hook.Add("Think", "WSZC_WoundViewEmptyClickClose", function()
     if not cvCloseEmptyClick:GetBool() then return end
     if WoundSystemHealthHUDOpen ~= true then
+        woundViewWasOpen = false
         woundViewClickArmed = false
         return
     end
@@ -678,6 +680,11 @@ hook.Add("Think", "WSZC_WoundViewEmptyClickClose", function()
     if hg and type(hg.IsExternalMenuOpen) == "function" and hg.IsExternalMenuOpen() then return end
 
     local pressed = input and input.IsMouseDown and input.IsMouseDown(MOUSE_LEFT) or false
+    if not woundViewWasOpen then
+        woundViewWasOpen = true
+        woundViewClickArmed = pressed
+        if pressed then return end
+    end
     if pressed and not woundViewClickArmed then
         woundViewClickArmed = true
         local mx, my = gui.MousePos()

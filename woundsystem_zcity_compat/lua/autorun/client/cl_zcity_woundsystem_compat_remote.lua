@@ -365,6 +365,31 @@ local function ApplySnapshot(limbs, cardio, name, blood, happiness)
     Remote.happiness = tonumber(happiness) or 0
 end
 
+local function DismissRadialMenu(forceRemove)
+    local panel = _G and _G.MENUPANELHUYHUY or MENUPANELHUYHUY
+    if not IsValid(panel) then return end
+    if panel.SetMouseInputEnabled then pcall(panel.SetMouseInputEnabled, panel, false) end
+    if forceRemove then
+        if panel.Remove then pcall(panel.Remove, panel) end
+        MENUPANELHUYHUY = nil
+    elseif panel.Close then
+        pcall(panel.Close, panel)
+    end
+end
+
+local function PatientLabel(target)
+    if not IsValid(target) then return "player" end
+    if type(target.GetPlayerName) == "function" then
+        local ok, rpName = pcall(target.GetPlayerName, target)
+        if ok and type(rpName) == "string" and rpName ~= "" then return rpName end
+    end
+    if type(target.Nick) == "function" then
+        local ok, nick = pcall(target.Nick, target)
+        if ok and type(nick) == "string" and nick ~= "" then return nick end
+    end
+    return "player"
+end
+
 local BeginRemote
 BeginRemote = function(target, limbs, cardio, name, blood, happiness)
     if not (Ready() and ValidPatient(LocalPlayer(), target) and EnsurePanelWrappers()) then
@@ -372,6 +397,7 @@ BeginRemote = function(target, limbs, cardio, name, blood, happiness)
         return
     end
     if Remote.active and Remote.target ~= target then FinishRemote("replaced") end
+    DismissRadialMenu(true)
     InstallSelfUpdateGuards()
     SaveSelfState()
     Remote.target, Remote.pending, Remote.active = target, nil, true
@@ -442,6 +468,7 @@ function WSZC.OpenRemotePatient(target, immediate)
     local ply = LocalPlayer()
     target = target or FindPatient()
     if not ValidPatient(ply, target) then return false end
+    DismissRadialMenu(false)
     if Remote.active and Remote.target == target then return true end
     if Remote.pending == target and not Remote.active then return true end
     if Remote.active or Remote.pending then FinishRemote("replaced") end
@@ -483,8 +510,11 @@ hook.Add("radialOptions", "ZCity_WoundBridge_RemoteInspect_WSZC", function()
     if not target then return end
     hg.radialOptions = hg.radialOptions or {}
     local option = {
-        function() WSZC.OpenRemotePatient(target) end,
-        BUTTON_LABEL .. "\n" .. target:Nick(),
+        function()
+            WSZC.OpenRemotePatient(target)
+            return 0
+        end,
+        BUTTON_LABEL .. "\n" .. PatientLabel(target),
     }
     option._WSZCRemoteInspect = true
     hg.radialOptions[#hg.radialOptions + 1] = option

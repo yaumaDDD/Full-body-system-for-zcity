@@ -68,13 +68,27 @@ local function OpenCUHealthPanel()
     end
 end
 
+local function DismissInspectRadialMenu(forceRemove)
+    local panel = _G and _G.MENUPANELHUYHUY or MENUPANELHUYHUY
+    if not IsValid(panel) then return end
+    if panel.SetMouseInputEnabled then pcall(panel.SetMouseInputEnabled, panel, false) end
+    if forceRemove then
+        if panel.Remove then pcall(panel.Remove, panel) end
+        MENUPANELHUYHUY = nil
+    elseif panel.Close then
+        pcall(panel.Close, panel)
+    end
+end
+
 function WSZC.OpenCUWoundMenu()
     local ply = LocalPlayer()
     if not IsValid(ply) or not ply:Alive() then return end
+    DismissInspectRadialMenu(false)
 
     timer.Simple(OPEN_DELAY, function()
         if not IsValid(ply) or not ply:Alive() then return end
         if not (WoundSystem and WoundSystem.Health) then return end
+        DismissInspectRadialMenu(true)
         OpenCUHealthPanel()
     end)
 end
@@ -119,15 +133,6 @@ local function CallWithInspectionAccess(ply, cardio, fn, ...)
     return true
 end
 
-local function IsWoundViewKeyDown()
-    if not input or type(input.IsKeyDown) ~= "function" then return false end
-    local cv = GetConVar and GetConVar("woundsys_woundview_key")
-    local keyName = cv and cv.GetString and string.upper(tostring(cv:GetString() or "")) or "T"
-    if keyName == "" then keyName = "T" end
-    local keyCode = _G["KEY_" .. keyName] or _G[keyName]
-    return input.IsKeyDown(keyCode or KEY_T or 30) == true
-end
-
 function WSZC.InstallUnconsciousInspectionBridge()
     if type(hook) ~= "table" or type(hook.GetTable) ~= "function" then return false end
     local hooks = hook.GetTable()
@@ -136,33 +141,9 @@ function WSZC.InstallUnconsciousInspectionBridge()
     if original == WSZC._InspectionThinkWrapper and WSZC._InspectionThinkCardio then return true end
     local cardio = FindNamedTable(original, "CardioState")
     if not cardio then return false end
-    local guiState = FindNamedTable(original, "GUIState")
 
     local function wrapped(...)
         local ply = LocalPlayer()
-        local keyDown = IsWoundViewKeyDown()
-        local wasDown = WSZC._LastInspectKeyDown == true
-        WSZC._LastInspectKeyDown = keyDown
-
-        -- Pressing T (woundsys_woundview_key) while aiming at a living or
-        -- unconscious patient within medical range opens THAT patient's
-        -- WoundView immediately instead of the medic's own healthy body.
-        if WoundSystemHealthHUDOpen ~= true and keyDown and not wasDown
-            and IsValid(ply) and ply:Alive()
-            and not (vgui and vgui.GetKeyboardFocus and vgui.GetKeyboardFocus() ~= nil)
-            and not (WoundSystem and WoundSystem.HealthGUI
-                and WoundSystem.HealthGUI.IsExternalMenuOpen
-                and WoundSystem.HealthGUI.IsExternalMenuOpen()) then
-            local remote = WSZC.RemoteMedical
-            local patient = remote and type(remote.FindPatient) == "function"
-                and remote.FindPatient() or nil
-            if IsValid(patient) and WSZC.OpenRemotePatient
-                and WSZC.OpenRemotePatient(patient, true) then
-                if type(guiState) == "table" then guiState.lastKeyStatus = true end
-                return true
-            end
-        end
-
         if WSZC._InspectionWhileUnconscious == true and IsValid(ply) and ply:Alive()
             and CompatInspectEnabled() then
             local ok = CallWithInspectionAccess(ply, cardio, original, ...)
@@ -245,14 +226,23 @@ local function RepointOrAddOption()
             else
                 kept = true
                 option._WSZCInspect = true
-                option[1] = function() WSZC.OpenCUWoundMenu() end
+                option[1] = function()
+                    WSZC.OpenCUWoundMenu()
+                    return 0
+                end
                 option[2] = BUTTON_LABEL
             end
         end
     end
     if kept then return end
 
-    local option = { function() WSZC.OpenCUWoundMenu() end, BUTTON_LABEL }
+    local option = {
+        function()
+            WSZC.OpenCUWoundMenu()
+            return 0
+        end,
+        BUTTON_LABEL,
+    }
     option._WSZCInspect = true
     options[#options + 1] = option
 end
@@ -663,50 +653,15 @@ hook.Add("PostDrawHUD", "WSZC_WoundViewTreatHUD", function()
     local scrH = ScrH and ScrH() or 1080
     local scale = scrH / 1080
 
-    -- 1) World crosshair prompt when aiming at another player outside WoundView
+    -- Only draw inside an open WoundView (no extra world crosshair prompts).
     if WoundSystemHealthHUDOpen ~= true then
         lastBarMouseDown = false
         WSZC._ActiveLimbTreatRects = nil
         WSZC._ActiveTreatRects = nil
-        if IsValid(MENUPANELHUYHUY) then return end
-        local remote = WSZC.RemoteMedical
-        local patient = remote and type(remote.FindPatient) == "function"
-            and remote.FindPatient() or nil
-        if not IsValid(patient) then return end
-
-        local pEnt = remote.PatientEntity and remote.PatientEntity(patient) or patient
-        local isRagdoll = IsValid(pEnt) and pEnt ~= patient
-        local nick = patient.Nick and patient:Nick() or "Игрок"
-        local statusTxt = isRagdoll and " • БЕЗ СОЗНАНИЯ" or ""
-        local line1 = "[T] ЛЕЧИТЬ: " .. tostring(nick) .. statusTxt
-        local cx, cy = math.floor(scrW * 0.5), math.floor(scrH * 0.56)
-
-        local prevFiltered = WSZC.CUHudFiltered
-        WSZC.CUHudFiltered = false
-        if surface and surface.SetDrawColor and surface.DrawRect then
-            local boxW, boxH = math.max(math.floor(290 * scale), 220), math.max(math.floor(32 * scale), 24)
-            surface.SetDrawColor(10, 20, 15, 200)
-            surface.DrawRect(cx - math.floor(boxW * 0.5), cy - math.floor(boxH * 0.5), boxW, boxH)
-            surface.SetDrawColor(72, 226, 140, 190)
-            if surface.DrawOutlinedRect then
-                surface.DrawOutlinedRect(cx - math.floor(boxW * 0.5), cy - math.floor(boxH * 0.5), boxW, boxH, 1)
-            end
-        end
-        if draw and draw.SimpleText then
-            draw.SimpleText(
-                line1,
-                ScaledFont("CrunchyTechFont", scale),
-                cx, cy,
-                isRagdoll and ColVal(255, 196, 92, 245) or ColVal(96, 240, 154, 245),
-                TEXT_ALIGN_CENTER or 1,
-                TEXT_ALIGN_CENTER or 1
-            )
-        end
-        WSZC.CUHudFiltered = prevFiltered
         return
     end
 
-    -- 2) Inside open WoundView (skip while a minigame overlay owns the screen)
+    -- Inside open WoundView (skip while a minigame overlay owns the screen)
     if AnyOverlayMinigameOpen() then
         lastBarMouseDown = input and input.IsMouseDown and input.IsMouseDown(MOUSE_LEFT or 107) == true or false
         return
@@ -718,7 +673,13 @@ hook.Add("PostDrawHUD", "WSZC_WoundViewTreatHUD", function()
     local target, isRemote = CurrentWoundViewPatient()
     local remote = WSZC.RemoteMedical
     if isRemote and IsValid(target) then
-        local pName = (remote and remote.patientName) or (target.Nick and target:Nick()) or "Игрок"
+        local rpName = nil
+        if type(target.GetPlayerName) == "function" then
+            local ok, candidate = pcall(target.GetPlayerName, target)
+            if ok and type(candidate) == "string" and candidate ~= "" then rpName = candidate end
+        end
+        local pName = rpName or (remote and remote.patientName ~= "" and remote.patientName)
+            or (target.Nick and target:Nick()) or "Игрок"
         local unc = remote and remote.patientUnconscious == true
         local header = "ПАЦИЕНТ: " .. tostring(pName)
             .. (unc and "  [БЕЗ СОЗНАНИЯ]" or "  [В СОЗНАНИИ]")

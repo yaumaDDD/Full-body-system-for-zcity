@@ -4672,7 +4672,7 @@ local function AimedZCityLimb(swep, ent, target, bone)
     return NormalizeLimb(LimbFromHitgroup(tr.HitGroup))
 end
 
-local function SyncPatientShadowNow(ply)
+local function SyncPatientShadowNow(ply, skipRemoteNotify)
     if not (IsValid(ply) and type(ply.organism) == "table") then return end
     ply.fullsend = true
     if hg and hg.send_organism then pcall(hg.send_organism, ply.organism, ply) end
@@ -4680,10 +4680,11 @@ local function SyncPatientShadowNow(ply)
         ply._WSZCShadowNext = 0
         pcall(PushShadow, ply, ply.organism)
     end
-    if WSZC.NotifyRemotePatientUpdated then
+    if not skipRemoteNotify and WSZC.NotifyRemotePatientUpdated then
         pcall(WSZC.NotifyRemotePatientUpdated, ply)
     end
 end
+WSZC.SyncPatientShadowNow = SyncPatientShadowNow
 
 function WSZC.ApplyZCityOpioidDose(medic, target, swep, injected, isFentanyl)
     injected = math.max(tonumber(injected) or 0, 0)
@@ -5446,6 +5447,7 @@ local function TransfuseBloodBagDose(swep, target)
     local owner = swep.GetOwner and swep:GetOwner() or target
     ZCityEmitSound(owner, "zcity/healing/bloodbag_loop_" .. math.random(8) .. ".wav")
     SyncPatientShadowNow(target)
+    ZCityAfterUse(swep, { delete = true }, "weapon_bloodbag")
     return true
 end
 
