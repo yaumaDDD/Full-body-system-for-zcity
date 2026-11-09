@@ -69,9 +69,11 @@ local cvInfectionDeathDelay = CreateConVar("zc_woundsystem_compat_shrapnel_infec
 local cvShadow = CreateConVar("zc_woundsystem_compat_shadow", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Mirror ZCity injuries into the C:U injury HUD (BodyState / PlayerLimbs)", 0, 1)
-local cvLimbBleed = CreateConVar("zc_woundsystem_compat_limb_bleed", "1",
+-- Retain the archived name for compatibility, but never use its old global
+-- bleed mode: an aggregate bleed has no anatomical location.
+CreateConVar("zc_woundsystem_compat_limb_bleed", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
-    "Use ZCity's per-bone wounds for limb bleeding instead of painting all 16 C:U limbs", 0, 1)
+    "Legacy setting: wound icons always use the actual ZCity wound locations", 0, 1)
 local cvOnBlocked = CreateConVar("zc_woundsystem_compat_shrapnel_on_blocked", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Count a hit whose EntityTakeDamage hook returned true (ZCity redirects it to the fake ragdoll)", 0, 1)
@@ -3758,8 +3760,8 @@ local function PushShadow(ply, org)
     ply._WSZCExpectedBleed = ply._WSZCExpectedBleed or {}
     ply._WSZCExpectedPain = ply._WSZCExpectedPain or {}
 
-    local pain, bleed = math.max(tonumber(org.pain) or 0, 0), math.max(tonumber(org.bleed) or 0, 0)
-    local woundMap = (cvLimbBleed and cvLimbBleed:GetBool()) and LimbBleedMap(ply, org) or nil
+    local pain = math.max(tonumber(org.pain) or 0, 0)
+    local woundMap = LimbBleedMap(ply, org)
     WSZC.SyncDislocation(ply, org, limbs, newLimbTable)
     for limbId, state in pairs(limbs) do
         if type(state) == "table" then
@@ -3773,10 +3775,7 @@ local function PushShadow(ply, org)
                         cuBleed - expectedBleed, cuPain - expectedPain) then
                     -- organism changed: recompute the values for this limb
                     pain = math.max(tonumber(org.pain) or 0, 0)
-                    bleed = math.max(tonumber(org.bleed) or 0, 0)
-                    if cvLimbBleed and cvLimbBleed:GetBool() then
-                        woundMap = LimbBleedMap(ply, org)
-                    end
+                    woundMap = LimbBleedMap(ply, org)
                 end
             end
 
@@ -3788,23 +3787,13 @@ local function PushShadow(ply, org)
             -- `shrapnel`, `isBandaged`, `hasInjection` and the minigames'
             -- custom statuses stay C:U-owned.  The shadow helpers touch only
             -- WSZC_AMPUTATION / WSZC_INTERNAL_BLEEDING and preserve the rest.
-            local limbBleed
-            if woundMap then
-                local fromWounds = woundMap[limbId] or 0
-                local dmg = math.Clamp(tonumber(map and org[map.dmg]) or 0, 0, 1)
-                if fromWounds > 0 then
-                    limbBleed = math.Clamp(fromWounds, 0, 100)
-                elseif dmg > 0.001 then
-                    -- Only limbs the organism actually damaged bleed.  Internal
-                    -- bleeding stays in body.internalBleeding and never paints
-                    -- all 17 limbs red.
-                    limbBleed = math.Clamp(math.min(bleed * 0.2, dmg * 20), 0, 100)
-                else
-                    limbBleed = 0
-                end
-            else
-                limbBleed = math.Clamp(bleed * 0.2, 0, 100)
-            end
+            -- Damage to a bone/muscle is not evidence of a wound there.  In
+            -- particular org.bleed is a whole-body total: combining it with
+            -- every damaged limb falsely paints those limbs as bleeding when
+            -- the only real wound is an artery somewhere else.  This shadow
+            -- is shared by the patient's HUD and remote inspection; keep the
+            -- native organism and both wound tables untouched.
+            local limbBleed = math.Clamp(woundMap[limbId] or 0, 0, 100)
             local limbPain = math.Clamp(pain * 0.12 + limbBleed * 0.35, 0, 100)
             limbSet("bleed", limbBleed)
             limbSet("pain", limbPain)

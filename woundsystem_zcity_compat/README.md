@@ -597,7 +597,7 @@ SWEP. В authority-режиме каждая такая доза дополни�
 | `zc_woundsystem_compat_glass_shrapnel` | этот аддон | `1` — осколки от стекла руками/ногами и ragdoll-коллизий. |
 | `zc_woundsystem_compat_shrapnel_regen_block` | этот аддон | `1` — застрявший осколок блокирует регенерацию лимба ZCity до извлечения. |
 | `zc_woundsystem_compat_shadow` | этот аддон | `1` — зеркалить травмы ZCity в HUD C:U (`BodyState`/`PlayerLimbs`). |
-| `zc_woundsystem_compat_limb_bleed` | этот аддон | `1` — кровотечение по реальным ранам ZCity (per-bone); `0` — старое поведение «глобальный bleed на все лимбы». |
+| `zc_woundsystem_compat_limb_bleed` | этот аддон | Устаревший параметр: значки всегда привязаны к реальным ранам ZCity, независимо от значения. |
 | `zc_woundsystem_compat_shrapnel_on_blocked` | этот аддон | `1` — считать попадание, чей `EntityTakeDamage` вернул `true` (ZCity пересылает его в `FakeRagdoll`, GMod отдаёт `took=false`). |
 | `zc_woundsystem_compat_hide_empty_notice` | этот аддон | `1` — убрать надпись «Not completed - nothing was applied»; `0` — вернуть. |
 | `zc_woundsystem_compat_disable_cu_fx` | этот аддон (client) | `1` — снять ВСЕ экранные/камерные/UI-эффекты C:U, оставить только эффекты ZCity; `0` — вернуть хуки C:U. |
@@ -703,7 +703,7 @@ hover-подсказкой `Pelvis`, action point и серверными net-о
    `internalbleed_red.png` через native status `WSZC_INTERNAL_BLEEDING` ровно
    на `abdomen`; на `pelvis` пометка не дублируется, внешний `state.bleed`
    искусственно не создаётся, а при нулевом значении статус удаляется.
-   Откат внешней разводки: `zc_woundsystem_compat_limb_bleed 0`.
+   Значки внешнего кровотечения привязаны к фактическим ранам, а не к общему `org.bleed`.
 
 5. **Дробовик в ногу: нет шрапнели.** Две независимые причины:
    * `homigrad-damage` (`sv_input.lua`) возвращает `true` и пересылает хит в

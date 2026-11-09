@@ -166,8 +166,12 @@ table.Copy = function(t)
     for k, v in pairs(t or {}) do if type(v) == "table" then out[k] = table.Copy(v) else out[k] = v end end
     return out
 end
+LimbBleedSetting = true
 CreateConVar = function(name, def)
-    return { GetBool = function() return def ~= "0" end,
+    return { GetBool = function()
+                 if name == "zc_woundsystem_compat_limb_bleed" then return LimbBleedSetting end
+                 return def ~= "0"
+             end,
              GetFloat = function() return tonumber(def) or 0 end }
 end
 GetConVar = function() return nil end
@@ -2178,6 +2182,98 @@ return ordinaryOnly, present, cleared
     check("R97 ordinary wound bleeding never creates an arterial marker", arterial_bleeding_shadow[0])
     check("R98 real arterialwounds create the native red marker on the mapped limb", arterial_bleeding_shadow[1])
     check("R99 closing the artery clears only its marker; ordinary bandage bleed remains", arterial_bleeding_shadow[2])
+
+    # Execute the real server remote snapshot writer, then feed the resulting
+    # per-limb states into the real C:U bleed icon chooser.  The old fallback
+    # copied whole-body arterial bleeding into every damaged limb.
+    remote_source = (CONN / "lua/autorun/server/sv_zcity_woundsystem_compat_remote.lua").read_text()
+    send_state_s = "local function TargetDisplayName(target)" + remote_source.split(
+        "local function TargetDisplayName(target)", 1)[1].split("\nlocal CloseRemote", 1)[0]
+    lua.execute("local function H() return WoundSystem.Health end\n"
+                "local function HealthReady() return true end\n"
+                + send_state_s + "\nTestRemoteSendState = SendState\n")
+    remote_client_source = (CONN / "lua/autorun/client/cl_zcity_woundsystem_compat_remote.lua").read_text()
+    snapshot_helpers = "local function ReplaceContents(destination, source)" + remote_client_source.split(
+        "local function ReplaceContents(destination, source)", 1)[1].split("\nlocal function SaveSelfState()", 1)[0]
+    stats_helper = "local function ApplyStatsSnapshot(cardio)" + remote_client_source.split(
+        "local function ApplyStatsSnapshot(cardio)", 1)[1].split("\nlocal function RestoreSelfState(", 1)[0]
+    snapshot_fn = "local function ApplySnapshot(limbs, cardio, name, blood, happiness)" + remote_client_source.split(
+        "local function ApplySnapshot(limbs, cardio, name, blood, happiness)", 1)[1].split("\nlocal function DismissRadialMenu(", 1)[0]
+    lua.execute("local Remote = {}\n" + snapshot_helpers + stats_helper + snapshot_fn
+                + "\nTestRemoteApplySnapshot = ApplySnapshot\n")
+    remote_bleed = lua.execute(r'''
+local oldNet = net
+local packet
+net = {
+    Start = function(name) packet = { name = name, tables = {} } end,
+    WriteEntity = function(value) packet.entity = value end,
+    WriteTable = function(value) packet.tables[#packet.tables + 1] = table.Copy(value) end,
+    WriteString = function(value) packet.nameText = value end,
+    WriteFloat = function() end,
+    Send = function(value) packet.recipient = value end,
+}
+local patient, medic = MakePlayer(), MakePlayer()
+local all = {"head", "neck", "thorax", "abdomen", "pelvis", "arm_L", "forearm_L", "hand_L",
+    "arm_R", "forearm_R", "hand_R", "thigh_L", "crus_L", "foot_L", "thigh_R", "crus_R", "foot_R"}
+for _, limb in ipairs(all) do
+    patient._limbs[limb] = {skin = 100, muscle = 100, pain = 0, bleed = 0, shrapnel = 0}
+end
+local org = patient.organism
+-- Bone damage is broad: C:U maps all three segments to each ZCity arm/leg.
+-- Only the right arm has a real artery wound; the left leg and torso have
+-- damage but no wound. Global bleed is high from the actual artery.
+org.rarm, org.lleg, org.chest, org.skull = 0.8, 0.7, 0.6, 0.3
+org.bleed = 30
+org.arterialwounds = {{4, Vector(), Angle(), "ValveBiped.Bip01_R_Forearm", 0, Vector(), "rarmartery"}}
+local artery = org.arterialwounds[1]
+TestRemoteSendState(medic, patient)
+WoundSystemClientState = {PlayerLimbs = {hand_L = {bleed = 99}}, Cardio = {}, PlayerStats = {}}
+TestRemoteApplySnapshot(packet.tables[1], packet.tables[2], packet.nameText, 100, 0)
+local wire = WoundSystemClientState.PlayerLimbs
+local noPhantoms = packet.name == "WSZC_RemoteMedicalState" and packet.recipient == medic
+for _, id in ipairs(all) do
+    if id ~= "forearm_R" then
+        noPhantoms = noPhantoms and wire[id].bleed == 0 and TestActualBleedHudIcon(wire[id], 255) == nil
+            and (not wire[id].customStatuses or not wire[id].customStatuses[WSZC.ARTERIAL_BLEEDING_STATUS_ID])
+    end
+end
+local actualArtery = wire.forearm_R.bleed == 12
+    and TestActualBleedHudIcon(wire.forearm_R, 255) ~= nil
+    and wire.forearm_R.customStatuses[WSZC.ARTERIAL_BLEEDING_STATUS_ID] == 12
+-- A persisted legacy 0 used to spray global bleeding onto all 17 limbs.
+LimbBleedSetting = false
+TestRemoteSendState(medic, patient)
+TestRemoteApplySnapshot(packet.tables[1], packet.tables[2], packet.nameText, 100, 0)
+local oldSettingSafe = WoundSystemClientState.PlayerLimbs.hand_L.bleed == 0
+    and WoundSystemClientState.PlayerLimbs.forearm_R.bleed == 12
+LimbBleedSetting = true
+local anatomyUnchanged = org.bleed == 30 and org.lleg == 0.7 and org.arterialwounds[1] == artery
+    and artery[1] == 4 and #org.wounds == 0
+-- An ordinary wound on a different limb must still produce its own real icon.
+org.wounds = {{3, Vector(), Angle(), "ValveBiped.Bip01_L_Foot", 0}}
+TestRemoteSendState(medic, patient)
+TestRemoteApplySnapshot(packet.tables[1], packet.tables[2], packet.nameText, 100, 0)
+wire = WoundSystemClientState.PlayerLimbs
+local both = wire.foot_L.bleed == 6 and TestActualBleedHudIcon(wire.foot_L, 255) ~= nil
+    and wire.forearm_R.bleed == 12 and wire.forearm_R.customStatuses[WSZC.ARTERIAL_BLEEDING_STATUS_ID] == 12
+-- When the artery closes, its old status and bleed disappear, while the
+-- independent ordinary wound and internal-bleeding status are preserved.
+org.arterialwounds, org.internalBleed = {}, 2
+TestRemoteSendState(medic, patient)
+TestRemoteApplySnapshot(packet.tables[1], packet.tables[2], packet.nameText, 100, 0)
+wire = WoundSystemClientState.PlayerLimbs
+local cleared = wire.forearm_R.bleed == 0 and TestActualBleedHudIcon(wire.forearm_R, 255) == nil
+    and not wire.forearm_R.customStatuses[WSZC.ARTERIAL_BLEEDING_STATUS_ID]
+    and wire.foot_L.bleed == 6 and wire.abdomen.customStatuses[WSZC.INTERNAL_BLEEDING_STATUS_ID] == 2
+net = oldNet
+return noPhantoms, actualArtery, anatomyUnchanged, both, cleared, oldSettingSafe
+''')
+    check("remote HUD: artery cannot make unwounded damaged limbs bleed", remote_bleed[0])
+    check("remote HUD: real arterial wound keeps its normal and arterial markers", remote_bleed[1])
+    check("shadow projection never changes the authoritative organism/wounds", remote_bleed[2])
+    check("remote HUD: simultaneous ordinary and arterial wounds remain independent", remote_bleed[3])
+    check("remote HUD: closing artery clears only its marker and preserves other bleeding", remote_bleed[4])
+    check("legacy archived global-bleed setting cannot invent limb bleeding", remote_bleed[5])
 
     standing_fall = lua.execute(r'''
 if type(WSZC.ApplyStandingFall) ~= "function" then return false, false, false end
