@@ -145,7 +145,8 @@ LIMB_LAYERS = {
 }
 STATUS = ('bleeding', 'dislocation', 'fracture')
 
-DOLL_RGB = (0, 0, 0)         # standard black, exactly the archive layers' RGB
+DOLL_RGB = (0, 0, 0)         # healthy rendered fill colour (SetDrawColor 0,0,0)
+FILL_RGB = (255, 255, 255)   # neutral white PNG RGB so SetDrawColor tints black->red by muscle damage
 ALPHA_THRESHOLD = 96          # r_foot.png has a transparent left half
 JOINT_ERODE = 3               # 1 px inset for the fill.  Screenshot_3-7 live
                               # seams were 6-11 px wide vs the native 2-4 px
@@ -391,7 +392,7 @@ def emit_reference_traced(z):
             alpha.paste(0, (0, h - 1, w, h))
             alpha.paste(0, (0, 0, 1, h))
             alpha.paste(0, (w - 1, 0, w, h))
-        fill = Image.new('RGBA', (w, h), DOLL_RGB + (0,))
+        fill = Image.new('RGBA', (w, h), FILL_RGB + (0,))
         fill.putalpha(fill_alpha)
         fill.save(OUT / 'limbs' / (limb_id + '_fill.png'), optimize=True)
         edge = Image.new('RGBA', (w, h), (255, 255, 255, 0))
@@ -628,7 +629,7 @@ def main():
             cut_y = source_row_for_screen('neck', 318)
             if cut_y:
                 soft_inner.paste(0, (0, 0, w, cut_y))
-        fill = Image.new('RGBA', (w, h), DOLL_RGB + (0,))
+        fill = Image.new('RGBA', (w, h), FILL_RGB + (0,))
         fill.putalpha(soft_inner)
         fill.save(OUT / 'limbs' / (limb_id + '_fill.png'), optimize=True)
 

@@ -290,6 +290,32 @@ hook.Add("Think", "WSZC_MinigameViewWatch", function()
     end
 end)
 
+-- C:U draws boneDrawX/Y, but its server tests a separately simulated boneX/Y.
+-- Once the RENDERED bone is close to the socket, ask the server
+-- to validate and complete this exact session immediately.  No click release,
+-- extra hit or arbitrary client-selected limb is required.  The receiver
+-- repeats the tolerance check and owns the actual state transition.
+hook.Add("Think", "WSZC_DislocationVisualCompletion", function()
+    local mg = WoundSystemDislocationMinigame
+    if type(mg) ~= "table" or mg.active ~= true or mg.closeRequested == true then return end
+    if not (GetGlobalBool and GetGlobalBool("WSZC_Ready", false) == true) then return end
+    if not WSZC.DislocationVisualAligned then return end
+    local x = tonumber(mg.boneDrawX) or tonumber(mg.boneX)
+    local y = tonumber(mg.boneDrawY) or tonumber(mg.boneY)
+    if not WSZC.DislocationVisualAligned(x, y) then
+        mg._WSZCNextVisualComplete = 0
+        return
+    end
+    local now = CurTime and CurTime() or 0
+    if now < (mg._WSZCNextVisualComplete or 0) then return end
+    mg._WSZCNextVisualComplete = now + 0.1
+    net.Start("WSZC_DislocationVisualComplete")
+        net.WriteUInt(tonumber(mg.sessionId) or 0, 24)
+        net.WriteFloat(x)
+        net.WriteFloat(y)
+    net.SendToServer()
+end)
+
 -- Belt and braces for the viewmodel: some ZCity SWEPs draw their held item
 -- through a custom render hook that ignores PreDrawViewModel.  SetNoDraw on
 -- the viewmodel entity is applied once on each state change, never per frame.
@@ -555,13 +581,57 @@ net.Receive("WSZC_BandageState", function()
     end
 end)
 
+local function ClientYesNo(value) return value and "yes" or "no" end
+
+function WSZC.MinigameClientStatusLines()
+    local bandage, syringe = WSZCBandageMinigame, WSZCSyringeMinigame
+    local hpPath = WSZC.ResolveCUPath
+        and WSZC.ResolveCUPath("woundsystem/client/minigames/sh_handphysics.lua")
+        or "woundsystem/client/minigames/sh_handphysics.lua"
+    local clipPath = WSZC.ResolveCUPath
+        and WSZC.ResolveCUPath("woundsystem/client/minigames/cl_clip.lua")
+        or "woundsystem/client/minigames/cl_clip.lua"
+    local hpStatus = WSZC.OptionalIncludeStatus and WSZC.OptionalIncludeStatus[hpPath] or nil
+    local hpExists = file and file.Exists and file.Exists(hpPath, "LUA")
+    local clipExists = file and file.Exists and file.Exists(clipPath, "LUA")
+    return {
+        "[ZCity/CU compat] client minigame runtime:",
+        "  loaded=" .. ClientYesNo(WSZC._MinigameClientLoaded)
+            .. " ready=" .. ClientYesNo(WSZC.MinigameClientReady)
+            .. " attempts=" .. tostring(WSZC.MinigameClientAttempts or 0)
+            .. " hud_open=" .. ClientYesNo(WSZC.MinigameHUDOpen),
+        "  requirements: clip=" .. ClientYesNo(WoundSystem and WoundSystem.MinigameClip)
+            .. " items=" .. ClientYesNo(WoundSystem and WoundSystem.Items
+                and type(WoundSystem.Items.Get) == "function")
+            .. " health_gui_optional=" .. ClientYesNo(WoundSystem and WoundSystem.HealthGUI)
+            .. " hud_global_optional=" .. ClientYesNo(WoundSystemHealthHUDOpen ~= nil),
+        "  files: handphysics_exists=" .. tostring(hpExists)
+            .. " clip_exists=" .. tostring(clipExists)
+            .. " handphysics_include=" .. (hpStatus and ClientYesNo(hpStatus.ok) or "not_tried")
+            .. " handphysics_result=" .. (hpStatus and tostring(hpStatus.resultType) or "none")
+            .. (hpStatus and hpStatus.reason and (" error=" .. tostring(hpStatus.reason)) or ""),
+        "  games: bandage_loaded=" .. ClientYesNo(bandage and bandage._Loaded)
+            .. " bandage_active=" .. ClientYesNo(bandage and bandage.active)
+            .. " syringe_loaded=" .. ClientYesNo(syringe and syringe._Loaded)
+            .. " syringe_active=" .. ClientYesNo(syringe and syringe.active),
+        "  pending: bandage=" .. ClientYesNo(WSZC.PendingBandageOpen ~= nil)
+            .. " syringe=" .. ClientYesNo(WSZC.PendingSyringeOpen ~= nil),
+    }
+end
+
+function WSZC.PrintMinigameClientStatus()
+    if not (WSZC.DebugAllowed and WSZC.DebugAllowed()) then return end
+    for _, line in ipairs(WSZC.MinigameClientStatusLines()) do WSZC.DebugDisplay(nil, line) end
+end
+
 local function ClientReady()
+    -- Bandage/syringe need the clip renderer and item definitions.  The full
+    -- inspection GUI is optional: a missing/broken health panel must not leave
+    -- these independent namespaced minigames retrying forever without UI.
     return WoundSystem
         and WoundSystem.MinigameClip
         and WoundSystem.Items
-        and WoundSystem.Items.Get
-        and WoundSystem.HealthGUI
-        and WoundSystemHealthHUDOpen ~= nil
+        and type(WoundSystem.Items.Get) == "function"
 end
 
 local function Activate()
@@ -576,8 +646,8 @@ local function Activate()
     local okBandage, errBandage = pcall(include, "autorun/client/wszc_cl_bandage.lua")
     local okSyringe, errSyringe = pcall(include, "autorun/client/wszc_cl_syringe.lua")
     if not okBandage or not okSyringe then
-        ErrorNoHalt("[ZCity/CU compat] minigame client load failed: "
-            .. tostring(errBandage) .. " / " .. tostring(errSyringe) .. "\n")
+        if WSZC.Warn then WSZC.Warn("minigame client load failed: "
+            .. tostring(errBandage) .. " / " .. tostring(errSyringe)) end
         if WSZC.MinigameClientAttempts < 80 then timer.Simple(0.25, Activate) end
         return
     end

@@ -13,7 +13,7 @@ build directory:
     notifications / AED status labels / death text / icons all survive,
   * runtime behaviour of the HUD filter, full-screen minigames, hand pivot and
     cursor hiding (lupa / LuaRuntime; skipped if lupa is unavailable),
-  * both ZIPs, the 653-material mirror and MANIFEST sha256.
+  * both ZIPs, the 654-material mirror and MANIFEST sha256.
 
 Usage: python3 tools/tests/test_wszc_regression.py
 """
@@ -33,6 +33,8 @@ CLIENT = CONN / 'lua/autorun/client'
 SERVER = CONN / 'lua/autorun/server'
 LAYOUT = CLIENT / 'cl_zcity_woundsystem_compat_layout.lua'
 ORGANISM = SERVER / 'sv_zcity_woundsystem_compat_organism.lua'
+REMOTE_SERVER = SERVER / 'sv_zcity_woundsystem_compat_remote.lua'
+REMOTE_CLIENT = CLIENT / 'cl_zcity_woundsystem_compat_remote.lua'
 
 results = []
 
@@ -56,7 +58,12 @@ def src(rel):
 # ---------------------------------------------------------------- static ----
 layout_s = LAYOUT.read_text(encoding='utf-8')
 organism_s = ORGANISM.read_text(encoding='utf-8')
+remote_server_s = REMOTE_SERVER.read_text(encoding='utf-8')
+remote_client_s = REMOTE_CLIENT.read_text(encoding='utf-8')
 minigames_s = (CLIENT / 'cl_zcity_woundsystem_compat_minigames.lua').read_text(encoding='utf-8')
+inspect_s = (CLIENT / 'cl_zcity_woundsystem_compat_inspect.lua').read_text(encoding='utf-8')
+shared_s = (CONN / 'lua/autorun/sh_zcity_woundsystem_compat.lua').read_text(encoding='utf-8')
+server_minigames_s = (SERVER / 'sv_zcity_woundsystem_compat_minigames.lua').read_text(encoding='utf-8')
 bandage_client_s = (CLIENT / 'wszc_cl_bandage.lua').read_text(encoding='utf-8')
 generator_s = src('tools/build_unitmenu_materials.py')
 readme_s = src('README.md')
@@ -96,14 +103,24 @@ check('S08 compact hand anchors the rotated pivot, aspect and native rotation',
       and 'WSZC.HandRectForCursor(x, y, w, h, rot)' in layout_s
       and 'origRectRotated(nx, ny, nw, nh, rot, ...)' in layout_s
       and 'UnitmenuHandRotatedCenter' not in layout_s)
-check('S09 blank cursor is hand-only, active-only, with an arrow fallback',
+check('S09 every active minigame blanks world + overlay cursor, even without hand art',
       'function WSZC.BlankMinigameCursor()' in layout_s
-      and 'if not cvHideCursor:GetBool() or not WSZC.ShowMinigameHand() then' in layout_s
+      and 'if not cvHideCursor:GetBool() then' in layout_s
       and 'panel.SetCursor, panel, "arrow"' in layout_s
       and 'panel.SetCursor, panel, "blank"' in layout_s
-      and 'if active and cvHideCursor:GetBool() and WSZC.ShowMinigameHand() then' in layout_s
+      and 'if active and cvHideCursor:GetBool() then' in layout_s
+      and 'SetMinigameOverlayCursors("blank")' in layout_s
+      and 'SetMinigameOverlayCursors("arrow")' in layout_s
+      and 'if active and cvHideCursor:GetBool() and WSZC.ShowMinigameHand() then' not in layout_s
       and 'if WSZC.SyncMinigameCursor then WSZC.SyncMinigameCursor() end' in layout_s
       and 'WSZC.RestoreMinigameCursor(true)' in layout_s)
+check('S09b radial legacy medicine is filtered and rendered reduction has a namespaced packet',
+      'zzzz_WSZC_DisableLegacyMedicine' in inspect_s
+      and 'WSZC.IsLegacyRadialMedicalOption' in inspect_s
+      and 'WSZC_DislocationVisualCompletion' in minigames_s
+      and 'net.WriteFloat(x)' in minigames_s and 'net.WriteFloat(y)' in minigames_s
+      and '"WSZC_DislocationVisualComplete"' in server_minigames_s
+      and 'function WSZC.DislocationVisualAligned' in shared_s)
 check('S10 glass shrapnel has both damage hooks',
       'hook.Add("EntityTakeDamage", "WSZC_GlassStrikePre"' in organism_s
       and 'hook.Add("PostEntityTakeDamage", "WSZC_GlassStrike"' in organism_s)
@@ -139,9 +156,10 @@ check('S14 docs describe human proportions, restored outline, hover, no minigame
 check('S23 WoundView dark backdrop is suppressed only while the HUD is open',
       'zc_woundsystem_compat_hide_woundview_backdrop' in layout_s
       and 'WoundSystemHealthHUDOpen == true' in layout_s)
-check('S24 white tint is for *_fill.png ONLY (outline hover stays C:U-owned)',
+check('S24 muscle-damage tint is for *_fill.png ONLY without flashAlpha blink (outline hover stays C:U-owned)',
       'zc_woundsystem_compat_unitmenu_tint' in layout_s
-      and 'origSetDrawColor(255, 255, 255, a or 255)' in layout_s
+      and 'DollLimbFillDrawColor' in layout_s
+      and 'DollLimbIdFromMaterial' in layout_s
       and 'IsDollLimbMaterial' in layout_s
       and 'lower:find("_fill", 1, true)' in layout_s
       and 'DollMiddleKind' not in layout_s)
@@ -396,20 +414,21 @@ check('S50 clean-reference pixel tracing + measured legacy fallback are present'
       and 'SEEDS = {' in fit_s
       and 'include_head=False' in fit_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s)
-check('S56 neck is a real client/server limb with tooltip and first-life sync',
+check('S56 neck is a real client/server limb without hover card, with first-life sync',
       'local function EnsureNeckLimb(limbs)' in layout_s
-      and 'function WSZC.UnitmenuTooltipLines(id, state)' in layout_s
-      and 'hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip"' in layout_s
+      and 'function WSZC.UnitmenuTooltipLines(id, state)' not in layout_s
+      and 'hook.Remove("PostDrawHUD", "WSZC_UnitmenuLimbTooltip")' in layout_s
+      and 'hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip"' not in layout_s
       and 'function WSZC.EnsureNeckState(ply)' in organism_s
       and 'hook.Add("PlayerSpawn", "WSZC_NeckFirstLifeSync"' in organism_s
-      and 'neck      = { dmg = "skull"' in organism_s
-      and 'head      = { dmg = nil,      amp = "headamputated", dis = nil },' in organism_s
+      and 'neck      = { dmg = "spine3"' in organism_s
+      and 'head      = { dmg = "skull",  amp = "headamputated", dis = nil },' in organism_s
       and 'neckartery = "neck"' in organism_s
       and 'if string.find(lower, "neck", 1, true) then return "neck" end' in organism_s)
 check('S56b pelvis is a real 17th client/server limb with bone-routed wounds',
       'local function EnsurePelvisLimb(limbs)' in layout_s
       and 'local function EnsurePelvisClientState()' in layout_s
-      and 'pelvis = "Pelvis"' in layout_s
+      and 'pelvis.id = "pelvis"' in layout_s
       and 'function WSZC.EnsurePelvisState(ply)' in organism_s
       and 'const.ParentLimb.pelvis = "abdomen"' in organism_s
       and 'const.NonDismemberableCoreLimbs.pelvis = true' in organism_s
@@ -420,9 +439,9 @@ check('S56b pelvis is a real 17th client/server limb with bone-routed wounds',
 packer_s = (ROOT / 'tools/pack_ui_materials.py').read_text(encoding='utf-8')
 check('S57 packer regenerates the 17-part doll and keeps generated/source counts separate',
       "subprocess.run(doll_cmd, cwd=ROOT, check=True)" in packer_s
-      and "len(generated) == 39" in packer_s
+      and "len(generated) == 40" in packer_s
       and "wanted in entries or wanted in generated" in packer_s
-      and "len(actual_materials) == 653" in packer_s
+      and "len(actual_materials) == 654" in packer_s
       and "len(limb_pngs) == 34" in packer_s
       and 'HEAD_SPLIT_FRAC' in generator_s
       and 'HEAD_SOURCE_LAYOUT' not in generator_s
@@ -459,18 +478,119 @@ check('S41 text=all no longer deletes gameplay sprites / the wound front layer',
       and 'bandageouter' in layout_s
       and 'WSZC.MinigameTextHidden()' in layout_s)
 
+# Remote treatment is an adapter around C:U, never a second health model.
+check('S51 separate remote radial option; self inspection remains intact',
+      'Лечить игрока' in remote_client_s
+      and 'ZCity_WoundBridge_RemoteInspect_WSZC' in remote_client_s
+      and '_WSZCRemoteInspect = true' in remote_client_s
+      and 'target ~= ply' in remote_client_s
+      and 'hg.RagdollOwner' in remote_client_s
+      and 'pcall(hg.eyeTrace, ply)' in remote_client_s
+      and 'util.TraceHull' not in remote_client_s
+      and 'IsValid(MENUPANELHUYHUY) and ValidPatient(ply, Remote.focusTarget)' in remote_client_s
+      and 'for _, key in ipairs({ "FakeRagdoll", "WoundSystemUnconsciousRagdoll" })' in remote_client_s
+      and 'local function PatientEntity(target)' in remote_client_s
+      and 'WSZC.OpenCUWoundMenu = function(...)' in remote_client_s
+      and 'ZCity_WoundBridge_RemoteInspect_WSZC'
+          not in src('woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_inspect.lua'))
+check('S52 namespaced protocol carries an explicit patient and exact schemas',
+      'WSZC_RemoteMedicalAction' in remote_server_s
+      and 'local EXPECTED = {' in remote_server_s
+      and 'local INPUT_TYPES = {' in remote_server_s
+      and 'payload.n or #payload' in remote_server_s
+      and 'inspection.target ~= target or not ValidPair(operator, target)' in remote_server_s
+      and 'operator == target' in remote_server_s
+      and 'not operator:Alive() or not target:Alive()' in remote_server_s
+      and 'local function PatientEntity(ply)' in remote_server_s
+      and 'from:Distance(Position(target))' in remote_server_s
+      and 'distance <= RANGE' in remote_server_s)
+check('S53 native sessions belong to patient; traffic and slots belong to operator',
+      'receiver(0, target)' in remote_server_s
+      and 'targetInventory[slotIdx] = operatorSlot' in remote_server_s
+      and 'targetInventory[slotIdx] = originalSlot or EmptySlot()' in remote_server_s
+      and 'operatorInventory[slotIdx] = EmptySlot()' in remote_server_s
+      and 'originalSend(activeNet.operator' in remote_server_s
+      and 'originalSend(meta.operator' in remote_server_s
+      and 'message == "WoundSystem_SyncInventory" then return end' in remote_server_s)
+check('S54 remote client restores limbs, cardio and skills; drops self updates only remotely',
+      'selfUpdateOriginals' in remote_client_s
+      and 'if Remote.active then return end' in remote_client_s
+      and 'Remote.selfStats' in remote_client_s
+      and 'ApplyStatsSnapshot(cardio)' in remote_client_s
+      and 'ReplaceContents(currentStats, Remote.selfStats)' in remote_client_s
+      and 'RestoreSelfState()' in remote_client_s)
+check('S55 native minigames and AED timers revalidate the remote pair',
+      'MetaFor(target, "Aed")' in remote_server_s
+      and 'not ValidPair(operator, target) then return end' in remote_server_s
+      and 'WithNativeContext(operator, target, meta.slotIdx' in remote_server_s
+      and 'NativeSession(target, kind)' in remote_server_s
+      and 'OperatorBusy(operator)' in remote_server_s)
+check('S56 bandage/syringe reuse external sessions; one applied dose equals one consume',
+      'h.StartExternalMinigame' in remote_server_s
+      and 'pcall(apply, target, itemId, limbId, cost)' in remote_server_s
+      and 'WSZC.ApplyItemToBodyImpl or h.ApplyItemToBody' in remote_server_s
+      and 'ConsumeSlot(operator, idx, itemId, cost, true)' in remote_server_s
+      and 'ConsumeSlot(operator, idx, itemId, cost)' in remote_server_s
+      and 'if durability <= 0 then return false end' in remote_server_s
+      and '.remote = true' in remote_server_s
+      and 'RemoteSessionValid(ply, session)' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua'))
+check('S57 pending opens and all remote/native/external sessions have a close path',
+      'FinishRemote("open_timeout")' in remote_client_s
+      and 'if Remote.active or Remote.pending then FinishRemote("replaced") end' in remote_client_s
+      and 'WSZC_RemoteMedicalWatchdog' in remote_server_s
+      and 'CloseNativeMeta(target, kind' in remote_server_s
+      and 'StopExternalMinigame' in remote_server_s
+      and 'PlayerDisconnected' in remote_server_s)
+check('S58 remote client/server modules are registered for download and include',
+      'AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_remote.lua")' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat.lua')
+      and 'include("autorun/server/sv_zcity_woundsystem_compat_remote.lua")' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat.lua'))
+
+check('S59 C:U inventory stays hidden identically for self and remote; only virtual slot 6 remains',
+      'InventoryAllowed' not in layout_s
+      and 'WSZC.RemoteMedical' not in layout_s
+      and 'if key == 6 then return rawget(real, 6) end' in layout_s
+      and 'if type(key) == "number" and key >= 1 and key <= 5 then' in layout_s
+      and 'WSZC.CUHudHiddenRegion' in layout_s)
+
+check('S60 remote treatment usage, controls and limitations are documented',
+      'Лечить игрока' in all_docs
+      and 'zc_woundsystem_compat_remote_inspect_button' in all_docs
+      and 'wszc_treat_player' in all_docs
+      and 'двух' in all_docs.lower()
+      and 'предметы' in all_docs.lower() and 'лекар' in all_docs.lower())
+
+check('S61 remote and self share the same advanced WoundView and explicit session contract',
+      'WSZC.OpenCUWoundMenu = function(...)' in remote_client_s
+      and 'WSZC_RemoteMedicalPatientBanner' not in remote_client_s
+      and 'hook.Add("HUDPaint"' not in remote_client_s
+      and 'target = target, spec = spec, idx = idx, maxDur = maxDur' in remote_server_s
+      and 'live = live, oneDose = oneDose' in remote_server_s
+      and 'data[name] ~= nil then return data[name]' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua'))
+
+check('S62 WoundView has no ZCity medicine strip or duplicate treatment buttons',
+      all(marker not in inspect_s for marker in (
+          'WSZC_WoundViewTreatHUD', 'ZCITY_MED_BAR_DEFS', 'CollectMedicineBarEntries',
+          'BuildLimbContextActions', 'InstallLimbActionButtons', 'WSZC.SendWoundViewTreat',
+          'ПЕРЕВЯЗАТЬ РАНУ', 'ПЕРЕБИНТОВАТЬ ПЕРЕЛОМ', 'НАЛОЖИТЬ ЖГУТ'))
+      and '_ActiveTreatRects' not in layout_s
+      and 'WoundSystemActionButtonPos' in layout_s
+      and 'InstallUnconsciousInspectionBridge' in inspect_s)
+
 # Lua syntax (luaparser is optional).
 try:
     sys.path.insert(0, '/tmp/luaparser_pkg')
     from luaparser import ast
-    lua_files = sorted(glob.glob(str(CONN / 'lua/**/*.lua'), recursive=True))
+    lua_files = sorted(
+        f for f in glob.glob(str(CONN / 'lua/**/*.lua'), recursive=True)
+        if '/wszc_vendor/cu/' not in f and '/wszc_vendor/zcity/woundbridge/' not in f
+    )
     bad = []
     for f in lua_files:
         try:
             ast.parse(Path(f).read_text(encoding='utf-8'))
         except Exception as exc:
             bad.append((f, str(exc)[:120]))
-    check('S15 ALL_LUA_OK %d/%d' % (len(lua_files) - len(bad), len(lua_files)), not bad and len(lua_files) == 11)
+    check('S15 ALL_LUA_OK %d/%d' % (len(lua_files) - len(bad), len(lua_files)), not bad and len(lua_files) == 15)
 except ImportError:
     print('SKIP S15 luaparser unavailable')
 
@@ -478,6 +598,8 @@ except ImportError:
 cjk = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]')
 bad_cjk = []
 for p in list(ROOT.glob('*.md')) + list(CONN.rglob('*.md')) + list(CONN.rglob('*.lua')):
+    if 'wszc_vendor' in p.parts:
+        continue  # vendored upstream sources are verified by embed_runtime.py --check
     if cjk.search(p.read_text(encoding='utf-8')):
         bad_cjk.append(str(p))
 check('S16 CJK_CLEAN', not bad_cjk)
@@ -534,14 +656,15 @@ try:
           worst_border == 0.0)
     thorax = Image.open(limb_dir / 'thorax_fill.png').convert('RGBA')
     r, g, b, a = thorax.getpixel((thorax.width // 2, thorax.height // 2))
-    check('S18 standard BLACK fill restored (not slate 42,56,60)',
-          a > 200 and (r, g, b) == (0, 0, 0))
+    check('S18 neutral white *_fill mask (renders black at 100% muscle, red on damage)',
+          a > 200 and (r, g, b) == (255, 255, 255))
     # Every outline must be non-empty (b47a0cb's transparent _edge was rejected)
     # and must follow its limb's shape rather than a box: white pixels sit in
     # the interior of the sprite, not on its border.
-    check('S37 generator emits standard black + shape-following per-limb contours',
+    check('S37 generator emits neutral white fill masks + shape-following per-limb contours',
           edge_boxes == 17
           and 'DOLL_RGB = (0, 0, 0)' in generator_s
+          and 'FILL_RGB = (255, 255, 255)' in generator_s
           and 'EDGE_PAD_MIN = 6' in generator_s
           and 'EDGE_WIDTH = 17' in generator_s
           and "EDGE_WIDTH_OVERRIDES = {'hand_R': 11, 'hand_L': 11}" in generator_s
@@ -746,7 +869,7 @@ try:
           all(im.size == (512, 1260) for im in hand_frames)
           and all(px[3] > 200 and px[0] > px[1] > px[2] for px in grip_pixels))
     mats = [p for p in (CONN / 'materials').rglob('*') if p.is_file()]
-    check('S21 connector ships 653 UI materials', len(mats) == 653)
+    check('S21 connector ships 654 UI materials', len(mats) == 654)
     checksums = (CONN / 'MATERIALS.sha256').read_text(encoding='utf-8').splitlines()
     check('S22 MATERIALS.sha256 has 614 source entries',
           len([l for l in checksums if l.strip() and not l.startswith('#')]) == 614)
@@ -762,19 +885,25 @@ def validate_zips():
         assert z.testzip() is None
         full = {i.filename: z.read(i.filename) for i in z.infolist()}
     conn_files = {p.relative_to(CONN).as_posix(): p.read_bytes() for p in CONN.rglob('*') if p.is_file()}
-    assert len(conn_files) == len(compat) == 668
+    assert len(conn_files) == len(compat) == 754
     assert all(compat['woundsystem_zcity_compat/' + r] == d for r, d in conn_files.items())
     mirror = {n[len('garrysmod/addons/casualties_unknown_health_system_beta/materials/'):]: d
               for n, d in full.items()
               if n.startswith('garrysmod/addons/casualties_unknown_health_system_beta/materials/')}
-    assert len(mirror) == 653
+    assert len(mirror) == 654
     assert all(mirror[r[len('materials/'):]] == d for r, d in conn_files.items() if r.startswith('materials/'))
     assert json.loads(compat['woundsystem_zcity_compat/addon.json'])
-    bridge = [n for n in full if n.endswith('woundbridge/sv_woundbridge.lua')]
-    assert len(bridge) == 1 and b'Not completed - nothing was applied' not in full[bridge[0]]
+    external_bridge = full['garrysmod/addons/z_city/lua/homigrad/woundbridge/sv_woundbridge.lua']
+    embedded_bridge = full['garrysmod/addons/woundsystem_zcity_compat/lua/wszc_vendor/zcity/woundbridge/sv_woundbridge.lua']
+    # Full pack preserves the historical external source patch.  The embedded
+    # copy remains byte-provenance-clean; the connector's runtime PrintMessage
+    # filter suppresses this same notice for both runtime selections.
+    assert b'Not completed - nothing was applied' not in external_bridge
+    assert b'WSZC: the empty-dose centre notice is intentionally suppressed.' in external_bridge
+    assert b'Not completed - nothing was applied' in embedded_bridge
     manifest = full['MANIFEST.txt'].decode('utf-8')
     shas = re.findall(r'woundsystem_zcity_compat/lua/[^\s]+\.lua\s+([0-9a-f]{64})', manifest)
-    assert len(shas) == 11
+    assert len(shas) == 89
     assert all(hashlib.sha256(d).hexdigest() in shas for r, d in conn_files.items() if r.endswith('.lua'))
     shipped_layout = full['garrysmod/addons/woundsystem_zcity_compat/lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua'].decode('utf-8')
     assert 'HandRectForCursor' in shipped_layout
@@ -785,14 +914,25 @@ def validate_zips():
     assert 'function WSZC.WoundViewEmptyClick' in shipped_layout
     assert 'local function EnsureNeckLimb' in shipped_layout
     assert 'local function EnsurePelvisLimb' in shipped_layout
-    assert 'function WSZC.UnitmenuTooltipLines' in shipped_layout
+    assert 'function WSZC.UnitmenuTooltipLines' not in shipped_layout
+    assert 'hook.Remove("PostDrawHUD", "WSZC_UnitmenuLimbTooltip")' in shipped_layout
     assert 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/neck_fill.png' in compat
     assert 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/pelvis_fill.png' in compat
+    # The mini-game uses the existing red shard art, not a recolored/renamed
+    # replacement; it must be available to both standalone and full packs.
+    with zipfile.ZipFile(ROOT / 'для того чтобы все работало вместе материалы для UI.zip') as art:
+        for shard in ('shrapnelpiece_red.png', 'shrapnelpiece_padded_red.png'):
+            rel = 'casunknown-images/shrapnelminigame/' + shard
+            source = next(n for n in art.namelist() if n.endswith('/' + rel))
+            assert compat['woundsystem_zcity_compat/materials/' + rel] == art.read(source)
+            assert mirror[rel] == art.read(source)
     assert 'wszc/unitmenu/limbs/neck_edge.png' in mirror
     assert 'wszc/unitmenu/limbs/pelvis_edge.png' in mirror
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
     # +4 neck/pelvis PNGs in the connector and +4 in the C:U material mirror.
-    assert len(full) == 2777
+    # Six fonts/shaders moved C:U -> connector without changing the old total.
+    # The isolated embedded runtime adds 75 Lua files + one provenance manifest.
+    assert len(full) == 2858
     declared_total = re.search(r'Всего файлов в архиве:\s*(\d+)', manifest)
     assert declared_total and int(declared_total.group(1)) == len(full)
     return True
@@ -859,7 +999,14 @@ gui = { EnableScreenClicker = function(on) clickerOn = on end,
 clickerOn = false
 WoundSystemHealthHUDOpen = false
 input = { IsMouseDown = function() return false end, IsKeyDown = function() return false end }
-net = { Receive = function() end, Start = function() end, SendToServer = function() end }
+netMessages, currentNetMessage, resetReceivers = {}, nil, {}
+net = {
+    Receive = function(name, fn) resetReceivers[name] = fn end,
+    Start = function(name) currentNetMessage = { name = name, writes = {} } end,
+    WriteUInt = function(value, bits) table.insert(currentNetMessage.writes, { "uint", value, bits }) end,
+    WriteFloat = function(value) table.insert(currentNetMessage.writes, { "float", value }) end,
+    SendToServer = function() table.insert(netMessages, currentNetMessage) end,
+}
 MOUSE_LEFT, MOUSE_RIGHT, KEY_ESCAPE = 107, 108, 70
 clipCalls, textCalls = {}, {}
 WoundSystem = { MinigameClip = {
@@ -923,8 +1070,12 @@ WoundSystemDislocationMinigame, WoundSystemShrapnelMinigame = { active = false }
 WSZC = { WSZCMinigameActive = function() return false end }
 ''')
     lua.execute((CLIENT / 'wszc_unitmenu_geometry.lua').read_text(encoding='utf-8'))
+    lua.execute('hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip", function() error("old card was not removed") end)')
     lua.execute(layout_s)
     lua.execute(minigames_s)
+    visual_fn_start = shared_s.index('function WSZC.DislocationVisualAligned')
+    visual_fn_end = shared_s.index('\nend\n', visual_fn_start) + 5
+    lua.execute(shared_s[visual_fn_start:visual_fn_end])
 
     def rt(name, code):
         try:
@@ -1081,18 +1232,22 @@ end)()
 end)()
 ''')
 
-    rt('R12 hide_minigame_hand 1 is a safe standard-arrow fallback', '''
+    rt('R12 hiding hand art never restores the OS cursor; overlay is blank too', '''
 (function()
     convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "1"
     convars["zc_woundsystem_compat_hide_minigame_hand"]._v = "1"
-    cursorValue = "blank"
-    WoundSystemShrapnelMinigame = { active = true }
+    cursorValue = "arrow"
+    local overlayCursor = "arrow"
+    local overlay = { SetCursor = function(_, value) overlayCursor = value end }
+    WoundSystemShrapnelMinigame = { active = true, overlay = overlay }
     WSZC.SyncMinigameCursor()
-    local fallback = cursorValue == "arrow"
-        and WSZC.BlankMinigameCursor() == false and cursorValue == "arrow"
-    WoundSystemShrapnelMinigame = { active = false }
+    local hidden = cursorValue == "blank" and overlayCursor == "blank"
+        and WSZC.BlankMinigameCursor() == true
+    WoundSystemShrapnelMinigame = { active = false, overlay = overlay }
+    WSZC.SyncMinigameCursor()
+    local restored = cursorValue == "arrow" and overlayCursor == "arrow"
     convars["zc_woundsystem_compat_hide_minigame_hand"]._v = "0"
-    return fallback
+    return hidden and restored
 end)()
 ''')
 
@@ -1114,6 +1269,35 @@ end)()
     WoundSystemShrapnelMinigame = { active = false }
     LocalPlayer = old
     return cursorValue == "arrow"
+end)()
+''')
+
+    rt('R14b approximate rendered dislocation alignment sends immediate session packet', '''
+(function()
+    local oldGetGlobalBool = GetGlobalBool
+    GetGlobalBool = function(key, fallback)
+        if key == "WSZC_Ready" then return true end
+        return fallback
+    end
+    netMessages = {}
+    WoundSystemDislocationMinigame = {
+        active = true, closeRequested = false, sessionId = 77,
+        boneDrawX = 451.82, boneDrawY = 229.82,
+        boneX = 600, boneY = 400, -- deliberately different server-prediction copy
+    }
+    hook._t["Think"]["WSZC_DislocationVisualCompletion"]()
+    local sentAligned = #netMessages == 1
+        and netMessages[1].name == "WSZC_DislocationVisualComplete"
+        and netMessages[1].writes[1][2] == 77
+        and netMessages[1].writes[2][2] == 451.82
+        and netMessages[1].writes[3][2] == 229.82
+    WoundSystemDislocationMinigame.boneDrawX = 700
+    WoundSystemDislocationMinigame._WSZCNextVisualComplete = 0
+    hook._t["Think"]["WSZC_DislocationVisualCompletion"]()
+    local rejectedFar = #netMessages == 1
+    WoundSystemDislocationMinigame = { active = false }
+    GetGlobalBool = oldGetGlobalBool
+    return sentAligned and rejectedFar
 end)()
 ''')
 
@@ -1170,24 +1354,39 @@ end)()
 end)()
 ''')
 
-    rt('R18 *_fill tinted white; *_edge keeps C:U hover colour; icons untouched', '''
+    rt('R18 *_fill tints black->red by muscle without transparent blink; *_edge and icons untouched', '''
 (function()
     WSZC.InstallMaterialTracker()
+    local prevCS = _G.WoundSystemClientState
+    _G.WoundSystemClientState = {
+        PlayerLimbs = {
+            head = { muscle = 100 },
+            arm_R = { muscle = 50 },
+            crus_L = { muscle = 0 },
+        }
+    }
     surfaceCalls = {}
     surface.SetMaterial(Material("wszc/unitmenu/limbs/head_fill.png"))
     surface.SetDrawColor(0, 0, 0, 255)
+    surface.SetMaterial(Material("wszc/unitmenu/limbs/arm_R_fill.png"))
+    surface.SetDrawColor(128, 0, 0, 255)
+    surface.SetMaterial(Material("wszc/unitmenu/limbs/crus_L_fill.png"))
+    surface.SetDrawColor(255, 0, 0, 7) -- C:U flashAlpha near 0 must NOT blink transparent
     surface.SetMaterial(Material("wszc/unitmenu/limbs/head_edge.png"))
     surface.SetDrawColor(60, 70, 80, 255)
     surface.SetMaterial(Material("casunknown-images/icons/fracturedbone.png"))
     surface.SetDrawColor(12, 34, 56, 255)
+    _G.WoundSystemClientState = prevCS
     local cols = {}
     for _, c in ipairs(surfaceCalls) do
         if c.kind == "color" then cols[#cols + 1] = c end
     end
-    return #cols == 3
-       and cols[1].r == 255 and cols[1].g == 255 and cols[1].b == 255
-       and cols[2].r == 60 and cols[2].g == 70 and cols[2].b == 80
-       and cols[3].r == 12 and cols[3].g == 34 and cols[3].b == 56
+    return #cols == 5
+       and cols[1].r == 0 and cols[1].g == 0 and cols[1].b == 0 and cols[1].a == 255
+       and cols[2].r == 128 and cols[2].g == 0 and cols[2].b == 0 and cols[2].a == 255
+       and cols[3].r == 255 and cols[3].g == 0 and cols[3].b == 0 and cols[3].a == 255
+       and cols[4].r == 60 and cols[4].g == 70 and cols[4].b == 80 and cols[4].a == 255
+       and cols[5].r == 12 and cols[5].g == 34 and cols[5].b == 56 and cols[5].a == 255
 end)()
 ''')
 
@@ -1395,6 +1594,35 @@ end)()
 end)()
 ''')
 
+    rt('shrapnel minigame replaces only the extracted shard with the red asset', '''
+(function()
+    WSZC.InstallMaterialTracker()
+    WoundSystemShrapnelMinigame = { active = true }
+    local root = "casunknown-images/shrapnelminigame/"
+    surfaceCalls = {}
+    surface.SetMaterial(Material(root .. "shrapnelpiece.png"))
+    local normal = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece_red.png"
+        and WSZC._DrawMaterialName == root .. "shrapnelpiece_red.png"
+    local redPadded = Material(root .. "shrapnelpiece_padded_red.png")
+    redPadded.IsError = function() return true end
+    surface.SetMaterial(Material(root .. "shrapnelpiece_padded.png"))
+    local fallback = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece_padded.png"
+    redPadded.IsError = function() return false end
+    surface.SetMaterial(Material(root .. "shrapnelpiece_padded.png"))
+    local padded = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece_padded_red.png"
+    surface.SetMaterial(Material(root .. "shrapnelpiece_red.png"))
+    local alreadyRed = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece_red.png"
+    surface.SetMaterial(Material(root .. "minigameShrapnel.png"))
+    local wound = surfaceCalls[#surfaceCalls].m:GetName() == root .. "minigameShrapnel.png"
+    surface.SetMaterial(Material("casunknown-images/icons/shrapnel.png"))
+    local hud = surfaceCalls[#surfaceCalls].m:GetName() == "casunknown-images/icons/shrapnel.png"
+    WoundSystemShrapnelMinigame.active = false
+    surface.SetMaterial(Material(root .. "shrapnelpiece.png"))
+    local outside = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece.png"
+    return normal and fallback and padded and alreadyRed and wound and hud and outside
+end)()
+''')
+
     rt('R26 wound front layer identified; ALL gameplay sprites protected', '''
 (function()
     return WSZC.IsMinigameWoundLayer("casunknown-images/shrapnelminigame/minigameShrapnel.png") == true
@@ -1519,7 +1747,7 @@ end)()
 end)()
 ''')
 
-    rt('R39 Neck hitbox and PostDrawHUD tooltip match the screenshot text', '''
+    rt('R39 neck hitbox remains selectable and old hover card is removed', '''
 (function()
     local neck
     for _, limb in ipairs(_WSZCTestLimbs) do if limb.id == "neck" then neck = limb end end
@@ -1528,24 +1756,13 @@ end)()
     mouseX = ScrW() / 2 + neck.ox * dollScale
     mouseY = ScrH() / 2 + 20 * scale + neck.oy * dollScale
     local hit = WSZC.UnitmenuHover(mouseX, mouseY)
-    local title, skin, muscle = WSZC.UnitmenuTooltipLines("neck", { skin = 100, muscle = 100 })
-    WoundSystemHealthHUDOpen = true
-    textCalls = {}
-    hook._t["PostDrawHUD"]["WSZC_UnitmenuLimbTooltip"]()
-    WoundSystemHealthHUDOpen = false
-    local drawn = { title = false, skin = false, muscle = false }
-    for _, call in ipairs(textCalls) do
-        if call.t == "Neck" then drawn.title = true end
-        if call.t == "Skin: 100%" then drawn.skin = true end
-        if call.t == "Muscle: 100%" then drawn.muscle = true end
-    end
-    return hit and hit.id == "neck" and title == "Neck"
-       and skin == "Skin: 100%" and muscle == "Muscle: 100%"
-       and drawn.title and drawn.skin and drawn.muscle
+    return hit and hit.id == "neck"
+        and (not hook._t.PostDrawHUD or not hook._t.PostDrawHUD.WSZC_UnitmenuLimbTooltip)
+        and WSZC.UnitmenuTooltipLines == nil
 end)()
 ''')
 
-    rt('R41 Pelvis has its own hitbox, tooltip and native action state', '''
+    rt('R41 pelvis retains its hitbox and native state without a hover card', '''
 (function()
     local pelvis
     for _, limb in ipairs(_WSZCTestLimbs) do if limb.id == "pelvis" then pelvis = limb end end
@@ -1554,21 +1771,9 @@ end)()
     mouseX = ScrW() / 2 + pelvis.ox * dollScale
     mouseY = ScrH() / 2 + 20 * scale + pelvis.oy * dollScale
     local hit = WSZC.UnitmenuHover(mouseX, mouseY)
-    local title, skin, muscle = WSZC.UnitmenuTooltipLines("pelvis", { skin = 100, muscle = 100 })
-    WoundSystemHealthHUDOpen = true
-    textCalls = {}
-    hook._t["PostDrawHUD"]["WSZC_UnitmenuLimbTooltip"]()
-    WoundSystemHealthHUDOpen = false
-    local drawn = { title = false, skin = false, muscle = false }
-    for _, call in ipairs(textCalls) do
-        if call.t == "Pelvis" then drawn.title = true end
-        if call.t == "Skin: 100%" then drawn.skin = true end
-        if call.t == "Muscle: 100%" then drawn.muscle = true end
-    end
     local state = WoundSystemClientState.PlayerLimbs.pelvis
-    return hit and hit.id == "pelvis" and hit.state == state and title == "Pelvis"
-       and skin == "Skin: 100%" and muscle == "Muscle: 100%"
-       and drawn.title and drawn.skin and drawn.muscle
+    return hit and hit.id == "pelvis" and hit.state == state
+        and (not hook._t.PostDrawHUD or not hook._t.PostDrawHUD.WSZC_UnitmenuLimbTooltip)
 end)()
 ''')
 
@@ -1773,7 +1978,7 @@ end)()
 end)()
 ''')
 
-    rt('R38 native HUD skips only disinfect icon and balances LINEAR filtering', '''
+    rt('R38 native HUD hides disinfect/injection but keeps ordinary bleed/fracture/dislocation/arterial', '''
 (function()
     filterCalls = {}
     TEXFILTER = { LINEAR = 77 }
@@ -1786,6 +1991,10 @@ end)()
     Icons.disinfected = Material("native/disinfected")
     Icons.infectionneutral = Material("native/infection")
     Icons.smallbleed = Material("native/bleeding")
+    Icons.fracture = Material("native/fracture")
+    Icons.dislocate = Material("native/dislocation")
+    Icons.injection = Material("native/injection")
+    local arterial = Material("zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png")
     local handState = { disinfectTime = 120, infection = 4 }
     WoundSystemClientState = { PlayerLimbs = { hand_R = handState } }
 
@@ -1796,7 +2005,11 @@ end)()
         local items = {}
         AddHudIcon(items, Icons.disinfected)
         AddHudIcon(items, Icons.infectionneutral)
+        AddHudIcon(items, Icons.fracture)
+        AddHudIcon(items, Icons.dislocate)
+        AddHudIcon(items, Icons.injection)
         AddHudIcon(items, Icons.smallbleed)
+        AddHudIcon(items, arterial)
         NativeWoundViewIcons = items
     end
     hook.Add("HUDPaint", "WoundDollAndPanel", NativeWoundView)
@@ -1804,24 +2017,28 @@ end)()
     local installedAgain = WSZC.InstallDisinfectedIconFilter()
     hook._t["HUDPaint"]["WoundDollAndPanel"]()
 
-    local count, disinfected, infection, bleeding = 0, 0, 0, 0
+    local count, infection, fracture, dislocation, bleedKept, arterialKept = 0, 0, 0, 0, 0, 0
     for _, mat in ipairs(NativeWoundViewIcons or {}) do
         count = count + 1
-        if mat == Icons.disinfected then disinfected = disinfected + 1 end
         if mat == Icons.infectionneutral then infection = infection + 1 end
-        if mat == Icons.smallbleed then bleeding = bleeding + 1 end
+        if mat == Icons.fracture then fracture = fracture + 1 end
+        if mat == Icons.dislocate then dislocation = dislocation + 1 end
+        if mat == Icons.smallbleed then bleedKept = bleedKept + 1 end
+        if mat == arterial then arterialKept = arterialKept + 1 end
     end
     local filters = table.concat(filterCalls, ",")
-    return installed and installedAgain and count == 2 and disinfected == 0
-        and infection == 1 and bleeding == 1 and handState.disinfectTime == 120
+    return installed and installedAgain and count == 5
+        and infection == 1 and fracture == 1 and dislocation == 1
+        and bleedKept == 1 and arterialKept == 1
+        and handState.disinfectTime == 120
         and handState.infection == 4
-        and filters == "mag:77,min:77,popMin,popMag"
+        and filters == "" -- no LINEAR smoothing / no filter-stack side effects
 end)()
 ''')
 
     # Live C:U keeps Icons in a local upvalue, not in _G.  Exercise that exact
     # load shape and put AddHudIcon one closure below WoundDollAndPanel.
-    rt('R42 local/nested Icons and exact material path both filter only disinfect', '''
+    rt('R42 local/nested Icons and exact paths hide processing/injection but keep ordinary bleed/fracture/shrapnel/infection/arterial', '''
 (function()
     local nativeItems = {}
     local Icons = {
@@ -1844,18 +2061,43 @@ end)()
         and nativeItems[1] == Icons.shrapnel
         and nativeItems[2] == Icons.infection_up
 
-    -- No Icons upvalue/global at all: the exact C:U path is the final fallback.
+    -- No Icons upvalue/global at all: exact C:U paths keep ordinary bleeding + arterial.
     local pathItems = {}
     local function AddHudIcon(items, mat) table.insert(items, mat) end
     local fracture = Material("casunknown-images/icons/fracturedbone.png")
+    local ordinaryBleed = Material("wszc/unitmenu/status/bleeding_padded.png")
+    local arterial = Material("zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png")
     local function PathNativeWoundView()
         AddHudIcon(pathItems, Material("casunknown-images/icons/disinfected.png"))
         AddHudIcon(pathItems, fracture)
+        AddHudIcon(pathItems, ordinaryBleed)
+        AddHudIcon(pathItems, arterial)
     end
     hook.Add("HUDPaint", "WoundDollAndPanel", PathNativeWoundView)
     local pathInstalled = WSZC.InstallDisinfectedIconFilter()
     PathNativeWoundView()
-    return localIconsOK and pathInstalled and #pathItems == 1 and pathItems[1] == fracture
+    return localIconsOK and pathInstalled and #pathItems == 3
+        and pathItems[1] == fracture and pathItems[2] == ordinaryBleed and pathItems[3] == arterial
+end)()
+''')
+
+    rt('R44 injection draw filter is WoundView-scoped while ordinary bleed and arterial are visible', '''
+(function()
+    local oldFlag = WSZC.CUStatusIconFiltered
+    WSZC.CUStatusIconFiltered = true
+    WSZC._DrawMaterialName = "casunknown-images/icons/injectionwound.png"
+    local injectionHidden = WSZC.HiddenNativeStatusIconDraw()
+    WSZC._DrawMaterialName = "wszc/unitmenu/status/bleeding.png"
+    local ordinaryBloodKept = not WSZC.HiddenNativeStatusIconDraw()
+        and WSZC.IsDollDrawMaterial(WSZC._DrawMaterialName)
+    WSZC._DrawMaterialName = "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png"
+    local arterialKept = not WSZC.HiddenNativeStatusIconDraw()
+        and WSZC.IsDollDrawMaterial(WSZC._DrawMaterialName)
+    WSZC.CUStatusIconFiltered = false
+    WSZC._DrawMaterialName = "casunknown-images/icons/injectionwound.png"
+    local outsideWoundViewKept = not WSZC.HiddenNativeStatusIconDraw()
+    WSZC.CUStatusIconFiltered = oldFlag
+    return injectionHidden and ordinaryBloodKept and arterialKept and outsideWoundViewKept
 end)()
 ''')
 
@@ -1895,6 +2137,470 @@ end)()
     return ok
 end)()
 ''')
+
+    rt('R43 self and remote both hide C:U inventory; virtual slot 6 remains writable', '''
+(function()
+    WSZC.InstallCUInventoryProxy()
+    local real = WSZC._CURealInventory
+    real[1] = { type = "tool", toolName = "MORPHINE", durability = 10 }
+    WSZC.RemoteMedical = nil
+    WSZC.CUHudFiltered = true
+    local selfSlotHidden = WoundSystemInventorySlots[1].type == "empty"
+        and WSZC.CUHudHiddenRegionRaw(760, 240, 50, 50) == true
+    WoundSystemInventorySlots[1] = { type = "tool", toolName = "BAD" }
+    local selfWriteBlocked = real[1].toolName == "MORPHINE"
+    WSZC.RemoteMedical = { active = true }
+    local remoteSlotHidden = WoundSystemInventorySlots[1].type == "empty"
+        and WSZC.CUHudHiddenRegionRaw(760, 240, 50, 50) == true
+    WoundSystemInventorySlots[1] = { type = "tool", toolName = "AED", durability = 5 }
+    local remoteWriteBlocked = real[1].toolName == "MORPHINE"
+    WoundSystemInventorySlots[6] = { type = "tool", toolName = "GAUZE", durability = 20 }
+    local virtualSlotWritable = real[6] == WoundSystemInventorySlots[6]
+        and real[6].toolName == "GAUZE"
+    WSZC.RemoteMedical = nil
+    WSZC.CUHudFiltered = false
+    return selfSlotHidden and selfWriteBlocked and remoteSlotHidden
+        and remoteWriteBlocked and virtualSlotWritable
+end)()
+''')
+
+# Remote treatment uses isolated server/client Lua states and representative
+# native C:U receivers.  It exercises behavior rather than source markers.
+if LuaRuntime is not None:
+    remote_fixture = (ROOT / 'tools/tests/remote_medical_runtime.lua').read_text(encoding='utf-8')
+    for mode, remote_source in (('server', remote_server_s), ('client', remote_client_s)):
+        remote_lua = LuaRuntime(unpack_returned_tuples=True)
+        remote_lua.globals().MODE = mode
+        remote_lua.globals().REMOTE_SOURCE = remote_source
+        remote_lua.globals().MINIGAME_SOURCE = (SERVER / 'sv_zcity_woundsystem_compat_minigames.lua').read_text(encoding='utf-8')
+        try:
+            remote_cases = remote_lua.execute(remote_fixture)
+            invoke = remote_lua.eval('function(fn) local ok, err = pcall(fn); return ok, err end')
+            index = 1
+            while remote_cases[index] is not None:
+                case = remote_cases[index]
+                try:
+                    ok, err = invoke(case.fn)
+                    check(case.name, ok)
+                    if not ok:
+                        print('ERR', case.name, str(err)[:240])
+                except Exception as exc:
+                    check(case.name, False)
+                    print('ERR', case.name, type(exc).__name__, str(exc)[:240])
+                index += 1
+        except Exception as exc:
+            check('REMOTE_' + mode.upper() + '_HARNESS_LOAD', False)
+            print('ERR REMOTE_' + mode.upper() + '_HARNESS_LOAD', type(exc).__name__, str(exc)[:300])
+
+if LuaRuntime is not None:
+    radial_lua = LuaRuntime(unpack_returned_tuples=True)
+    radial_lua.execute(r'''
+CLIENT = true; SERVER = false
+WSZC = {}
+Blocked = true
+concommand = { Add = function() end }
+CreateClientConVar = function() return { GetBool = function() return true end } end
+GetConVar = function() return nil end
+GetGlobalBool = function() return true end
+hook = { _t = {}, Add = function(event, name, fn)
+    hook._t[event] = hook._t[event] or {}; hook._t[event][name] = fn
+end }
+timer = { Simple = function() end }
+hg = { radialOptions = {} }
+''')
+    radial_lua.execute(inspect_s)
+    radial_filter = radial_lua.execute(r'''
+WSZC.LegacyRadialMedicineBlocked = function() return Blocked end
+local function legacy(label) return { function() end, label } end
+hg.radialOptions = {
+    legacy("Fix dislocation (leg)"),
+    legacy("Fix Steven's dislocation (arm)"),
+    { function() end, "Do Gesture\nRMB - Menu" },
+    { function() end, "Dislocation inspection", _WSZCInspect = true },
+    { function() end, "Dislocation patient", _WSZCRemoteInspect = true },
+}
+hook._t["radialOptions"]["zzzz_WSZC_DisableLegacyMedicine"]()
+local filtered = #hg.radialOptions == 3
+    and hg.radialOptions[1][2] == "Do Gesture\nRMB - Menu"
+    and hg.radialOptions[2]._WSZCInspect == true
+    and hg.radialOptions[3]._WSZCRemoteInspect == true
+Blocked = false
+hg.radialOptions[#hg.radialOptions + 1] = legacy("Fix dislocation (leg)")
+hook._t["radialOptions"]["zzzz_WSZC_DisableLegacyMedicine"]()
+return filtered and #hg.radialOptions == 4
+''')
+    check('R44 ready-only radial filter removes legacy reduction, preserves WSZC/gestures', radial_filter)
+
+    unconscious_inspection = radial_lua.execute(r'''
+IsValid = function(v) return v ~= nil end
+local ply = { alive = true, nw = true }
+ply.Alive = function(self) return self.alive end
+ply.GetNWBool = function(self, key, fallback)
+    if key == "WoundSystemUnconscious" then return self.nw end
+    return fallback
+end
+ply.SetNWBool = function(self, key, value)
+    if key == "WoundSystemUnconscious" then self.nw = value end
+end
+LocalPlayer = function() return ply end
+hook.GetTable = function() return hook._t end
+hg.WoundBridge = {}
+WoundSystem = { Health = {} }
+local CardioState = { unconscious = true }
+local GUIState = { hudOpen = false }
+WoundSystemHealthHUDOpen = false
+function WoundSystem.OpenHealthHUD()
+    local lp = LocalPlayer()
+    if not IsValid(lp) or not lp:Alive() then return end
+    if CardioState.unconscious or lp:GetNWBool("WoundSystemUnconscious", false) then return end
+    GUIState.hudOpen = true
+    WoundSystemHealthHUDOpen = true
+end
+local function NativeThink()
+    if CardioState.unconscious or ply:GetNWBool("WoundSystemUnconscious", false) then
+        GUIState.hudOpen = false
+        WoundSystemHealthHUDOpen = false
+    else
+        WoundSystemHealthHUDOpen = GUIState.hudOpen
+    end
+end
+hook.Add("Think", "ToggleHUDInput", NativeThink)
+
+-- Prove the representative native guard really closes the panel first.
+GUIState.hudOpen = true; WoundSystemHealthHUDOpen = true
+NativeThink()
+local nativeBlocked = GUIState.hudOpen == false and WoundSystemHealthHUDOpen == false
+-- Remote treatment leaves a transparent OpenHealthHUD wrapper installed.
+local nativeOpen = WoundSystem.OpenHealthHUD
+WoundSystem.OpenHealthHUD = function(...) return nativeOpen(...) end
+local opened = WSZC.OpenHealthHUDForInspection()
+local restoredAfterOpen = opened and CardioState.unconscious == true and ply.nw == true
+hook.GetTable().Think.ToggleHUDInput()
+local stayedOpen = GUIState.hudOpen == true and WoundSystemHealthHUDOpen == true
+    and WSZC._InspectionWhileUnconscious == true
+    and CardioState.unconscious == true and ply.nw == true
+GUIState.hudOpen = false; WoundSystemHealthHUDOpen = false
+hook.GetTable().Think.ToggleHUDInput()
+local closedCleanly = WSZC._InspectionWhileUnconscious == nil
+    and GUIState.hudOpen == false and CardioState.unconscious == true and ply.nw == true
+return nativeBlocked and restoredAfterOpen and stayedOpen and closedCleanly
+''')
+    check('R45 brain-injury unconscious inspection opens, survives Think and closes cleanly', unconscious_inspection)
+
+    no_medicine_ui = radial_lua.execute(r'''
+local nativeCalls = 0
+local nativeAction = function() nativeCalls = nativeCalls + 1 end
+_G.WoundSystemDrawLimbActionPoint = nativeAction
+local patient = { alive = true }
+local medic = { alive = true, Alive = function(self) return self.alive end }
+LocalPlayer = function() return medic end
+WSZC.RemoteMedical = { active = true, target = patient }
+WSZC.InstallUnconsciousInspectionBridge()
+local callsAfterInstall = _G.WoundSystemDrawLimbActionPoint == nativeAction
+_G.WoundSystemDrawLimbActionPoint("hand_R", { shrapnel = 1 })
+local post = hook.GetTable().PostDrawHUD or {}
+return callsAfterInstall and nativeCalls == 1
+    and post.WSZC_WoundViewTreatHUD == nil
+    and WSZC.BuildLimbContextActions == nil
+    and WSZC.SendWoundViewTreat == nil
+''')
+    check('R46 WoundView preserves native limb actions without adding medicine controls', no_medicine_ui)
+
+    native_gui = src('woundsystem_zcity_compat/lua/wszc_vendor/cu/woundsystem/client/cl_health_gui.lua')
+    start = native_gui.index('function WoundSystemDrawLimbActionPoint(')
+    end = native_gui.index('hook.Add("HUDPaint", "WoundDollAndPanel"', start)
+    radial_lua.execute(r'''
+WoundSystemActionButtonPos = { x = nil, y = nil }
+WoundSystemLimbUIConfig = { ShrapnelPoint = { TextEnabled = false } }
+GUIState = { lastMouseState = false }
+Icons = { uiPoint = {} }
+render = { SetScissorRect = function() end }
+surface = { SetDrawColor = function() end }
+draw = { SimpleText = function() end }
+math.Clamp = function(v, lo, hi) return math.max(lo, math.min(hi, v)) end
+RealFrameTime = function() return 0.1 end
+Lerp = function(t, a, b) return a + t * (b - a) end
+SetGuiMaterial = function() end
+DrawRectInt = function() end
+WoundSystemTooltipText = function() return "", "" end
+WoundSystemQueueDirectTooltip = function() end
+NativeRequests = {}
+RequestShrapnelMinigameStart = function(id) NativeRequests[#NativeRequests + 1] = {"shrapnel", id} end
+RequestDislocationMinigameStart = function(id) NativeRequests[#NativeRequests + 1] = {"dislocation", id} end
+RequestRemoveLimbStatus = function(id, status) NativeRequests[#NativeRequests + 1] = {status, id} end
+''')
+    radial_lua.execute(native_gui[start:end])
+    native_actions = radial_lua.execute(r'''
+local function click(state)
+    WoundSystemActionButtonPos = { x = nil, y = nil }
+    WoundSystemDrawLimbActionPoint("forearm_R", state, { x = 560, y = 460 },
+        400, 300, 1, 1.5, 611, 370, true, false, false)
+end
+click({ shrapnel = 1, dislocated = true })
+click({ shrapnel = 0, dislocated = true })
+click({ shrapnel = 0, customStatuses = { TOURNIQUET = true } })
+click({ shrapnel = 0, customStatuses = { SPLINTED = true } })
+click({ shrapnel = 0, bleed = 10, broken = true })
+return #NativeRequests == 4
+    and NativeRequests[1][1] == "shrapnel" and NativeRequests[1][2] == "forearm_R"
+    and NativeRequests[2][1] == "dislocation"
+    and NativeRequests[3][1] == "TOURNIQUET"
+    and NativeRequests[4][1] == "SPLINTED"
+''')
+    check('R47 native action point retains shrapnel, dislocation and removal, not medicine buttons', native_actions)
+
+    # Exercise the shipped C:U action renderer with the actual connector
+    # installer and queue function: hover descriptions disappear, not actions.
+    lua.execute(r'''
+WoundSystem = { Client = {} }
+QueuedActions = {}
+WoundSystemQueueDirectTooltip = function(key, ...)
+    QueuedActions[#QueuedActions + 1] = key
+    return true
+end
+WoundSystem.Client.QueueDirectTooltip = WoundSystemQueueDirectTooltip
+WoundSystemTooltipText = function(key) return "Remove shrapnel", "Try to remove embedded shrapnel by hand." end
+WoundSystemActionButtonPos = { x = nil, y = nil }
+WoundSystemLimbUIConfig = { ShrapnelPoint = { TextEnabled = true } }
+GUIState = { lastMouseState = false }
+Icons = { uiPoint = {} }
+render = { SetScissorRect = function() end }
+RealFrameTime = function() return 0.1 end
+Lerp = function(t, a, b) return a + t * (b - a) end
+SetGuiMaterial = function() end
+DrawRectInt = function() end
+ActionLabels = 0
+draw.SimpleText = function() ActionLabels = ActionLabels + 1 end
+ActionRequests = {}
+RequestShrapnelMinigameStart = function(id) ActionRequests[#ActionRequests + 1] = "shrapnel" end
+RequestDislocationMinigameStart = function(id) ActionRequests[#ActionRequests + 1] = "dislocation" end
+RequestRemoveLimbStatus = function(id, status) ActionRequests[#ActionRequests + 1] = status end
+WSZC.InstallCUHudDrawWrappers()
+''')
+    lua.execute(native_gui[start:end])
+    action_tooltips = lua.execute(r'''
+local function click(state)
+    WoundSystemActionButtonPos = { x = nil, y = nil }
+    WoundSystemDrawLimbActionPoint("forearm_R", state, { x = 560, y = 460 },
+        400, 300, 1, 1.5, 611, 370, true, false, false)
+end
+click({ shrapnel = 1 })
+click({ dislocated = true })
+click({ customStatuses = { TOURNIQUET = true } })
+click({ customStatuses = { SPLINTED = true } })
+local blocked = #QueuedActions == 0
+local usable = #ActionRequests == 4 and ActionRequests[1] == "shrapnel"
+    and ActionRequests[2] == "dislocation" and ActionRequests[3] == "TOURNIQUET"
+    and ActionRequests[4] == "SPLINTED" and ActionLabels == 4
+local kept = WoundSystemQueueDirectTooltip("moodle_pain", "Pain", "Other tooltip", 10) == true
+    and #QueuedActions == 1 and QueuedActions[1] == "moodle_pain"
+    and WoundSystem.Client.QueueDirectTooltip("action_SHRAPNEL", "Title", "Description", 35) == false
+-- Reinstallation must also cover a C:U reload without stacking wrappers.
+local old = WoundSystemQueueDirectTooltip
+WSZC.InstallCUHudDrawWrappers()
+local stable = WoundSystemQueueDirectTooltip == old
+WoundSystemQueueDirectTooltip = function(key) QueuedActions[#QueuedActions + 1] = key; return true end
+WoundSystem.Client.QueueDirectTooltip = WoundSystemQueueDirectTooltip
+WSZC.InstallCUHudDrawWrappers()
+local reload = WoundSystemQueueDirectTooltip("action_SHRAPNEL", "Title", "Description", 35) == false
+    and WoundSystem.Client.QueueDirectTooltip == WoundSystemQueueDirectTooltip
+    and WoundSystemQueueDirectTooltip("other", "Other", "", 10) == true
+return blocked, usable, kept and stable and reload
+''')
+    check('R48 action hover descriptions are suppressed for all four native actions', action_tooltips[0])
+    check('R49 native action labels, hover and clicks remain usable', action_tooltips[1])
+    check('R50 unrelated tooltips survive; late load and reload keep filtering', action_tooltips[2])
+
+    # Use C:U's actual status registry, colour and scratch-list code; the
+    # WoundView closure follows the original ordering (fracture before status).
+    statuses_s = src('woundsystem_zcity_compat/lua/wszc_vendor/cu/woundsystem/shared/sh_limb_statuses.lua')
+    lua.execute(r'''
+WoundSystem = {}
+string.Trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+''')
+    lua.execute(statuses_s)
+    bandage_status_start = shared_s.index('WSZC.FRACTURE_BANDAGED_STATUS_ID =')
+    bandage_status_end = shared_s.index('-- Short-lived context flag:', bandage_status_start)
+    lua.execute(shared_s[bandage_status_start:bandage_status_end])
+    lua.execute(r'''
+WSZC.InstallFractureBandagedStatus()
+WoundSystem.Statuses.Register("SPLINTED", { icon = "casunknown-images/icons/splinticon.png", type = "bool", order = 35 })
+WoundSystem.Statuses.Register("OTHER", { icon = "casunknown-images/icons/shrapnel.png", type = "bool", order = 40 })
+''')
+    color_start = native_gui.index('local function GetStatusIconColor(')
+    color_end = native_gui.index('\nfunction WoundSystem.Client.GetBloodBagFillColor', color_start)
+    add_start = native_gui.index('local function AddHudIcon(')
+    add_end = native_gui.index('\nlocal function BleedPhaseColor', add_start)
+    lua.execute(r'''
+local Icons = {
+    fracture = Material("wszc/unitmenu/status/fracture.png"),
+    dislocate = Material("wszc/unitmenu/status/dislocation.png"),
+}
+''' + native_gui[color_start:color_end] + native_gui[add_start:add_end] + r'''
+local function NativeWoundView()
+    local state = FractureTestState
+    local iconItems = {}
+    if state.broken then
+        AddHudIcon(iconItems, Icons.fracture, Color(255, 0, 0, 210))
+    end
+    if state.dislocated then
+        AddHudIcon(iconItems, Icons.dislocate, Color(255, 0, 0, 210))
+    end
+    for _, status in ipairs(WoundSystem.Statuses.GetActive(state)) do
+        -- Exact native GetStatusIconMaterial behavior: empty icons are skipped.
+        local mat = status.data.icon ~= "" and Material(status.data.icon) or nil
+        if mat then AddHudIcon(iconItems, mat, GetStatusIconColor(status.data, 210, status.value)) end
+    end
+    FractureTestItems = iconItems
+end
+hook.Add("HUDPaint", "WoundDollAndPanel", NativeWoundView)
+FractureTestRender = NativeWoundView
+WSZC.InstallCUHudFilter()
+function DrawFractureTest(state)
+    FractureTestState = state
+    WoundSystemClientState = { PlayerLimbs = { forearm_R = state } }
+    hook._t.HUDPaint.WoundDollAndPanel()
+end
+''')
+    fracture_icons = lua.execute(r'''
+local status = WoundSystem.Statuses.Stored.WSZC_FRACTURE_BANDAGED
+local hidden = status.icon == ""
+status.icon = "wszc/unitmenu/status/fracture_bandaged.png"
+WSZC.InstallFractureBandagedStatus()
+hidden = hidden and status.icon == ""
+
+FractureTestState = { broken = true, customStatuses = {} }
+DrawFractureTest(FractureTestState)
+local untreated = #FractureTestItems == 1
+    and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/fracture.png"
+    and FractureTestItems[1].color.r == 255
+FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED = true
+FractureTestState.customStatuses.OTHER = true
+FractureTestState.dislocated = true
+DrawFractureTest(FractureTestState)
+local treated = #FractureTestItems == 2
+    and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/dislocation.png"
+    and FractureTestItems[2].mat:GetName() == "casunknown-images/icons/shrapnel.png"
+    and FractureTestState.broken and FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED
+-- The ordinary removable SPLINTED status is not a bandage treatment and must
+-- never replace the fracture, even though it uses the same material.
+FractureTestState = { broken = true, customStatuses = { SPLINTED = true } }
+DrawFractureTest(FractureTestState)
+local splintNotBandage = #FractureTestItems == 2
+    and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/fracture.png"
+    and FractureTestItems[2].mat:GetName() == "casunknown-images/icons/splinticon.png"
+    and FractureTestItems[2].color.r == 255
+-- A new fracture after the server clears the treatment marker is red again.
+FractureTestState = { broken = true, customStatuses = {} }
+DrawFractureTest(FractureTestState)
+local rebreak = #FractureTestItems == 1
+    and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/fracture.png"
+FractureTestState.broken = false
+FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED = true -- stale net packet
+DrawFractureTest(FractureTestState)
+local healed = #FractureTestItems == 0
+    and FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED == true
+-- Even if the native HUD errors, the live medical state must be restored.
+local original = { broken = true, customStatuses = { WSZC_FRACTURE_BANDAGED = true } }
+WoundSystemClientState = { PlayerLimbs = { forearm_R = original } }
+hook.Add("HUDPaint", "WoundDollAndPanel", function() error("native HUD test") end)
+WSZC.InstallCUHudFilter()
+local ok = pcall(hook._t.HUDPaint.WoundDollAndPanel)
+local restored = not ok and original.broken == true and original.customStatuses.WSZC_FRACTURE_BANDAGED == true
+return hidden and untreated, treated, splintNotBandage and rebreak and healed and restored
+''')
+    check('R51 untreated fracture stays red; internal bandage marker has no icon after reload', fracture_icons[0])
+    check('R52 bandaged fracture shows neither icon and retains other injury icons', fracture_icons[1])
+    check('R53 splints, healed states, rebreak and HUD errors preserve medical state', fracture_icons[2])
+
+    independent_hud = lua.execute(r'''
+-- Another C:U build may inline icon rendering or disable debug upvalue access.
+-- Suppression must still work without AddHudIcon / GetStatusIconColor wrappers.
+local priorDebug = debug
+debug = nil
+local state = { broken = true, customStatuses = { WSZC_FRACTURE_BANDAGED = true } }
+local other = { broken = true, customStatuses = {} }
+WoundSystemClientState = { PlayerLimbs = { forearm_R = state, crus_L = other } }
+local red, black, otherRed = false, false, false
+hook.Add("HUDPaint", "WoundDollAndPanel", function()
+    red = state.broken
+    black = state.customStatuses.WSZC_FRACTURE_BANDAGED == true
+    otherRed = other.broken
+end)
+local installed = WSZC.InstallCUHudFilter()
+hook._t.HUDPaint.WoundDollAndPanel()
+local treated = installed and not red and black and otherRed and state.broken == true
+    and other.broken == true and state.customStatuses.WSZC_FRACTURE_BANDAGED == true
+state.broken = false
+hook._t.HUDPaint.WoundDollAndPanel()
+local healed = not red and not black and otherRed and state.broken == false
+    and other.broken == true and state.customStatuses.WSZC_FRACTURE_BANDAGED == true
+debug = priorDebug
+return treated and healed
+''')
+    check('R54 red icon hidden after bandaging even when native renderer is inlined and debug is unavailable', independent_hud)
+
+    client_visual_reset = lua.execute(r'''
+local removed = 0
+local function model() return { Remove = function() removed = removed + 1 end } end
+local ent = { bandaged_limbs = { hand = true }, tourniquets = { 1 },
+    wounds = { 1 }, arterialwounds = { 2 }, bandagesModel = model(), tourniquetsM = { model(), model() } }
+local other = { bandaged_limbs = { safe = true }, tourniquets = { 1 } }
+local objects = { [12] = ent, [13] = other }
+Entity = function(index) return objects[index] end
+zb = { net = { [12] = { bandaged_limbs = { hand = true }, Tourniquets = { 1 },
+                        wounds = { 1 }, arterialwounds = { 2 } },
+               [13] = { bandaged_limbs = { safe = true }, Tourniquets = { 1 } } } }
+local values, cursor = { 2, 12, 99 }, 0
+net.ReadUInt = function(bits) cursor = cursor + 1; return values[cursor] end
+resetReceivers.WSZC_ResetMedicalVisuals()
+return removed == 3 and ent.bandagesModel == nil and ent.tourniquetsM == nil
+    and next(ent.bandaged_limbs) == nil and next(ent.tourniquets) == nil
+    and next(zb.net[12].bandaged_limbs) == nil and next(zb.net[12].Tourniquets) == nil
+    and next(ent.wounds) == nil and next(ent.arterialwounds) == nil
+    and next(zb.net[12].wounds) == nil and next(zb.net[12].arterialwounds) == nil
+    and other.bandaged_limbs.safe == true and #other.tourniquets == 1
+''')
+    check('R57 reset message removes client models and netvar shadows only for addressed entities', client_visual_reset)
+
+    selection_reset = lua.execute(r'''
+local limb = { skin = 12, broken = true }
+local GUIState = { hudOpen = true, openTime = 1, selectedLimbData = { id = "head", state = limb },
+    HoverAnims = { head = 0.5, arm = 0.2 }, LastHoverStates = { head = true, arm = false } }
+local function NativeHUD()
+    return GUIState.selectedLimbData, GUIState.HoverAnims, GUIState.LastHoverStates
+end
+hook.Add("HUDPaint", "WoundDollAndPanel", NativeHUD)
+WSZC.ClearCULimbsCache()
+WSZC.InstallCUHudFilter()
+WoundSystemHealthHUDOpen = true
+WoundSystemSelectedLimbId = "head"
+local first = hook._t.HUDPaint.WoundDollAndPanel()
+local fresh = first == nil and WoundSystemSelectedLimbId == nil and GUIState.HoverAnims.head == 0
+    and GUIState.LastHoverStates.head == false
+GUIState.selectedLimbData = { id = "head", state = limb }
+GUIState.HoverAnims.head = 0.5
+GUIState.LastHoverStates.head = true
+WoundSystemSelectedLimbId = "head"
+local stillSelected = hook._t.HUDPaint.WoundDollAndPanel() ~= nil
+WoundSystemHealthHUDOpen = false
+hook._t.Think.WSZC_ClearClosedWoundViewSelection()
+local closed = GUIState.selectedLimbData == nil and WoundSystemSelectedLimbId == nil
+    and GUIState.HoverAnims.head == 0 and GUIState.LastHoverStates.head == false
+-- If close and reopen happen before Think, the changed native openTime still
+-- clears the previous selection before the first native draw.
+WoundSystemHealthHUDOpen = true
+GUIState.openTime = 2
+hook._t.HUDPaint.WoundDollAndPanel()
+GUIState.selectedLimbData = { id = "head", state = limb }
+WoundSystemSelectedLimbId = "head"
+GUIState.openTime = 3
+local reopened = hook._t.HUDPaint.WoundDollAndPanel() == nil
+    and WoundSystemSelectedLimbId == nil
+return fresh and stillSelected and closed, reopened and limb.skin == 12 and limb.broken == true
+''')
+    check('R55 WoundView selection and hover reset on close, but remain during an open view', selection_reset[0])
+    check('R56 fast reopen clears stale selection before native draw without changing damage', selection_reset[1])
 
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)

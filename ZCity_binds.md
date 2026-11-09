@@ -57,17 +57,26 @@
 Источник: `lua/homigrad/cl_hud.lua:209-268, 391-458, 460-520`.
 
 Пункты меню собираются хуком `radialOptions`: фразы, снаряжение/броня,
-меню патронов, перезарядка с пола, сошки, вправление вывихов (radial `hg_fixdislocation`
-остаётся ванильным; дополнительно из WoundView доступна ручная мини-игра
-`FIX DISLOCATION`), ПНО,
-«Examine Body» (заменён компат-аддоном на «Проверить травмы»), крафт инженера,
+меню патронов, перезарядка с пола, сошки, ПНО и т.д. При активном WSZC старые
+медицинские пункты `DislocatedJoint*` удаляются из меню, а серверные
+`hg_fixdislocation` / `WB.FixDislocation` блокируются, включая прямой bind.
+Вправление выполняется только через ручную мини-игру `FIX DISLOCATION` в
+WoundView; «Examine Body» заменён на «Проверить травмы», крафт инженера,
 запрос поддержки/авиаудара, скан фурри, змейка и т.д.
 
 Мини-игра `FIX DISLOCATION` из WoundView — родная C:U, но компат уменьшает её
 клип (`zc_woundsystem_compat_native_minigame_zoom`, по умолчанию `0.85`) и
 стартовое смещение кости (`zc_woundsystem_compat_dislocation_start`, по
-умолчанию `35`), чтобы кость была на экране и нажималась. Общий размер спрайта руки
-во всех мини-играх — `zc_woundsystem_compat_hand_cursor_scale` (0.55).
+умолчанию `35`), чтобы кость была на экране и нажималась. Когда нарисованная
+кость попадает в native-допуск стыка, namespaced `WSZC_DislocationVisualComplete`
+немедленно запрашивает завершение; сервер проверяет живую сессию/ID/допуск и
+сразу снимает вывих, не требуя дополнительного удара или отпускания ЛКМ.
+Трёхсекундного удержания нет: `DislocationSuccessTimer = 3` — порог
+`distance * 0.2`, то есть 15 simulation units. Native session refs теперь
+инициализируются и на modern-api пути с ранним `Setup()` return, поэтому
+сервер больше не отбрасывает правильное совмещение из-за пустого `CUSessions`.
+Общий размер спрайта руки во всех мини-играх —
+`zc_woundsystem_compat_hand_cursor_scale` (0.55).
 
 Внешний вид куклы WoundView и руки мини-игр теперь берётся из архива
 `для переделывания интерфейса.zip`: 15 исходных слоёв `zcity_delta/unitmenu/limbs`,
@@ -93,9 +102,10 @@
 `100/400`, spring и collision clamp отключены. Значение `0` возвращает HandPhysics
 и developer offsets C:U. Точка захвата
 `..._hand_pivot_x 0.4` / `..._hand_pivot_y 0.1`, системный курсор
-скрыт только во время игры (`..._hide_minigame_cursor 1`). Спрайты:
-`wszc/minigame/hand_idle.png` / `hand_click.png`; arrow-only откат:
-`..._hide_minigame_hand 1`.
+скрыт во время каждой игры (`..._hide_minigame_cursor 1`) на world panel и
+overlay. Спрайты: `wszc/minigame/hand_idle.png` / `hand_click.png`;
+`..._hide_minigame_hand 1` отключает только их отрисовку и не возвращает
+стрелку. Явный arrow-режим — `..._hide_minigame_cursor 0`.
 
 Расход ZCity-бинта соответствует оригинальному `SWEP:Bandage`: физический
 `swep.modeValues[idx]` уменьшается на фактически удалённую severity. Закрытие
@@ -105,16 +115,20 @@ severity 4 стоит 4 заряда и у малого (40), и у большо
 Цель бинта выбирается по реальным `organism.wounds`/aftercare, а не по stale
 `isBandaged` или shadow-only bleed; после последнего treatment native-сессия
 завершается `completed`, проходит `onClose/AfterUse` и снимает overlay/slot.
-Ложный `disinfected/processing` скрыт точечно в native `AddHudIcon`, при этом
-infection/bleed/fracture и настоящий `disinfectTime` не затрагиваются.
+`disinfected/processing`, след укола и обычные C:U bleed иконки скрыты в
+WoundView. **Fracture/dislocation остаются видимыми**; infection/shrapnel и
+настоящий `disinfectTime` не затрагиваются. Красная 48px капля теперь означает только
+реальную артерию: native status `WSZC_ARTERIAL_BLEEDING` синхронизируется из
+`org.arterialwounds`, исчезает после жгута и не зависит от обычной раны/бинта.
 
 Кукла расставлена по приложенному зелёному WoundView-эталону `2222.png`:
 16 независимых `REFERENCE_BOXES`, crop-first head/neck и раздельная калибровка
 каждой части. **Стандартный чёрный `(0,0,0)`** сохранён. **Обводка по форме
 каждого лимба** использует `EDGE_WIDTH=17` (3–4 px), для пальцев 11, плюс
-внешний `MaxFilter(9)` на голове/животе/ногах, `EDGE_AA_RADIUS=0.45` и LINEAR
-filtering только на время native WoundView;
-ни один белый пиксель не касается границы прямоугольного спрайта. Neck без blur
+внешний `MaxFilter(9)` на голове/животе/ногах и `EDGE_AA_RADIUS=0.45`.
+Добавленный ранее LINEAR filtering native WoundView УБРАН: используется родное
+texture sampling, render filter stack не изменяется. Ни один белый пиксель не
+касается границы прямоугольного спрайта. Neck без blur
 один владеет
 швом `y=317`, abdomen имеет внутренний seam `y=520`; «конструктора» и единого
 `outer_band` нет.

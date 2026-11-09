@@ -11,9 +11,41 @@
 
 if not CLIENT then return end
 
+-- Remove the old limb health hover card, including after a Lua hot reload.
+hook.Remove("PostDrawHUD", "WSZC_UnitmenuLimbTooltip")
+
 WSZC = WSZC or {}
 if WSZC._ClientLayoutLoaded then return end
 WSZC._ClientLayoutLoaded = true
+
+-- ZCity's bandages and tourniquets use clientside models and entity netvars.
+-- An explicit organism reset removes both even on a detached ragdoll.  The
+-- server still clears the real state and sends ZCity's normal netvars first.
+net.Receive("WSZC_ResetMedicalVisuals", function()
+    local count = net.ReadUInt(8)
+    for _ = 1, count do
+        local index = net.ReadUInt(16)
+        if zb and zb.net and type(zb.net[index]) == "table" then
+            zb.net[index].bandaged_limbs = {}
+            zb.net[index].Tourniquets = {}
+            zb.net[index].wounds, zb.net[index].arterialwounds = {}, {}
+        end
+        local ent = Entity(index)
+        if IsValid(ent) then
+            ent.bandaged_limbs, ent.tourniquets = {}, {}
+            ent.wounds, ent.arterialwounds = {}, {}
+            if IsValid(ent.bandagesModel) then ent.bandagesModel:Remove() end
+            ent.bandagesModel = nil
+            if type(ent.tourniquetsM) == "table" then
+                for _, model in pairs(ent.tourniquetsM) do
+                    if IsValid(model) then model:Remove() end
+                end
+            end
+            ent.tourniquetsM = nil
+        end
+    end
+end)
+
 
 local cvFullscreen = CreateClientConVar("zc_woundsystem_compat_fullscreen_minigame", "1", true, false,
     "1 = stretch the bandage / syringe minigames over the whole screen")
@@ -248,7 +280,7 @@ function WSZC.InstallMinigameTextFilter()
                 local ok, a, b = pcall(origBackdrop, data)
                 WSZC._MinigameBackdropDrawing = false
                 if not ok then
-                    ErrorNoHalt("[ZCity/CU compat] minigame backdrop failed: " .. tostring(a) .. "\n")
+                    if WSZC.Warn then WSZC.Warn("minigame backdrop failed: " .. tostring(a)) end
                     return
                 end
                 return a, b
@@ -449,6 +481,7 @@ local DOLL_DRAW_MARKERS = {
     "wszc/unitmenu/limbs/", "wszc/unitmenu/status/",
     "casunknown-images/middle/", "casunknown-images/outlines/",
     "casunknown-images/icons/", "casunknown-images/screen/uipoint",
+    "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical",
 }
 local function IsDollDrawMaterial(name)
     if type(name) ~= "string" then return false end
@@ -461,14 +494,35 @@ end
 WSZC.IsDollDrawMaterial = IsDollDrawMaterial
 
 --- Only the archive doll's FILL sprites need a white draw colour: C:U
---- multiplies the middle sprite by `finalMiddle` (normally pure black), so a
---- slate `_fill.png` would otherwise render pure black.  The owner explicitly
---- asked to keep the doll's colour and NOT to introduce new colour overrides.
+--- Neutral-white `_fill.png` limb masks are tinted multiplicatively by
+--- `surface.SetDrawColor`: pure black `(0, 0, 0)` at 100% muscle, smoothly
+--- reddening as muscle drops, and solid red `(255, 0, 0)` at `< 10%` / `0%`
+--- muscle WITHOUT C:U's sinusoidal `flashAlpha` blinking the limb transparent
+--- over the open 3D viewport.
 ---
 --- The outline sprites (`*_edge.png`) are deliberately NOT in this list: C:U
---- must keep full control of `finalOutline` (white -> black on hover), so the
---- ORIGINAL white outline and the native hover reaction stay exactly as they
---- were.  C:U's alpha is preserved in both cases.
+--- keeps full control of `finalOutline` (white -> black on hover, or red as
+--- skin takes damage).
+local FILL_STEM_TO_LIMB = {
+    head = "head",
+    neck = "neck",
+    thorax = "thorax",
+    abdomen = "abdomen",
+    pelvis = "pelvis",
+    arm_r = "arm_R",
+    arm_l = "arm_L",
+    forearm_r = "forearm_R",
+    forearm_l = "forearm_L",
+    hand_r = "hand_R",
+    hand_l = "hand_L",
+    thigh_r = "thigh_R",
+    thigh_l = "thigh_L",
+    crus_r = "crus_R",
+    crus_l = "crus_L",
+    foot_r = "foot_R",
+    foot_l = "foot_L",
+}
+
 local function IsDollLimbMaterial(name)
     if type(name) ~= "string" then return false end
     local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
@@ -476,6 +530,14 @@ local function IsDollLimbMaterial(name)
         and lower:find("_fill", 1, true) ~= nil
 end
 WSZC.IsDollLimbMaterial = IsDollLimbMaterial
+
+local function DollLimbIdFromMaterial(name)
+    if type(name) ~= "string" then return nil end
+    local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
+    local stem = lower:match("wszc/unitmenu/limbs/([%w_]+)_fill$")
+    return stem and FILL_STEM_TO_LIMB[stem] or nil
+end
+WSZC.DollLimbIdFromMaterial = DollLimbIdFromMaterial
 
 local function MaterialName(mat)
     if not mat or not mat.GetName then return nil end
@@ -617,15 +679,17 @@ function WSZC.WoundViewEmptyClick(mx, my, s)
     -- the label drawn to its right.
     local ap = _G.WoundSystemActionButtonPos
     if type(ap) == "table" and type(ap.x) == "number" and type(ap.y) == "number" then
-        if Inside(ap.x - 60 * s, ap.y - 60 * s, 300 * s, 120 * s) then return false end
+        if Inside(ap.x - 60 * s, ap.y - 60 * s, 320 * s, 210 * s) then return false end
     end
     return true
 end
 
+local woundViewWasOpen = false
 local woundViewClickArmed = false
 hook.Add("Think", "WSZC_WoundViewEmptyClickClose", function()
     if not cvCloseEmptyClick:GetBool() then return end
     if WoundSystemHealthHUDOpen ~= true then
+        woundViewWasOpen = false
         woundViewClickArmed = false
         return
     end
@@ -640,6 +704,11 @@ hook.Add("Think", "WSZC_WoundViewEmptyClickClose", function()
     if hg and type(hg.IsExternalMenuOpen) == "function" and hg.IsExternalMenuOpen() then return end
 
     local pressed = input and input.IsMouseDown and input.IsMouseDown(MOUSE_LEFT) or false
+    if not woundViewWasOpen then
+        woundViewWasOpen = true
+        woundViewClickArmed = pressed
+        if pressed then return end
+    end
     if pressed and not woundViewClickArmed then
         woundViewClickArmed = true
         local mx, my = gui.MousePos()
@@ -658,7 +727,8 @@ end)
 local savedHudFn, hudWrapper
 local cvUnitmenuDoll -- declared below with the other doll convars
 local drawWrappersInstalled = false
-local localeWrapped, directWrapped = false, false
+local localeWrapped = false
+local directWrappers = setmetatable({}, { __mode = "k" })
 
 local function InstallDrawWrappers()
     if type(draw) ~= "table" or type(surface) ~= "table" then return false end
@@ -676,6 +746,8 @@ local function InstallDrawWrappers()
 
         local origTex = surface.DrawTexturedRect
         surface.DrawTexturedRect = function(x, y, w, h, ...)
+            if WSZC.HiddenNativeStatusIconDraw
+                and WSZC.HiddenNativeStatusIconDraw() then return end
             if HiddenRegion(x, y, w, h) then return end
             return origTex(x, y, w, h, ...)
         end
@@ -683,6 +755,8 @@ local function InstallDrawWrappers()
         if type(surface.DrawTexturedRectRotated) == "function" then
             local origRot = surface.DrawTexturedRectRotated
             surface.DrawTexturedRectRotated = function(x, y, w, h, ...)
+                if WSZC.HiddenNativeStatusIconDraw
+                    and WSZC.HiddenNativeStatusIconDraw() then return end
                 if HiddenRegion(x, y, w, h) then return end
                 return origRot(x, y, w, h, ...)
             end
@@ -778,8 +852,8 @@ local function InstallDrawWrappers()
     end
 
     -- These two globals belong to C:U and can arrive after us.  Retry them on
-    -- every installer tick with their own flags, so a late C:U load still gets
-    -- the tooltip filter without wrapping draw/surface twice.
+    -- every installer tick, so a late C:U load or a replacement direct-queue
+    -- function still gets the tooltip filter without wrapping draw/surface twice.
     if not localeWrapped and type(WoundSystemQueueLocaleTooltip) == "function" then
         local origLocale = WoundSystemQueueLocaleTooltip
         WoundSystemQueueLocaleTooltip = function(key, x, y, w, h, ...)
@@ -789,40 +863,84 @@ local function InstallDrawWrappers()
         localeWrapped = true
     end
 
-    if not directWrapped and type(WoundSystemQueueDirectTooltip) == "function" then
+    if type(WoundSystemQueueDirectTooltip) == "function"
+        and not directWrappers[WoundSystemQueueDirectTooltip] then
         local origDirect = WoundSystemQueueDirectTooltip
-        WoundSystemQueueDirectTooltip = function(key, ...)
+        local function filteredDirect(key, ...)
+            -- Hide only the hover descriptions of WoundView action points
+            -- (shrapnel, dislocation, tourniquet and splint).  The point,
+            -- its label and click handling are still drawn by C:U.
+            if type(key) == "string" and string.sub(key, 1, 7) == "action_" then return false end
             if cvHideInventory:GetBool() and type(key) == "string"
                 and string.sub(key, 1, 5) == "slot_" then return end
             return origDirect(key, ...)
         end
-        directWrapped = true
+        directWrappers[filteredDirect] = true
+        WoundSystemQueueDirectTooltip = filteredDirect
+        if WoundSystem and WoundSystem.Client and WoundSystem.Client.QueueDirectTooltip == origDirect then
+            WoundSystem.Client.QueueDirectTooltip = filteredDirect
+        end
     end
 
     return true
 end
 WSZC.InstallCUHudDrawWrappers = InstallDrawWrappers
 
--- C:U owns disinfectTime as a real infection-resistance timer.  Do not zero
--- it and do not replace the whole medical icon layer: wrap ONLY the native
--- AddHudIcon upvalue and skip the single Icons.disinfected entry.  Consequently
--- the slot is not even appended (other icons keep their native spread), while
--- server disinfection and infection_up/down/neutral continue unchanged.
+-- Keep treatment state intact; filter ONLY presentation in native WoundView.
+-- Owner-marked icons: disinfect spray and injection.  Fracture/dislocation
+-- and all bleeding icons (ordinary + arterial) stay visible.
+-- Infection, shrapnel, tourniquet/splint and internal-bleed status keep their
+-- existing behaviour. The amputation state is preserved without its old icon.
 local disinfectedFilterFns = setmetatable({}, { __mode = "k" })
 local disinfectedFilterWrappers = setmetatable({}, { __mode = "k" })
 
-local function IsDisinfectedMaterial(mat, icons)
-    -- Icons is LOCAL in cl_health_gui.lua.  Looking only at _G.Icons made the
-    -- old filter a no-op in the real game even though its synthetic test passed.
-    icons = icons or _G.Icons
-    if type(icons) == "table" and mat == icons.disinfected then return true end
+local HIDDEN_NATIVE_STATUS_KEYS = {
+    disinfected = true, injection = true,
+}
 
-    -- Identity is the primary check.  The exact native path also covers a
-    -- padded/recreated IMaterial and builds where Icons cannot be inspected.
-    local name = MaterialName(mat)
-    if type(name) ~= "string" then return false end
-    name = name:lower():gsub("\\", "/")
-    return name:find("casunknown-images/icons/disinfected", 1, true) ~= nil
+local HIDDEN_NATIVE_STATUS_STEMS = {
+    ["casunknown-images/icons/disinfected"] = true,
+    ["casunknown-images/icons/injectionwound"] = true,
+    ["casunknown-images/icons/injectionwound_red"] = true,
+}
+
+local function NormalizeStatusMaterialName(raw)
+    if type(raw) ~= "string" or raw == "" then return nil end
+    local name = raw:lower():gsub("\\", "/")
+    name = name:gsub("^materials/", "")
+    name = name:gsub("%.%w+$", "")
+    name = name:gsub("_padded_red$", "_red"):gsub("_padded$", "")
+    return name
+end
+
+function WSZC.IsHiddenNativeStatusIcon(mat, icons)
+    -- Icons is LOCAL in cl_health_gui.lua.  Identity covers recreated/padded
+    -- materials and mock/native paths; normalized stem matching covers real
+    -- Garry's Mod IMaterial:GetName() strings (which omit .png and may carry
+    -- _padded or !png_ runtime prefixes).
+    icons = icons or _G.Icons
+    if type(icons) == "table" then
+        for key in pairs(HIDDEN_NATIVE_STATUS_KEYS) do
+            if mat == icons[key] then return true end
+        end
+    end
+    local raw = type(mat) == "string" and mat or MaterialName(mat)
+    local name = NormalizeStatusMaterialName(raw)
+    if not name then return false end
+    if HIDDEN_NATIVE_STATUS_STEMS[name] then return true end
+    if name:find("casunknown-images/icons/disinfected", 1, true)
+        or name:find("casunknown-images/icons/injectionwound", 1, true) then
+        return true
+    end
+    return false
+end
+
+-- Second line of defence for injection sprites drawn OUTSIDE AddHudIcon and
+-- for native builds whose closure layout defeats upvalue discovery.  The flag
+-- is set only around WoundDollAndPanel, never around a treatment minigame.
+function WSZC.HiddenNativeStatusIconDraw()
+    return WSZC.CUStatusIconFiltered == true
+        and WSZC.IsHiddenNativeStatusIcon(WSZC._DrawMaterialName, _G.Icons)
 end
 
 local function PatchDisinfectedIcon(fn)
@@ -858,7 +976,7 @@ local function PatchDisinfectedIcon(fn)
             end
             local nativeIcons = icons
             local wrapped = function(items, mat, ...)
-                if IsDisinfectedMaterial(mat, nativeIcons) then return end
+                if WSZC.IsHiddenNativeStatusIcon(mat, nativeIcons) then return end
                 return addHudIcon(items, mat, ...)
             end
             disinfectedFilterWrappers[wrapped] = true
@@ -892,27 +1010,38 @@ function WSZC.InstallDisinfectedIconFilter()
     return PatchDisinfectedIcon(fn)
 end
 
--- A previous HUD/minigame can leave point sampling active.  The generated
--- contour now carries a small source-alpha fringe; LINEAR sampling resolves it
--- instead of turning that fringe back into stair steps.  Scope the override to
--- C:U's native WoundView call and always restore both filter stacks, including
--- when the native draw errors.
-local function BeginUnitmenuSmoothing()
-    if not cvUnitmenuDoll:GetBool() then return false end
-    local linear = TEXFILTER and TEXFILTER.LINEAR
-    if not linear or not render or not render.PushFilterMag or not render.PushFilterMin
-        or not render.PopFilterMag or not render.PopFilterMin then
-        return false
+-- C:U draws its red fracture directly from state.broken, independently of
+-- the custom bandaged status.  During this HUD draw only, hide that one native
+-- icon when the authoritative bandage marker exists; keep the real state and
+-- all medical logic unchanged.  Restore on errors too.
+local function FractureHudProjection()
+    local client = WoundSystemClientState
+    local limbs = type(client) == "table" and client.PlayerLimbs or nil
+    local saved = {}
+    if type(limbs) ~= "table" then return saved end
+    local id = WSZC.FRACTURE_BANDAGED_STATUS_ID or "WSZC_FRACTURE_BANDAGED"
+    for _, state in pairs(limbs) do
+        local statuses = type(state) == "table" and state.customStatuses or nil
+        if type(statuses) == "table" and statuses[id] == true then
+            if state.broken == true then
+                saved[#saved + 1] = { state = state, broken = true }
+                state.broken = false
+            else
+                -- The marker is internal only, including while a healed
+                -- limb is waiting for the latest server status update.
+                saved[#saved + 1] = { statuses = statuses, id = id, value = true }
+                statuses[id] = nil
+            end
+        end
     end
-    render.PushFilterMag(linear)
-    render.PushFilterMin(linear)
-    return true
+    return saved
 end
 
-local function EndUnitmenuSmoothing(active)
-    if not active then return end
-    render.PopFilterMin()
-    render.PopFilterMag()
+local function RestoreFractureHudProjection(saved)
+    for _, entry in ipairs(saved) do
+        if entry.state then entry.state.broken = entry.broken end
+        if entry.statuses then entry.statuses[entry.id] = entry.value end
+    end
 end
 
 local function InstallHudFilter()
@@ -926,19 +1055,24 @@ local function InstallHudFilter()
 
     savedHudFn = fn
     hudWrapper = function(...)
+        if WSZC.SyncWoundViewSelection then WSZC.SyncWoundViewSelection() end
         -- A minigame draws its own overlay.  Leaving WoundView behind it made
         -- the doll, FIX DISLOCATION label and tooltips appear stacked over the
         -- bone/hand ("too many reductions, all too high to click").
         if WSZC.WSZCMinigameActive() or WSZC.NativeMinigameActive() then return end
-        if not (cvHideUnitPanel:GetBool() or cvHideInventory:GetBool()) then
-            return fn(...)
-        end
         local prevFiltered = WSZC.CUHudFiltered
-        WSZC.CUHudFiltered = true
-        local smoothing = BeginUnitmenuSmoothing()
+        local prevStatusFiltered = WSZC.CUStatusIconFiltered
+        WSZC.CUStatusIconFiltered = true
+        if cvHideUnitPanel:GetBool() or cvHideInventory:GetBool() then
+            WSZC.CUHudFiltered = true
+        end
+        -- Keep native texture sampling: forcing LINEAR here blurred the whole
+        -- WoundView.  This wrapper must not alter either render filter stack.
+        local projection = FractureHudProjection()
         local ok, a, b, c = pcall(fn, ...)
-        EndUnitmenuSmoothing(smoothing)
+        RestoreFractureHudProjection(projection)
         WSZC.CUHudFiltered = prevFiltered
+        WSZC.CUStatusIconFiltered = prevStatusFiltered
         if not ok then error(a, 0) end
         return a, b, c
     end
@@ -968,10 +1102,14 @@ end
 WSZC.CUHudFilterEnabled = CUHudFilterEnabled
 
 hook.Add("PreDrawHUD", "WSZC_CUHudFilterPre", function()
-    if CUHudFilterEnabled() then WSZC.CUHudFiltered = true end
+    if CUHudFilterEnabled() then
+        WSZC.CUHudFiltered = true
+        WSZC.CUStatusIconFiltered = true
+    end
 end)
 hook.Add("PostDrawHUD", "WSZC_CUHudFilterPost", function()
     WSZC.CUHudFiltered = false
+    WSZC.CUStatusIconFiltered = false
 end)
 
 local function InstallInventoryProxy()
@@ -1033,12 +1171,15 @@ hook.Add("Think", "WSZC_CUInventoryLayout", function()
     -- is what keeps the doll / status icons out of HiddenRegion().
     WSZC.InstallMaterialTracker()
     -- Register the client half of the stump status after C:U's shared status
-    -- module has loaded.  The server syncs only this extra customStatus key;
-    -- native Statuses.GetActive() draws it before every arterial bleed icon.
+    -- module has loaded. It remains synchronized but has no WoundView icon.
     if WSZC.InstallAmputationStatus then WSZC.InstallAmputationStatus() end
+    if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
+    if WSZC.InstallArterialBleedingStatus then WSZC.InstallArterialBleedingStatus() end
+    if WSZC.InstallFractureBandagedStatus then WSZC.InstallFractureBandagedStatus() end
     WSZC.InstallMinigameTextFilter()
-    if not (cvHideInventory:GetBool() or cvHideUnitPanel:GetBool()) then return end
+    -- Status filtering is independent of the optional scanner/inventory hide.
     InstallDrawWrappers()
+    if not (cvHideInventory:GetBool() or cvHideUnitPanel:GetBool()) then return end
     -- If C:U's HUDPaint hook is missing/renamed, fall back to a whole-frame
     -- draw filter instead of leaving the panel visible.
     WSZC.CUHudUseFallback = not InstallHudFilter()
@@ -1093,9 +1234,9 @@ local cvHandPivotY = CreateClientConVar("zc_woundsystem_compat_hand_pivot_y", "0
 local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_screen", "0.34", true, false,
     "Legacy unused option: the compact hand is scaled, not screen-capped")
 local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "1", true, false,
-    "1 = hide the OS arrow only while the drawn minigame hand is active")
+    "1 = hide the OS cursor during every minigame while preserving mouse input")
 local cvHideHand = CreateClientConVar("zc_woundsystem_compat_hide_minigame_hand", "0", true, false,
-    "1 = hide the hand and use the standard OS arrow instead")
+    "1 = hide only the drawn hand artwork; does not re-enable the OS cursor")
 local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "1", true, false,
     "1 = pin the gameplay hand and its visible grip to the real cursor; 0 = C:U inertia + developer offsets")
 -- Archived 0/1 values from the former no-hand build survive a default change.
@@ -1124,7 +1265,7 @@ function WSZC.MigrateHumanHandDefaults()
 end
 WSZC.MigrateHumanHandDefaults()
 local cvDollTint = CreateClientConVar("zc_woundsystem_compat_unitmenu_tint", "1", true, false,
-    "1 = draw the slate limbs with a white tint so they do not render pure black")
+    "1 = tint *_fill.png from black (100% muscle) to solid red (0% muscle) without transparent blinking; 0 = flat black")
 
 WSZC.UnitmenuHandSrcW = 512
 WSZC.UnitmenuHandSrcH = 1260
@@ -1304,8 +1445,8 @@ function WSZC.UnitmenuHandAlpha(fallback)
     return UnitmenuHandMaterials() and 255 or (fallback or 153)
 end
 
---- True only in the opt-in "drawn hand" mode.  Native games use this to
---- suppress their handgrasp* sprites when the arrow is the pointer.
+--- Controls ONLY the drawn hand artwork.  The OS cursor is hidden separately
+--- during every active game, including when this returns false.
 function WSZC.ShowMinigameHand()
     return not cvHideHand:GetBool()
 end
@@ -1389,6 +1530,45 @@ local function FindCUGUIState()
     if type(savedHudFn) == "function" then return walk(savedHudFn, 0) end
     return nil
 end
+
+-- C:U keeps the last hovered limb in its private GUIState even after closing.
+-- Reset only UI selection/hover state, never the underlying medical state.
+local selectionGUIState, selectionOpenTime, selectionWasOpen
+local function ClearWoundViewSelection(guiState)
+    if guiState then
+        guiState.selectedLimbData = nil
+        for id in pairs(guiState.HoverAnims) do guiState.HoverAnims[id] = 0 end
+        for id in pairs(guiState.LastHoverStates) do guiState.LastHoverStates[id] = false end
+    end
+    WoundSystemSelectedLimbId = nil
+end
+
+function WSZC.SyncWoundViewSelection()
+    local isOpen = WoundSystemHealthHUDOpen == true
+    -- Avoid repeatedly searching all HUD closures before C:U has loaded.
+    local guiState = (isOpen or cachedCUGUIState or WoundSystemSelectedLimbId ~= nil)
+        and FindCUGUIState() or nil
+    if not isOpen then
+        if guiState and (selectionWasOpen or guiState.selectedLimbData ~= nil) then
+            ClearWoundViewSelection(guiState)
+        else
+            WoundSystemSelectedLimbId = nil
+        end
+        selectionWasOpen = false
+        return
+    end
+    if not guiState then return end
+    -- openTime catches a close/reopen between frames, when no Think saw the
+    -- closed state. A fresh hover in the same draw can immediately select again.
+    if not selectionWasOpen or selectionGUIState ~= guiState or selectionOpenTime ~= guiState.openTime then
+        ClearWoundViewSelection(guiState)
+    end
+    selectionGUIState, selectionOpenTime, selectionWasOpen = guiState, guiState.openTime, true
+end
+
+hook.Add("Think", "WSZC_ClearClosedWoundViewSelection", function()
+    if WoundSystemHealthHUDOpen ~= true then WSZC.SyncWoundViewSelection() end
+end)
 
 local function FindCULimbs()
     if cachedCULimbs and IsCULimbsTable(cachedCULimbs) then return cachedCULimbs end
@@ -1670,20 +1850,6 @@ function WSZC.RestoreUnitmenuDoll()
     return true
 end
 
----------------------------------------------------------------------------
--- Source-screenshot limb tooltip (the stock C:U doll has no such hover card).
----------------------------------------------------------------------------
-local UNITMENU_LIMB_NAMES = {
-    head = "Head", neck = "Neck", thorax = "Thorax", abdomen = "Abdomen",
-    pelvis = "Pelvis",
-    arm_R = "Right upper arm", arm_L = "Left upper arm",
-    forearm_R = "Right forearm", forearm_L = "Left forearm",
-    hand_R = "Right hand", hand_L = "Left hand",
-    thigh_R = "Right thigh", thigh_L = "Left thigh",
-    crus_R = "Right shin", crus_L = "Left shin",
-    foot_R = "Right foot", foot_L = "Left foot",
-}
-
 UnitmenuUIScale = function()
     local value = 1
     local cv = GetConVar and GetConVar("woundsys_ui_scale") or nil
@@ -1694,8 +1860,7 @@ UnitmenuUIScale = function()
 end
 
 --- Reproduce C:U's own rectangle hit test, including its order (a later limb
---- wins an overlap) and pain shake.  The tooltip therefore names the SAME part
---- that a click/action point selects, rather than maintaining a second layout.
+--- wins an overlap) and pain shake, matching the part selected by C:U.
 function WSZC.UnitmenuHover(mx, my)
     if type(mx) ~= "number" or type(my) ~= "number" then return nil end
     local limbs = FindCULimbs()
@@ -1733,55 +1898,6 @@ function WSZC.UnitmenuHover(mx, my)
     return hovered
 end
 
-function WSZC.UnitmenuTooltipLines(id, state)
-    local title = UNITMENU_LIMB_NAMES[id] or tostring(id or "Limb")
-    local skin = math.Clamp(math.Round(tonumber(state and state.skin) or 0), 0, 100)
-    local muscle = math.Clamp(math.Round(tonumber(state and state.muscle) or 0), 0, 100)
-    return title, string.format("Skin: %d%%", skin), string.format("Muscle: %d%%", muscle)
-end
-
-hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip", function()
-    if WoundSystemHealthHUDOpen ~= true or not cvUnitmenuDoll:GetBool() then return end
-    if WSZC.WSZCMinigameActive() or WSZC.NativeMinigameActive() then return end
-    local ply = LocalPlayer()
-    if IsValid(ply) and ply.Alive and not ply:Alive() then return end
-
-    local mx, my = gui.MousePos()
-    local hovered = WSZC.UnitmenuHover(mx, my)
-    if not hovered then return end
-    local title, skinLine, muscleLine = WSZC.UnitmenuTooltipLines(hovered.id, hovered.state)
-
-    local scale = ScrH() / 1080
-    local font = "ZB_ProotOSMedium"
-    surface.SetFont(font)
-    local titleW = surface.GetTextSize(title)
-    local skinW = surface.GetTextSize(skinLine)
-    local muscleW = surface.GetTextSize(muscleLine)
-    local padX, padTop = 18 * scale, 18 * scale
-    local lineStep = 34 * scale
-    local w = math.max(160 * scale, math.max(titleW, skinW, muscleW) + 2 * padX)
-    local h = 126 * scale
-    local x, y = mx + 28 * scale, my + 20 * scale
-    if x + w > ScrW() - 8 * scale then x = mx - w - 28 * scale end
-    if y + h > ScrH() - 8 * scale then y = ScrH() - h - 8 * scale end
-    x, y = math.max(8 * scale, x), math.max(8 * scale, y)
-
-    -- PostDrawHUD is outside WoundView.  Do not let its hidden-scanner filter
-    -- eat a perfectly valid tooltip when hovering the left arm/hand.
-    local filtered = WSZC.CUHudFiltered
-    WSZC.CUHudFiltered = false
-    surface.SetDrawColor(0, 0, 0, 200 * (hovered.alpha or 1))
-    surface.DrawRect(x, y, w, h)
-    local textColor = Color(255, 255, 255, 255 * (hovered.alpha or 1))
-    draw.SimpleText(title, font, x + padX, y + padTop, textColor,
-        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-    draw.SimpleText(skinLine, font, x + padX, y + padTop + lineStep, textColor,
-        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-    draw.SimpleText(muscleLine, font, x + padX, y + padTop + lineStep * 2, textColor,
-        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-    WSZC.CUHudFiltered = filtered
-end)
-
 local function ApplyUnitmenuIcons()
     local icons = _G.Icons
     if type(icons) ~= "table" or icons._WSZCUnitmenuPatched then return false end
@@ -1789,8 +1905,9 @@ local function ApplyUnitmenuIcons()
     if not built then return false end
     for key, mat in pairs(built) do icons[key] = mat end
     -- Do NOT replace Icons.disinfected with infection.png: that still leaves a
-    -- processing slot on the hand and confuses it with a real infection.  The
-    -- native AddHudIcon filter above removes exactly that one entry instead.
+    -- processing slot and confuses it with a real infection.  AddHudIcon skips
+    -- disinfect/injection and ordinary bleed; fracture/dislocation and the
+    -- distinct arterial material remain visible.
     icons._WSZCUnitmenuPatched = true
     return true
 end
@@ -1805,6 +1922,25 @@ WSZC.ApplyUnitmenuIcons = ApplyUnitmenuIcons
 local nativeHandInstalled, handSwap, handHide = false, false, false
 local materialTrackerInstalled = false
 local origSetMaterial, origRectRotated, origTexturedRect, origSetDrawColor
+
+-- The upstream minigame defaults to alien-yellow blood unless its unrelated
+-- global blood-color convar is set to red. ZCity uses human blood: substitute
+-- only the shard sprite, for both the embedded and external C:U runtimes.
+local redShrapnelMaterials = {}
+local function RedShrapnelMaterial(name)
+    local game = WoundSystemShrapnelMinigame
+    if type(game) ~= "table" or game.active ~= true or type(name) ~= "string" then return nil end
+    local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
+    local stem = lower:match("casunknown%-images/shrapnelminigame/(shrapnelpiece)$")
+        or lower:match("casunknown%-images/shrapnelminigame/(shrapnelpiece_padded)$")
+    if not stem or type(Material) ~= "function" then return nil end
+    if not redShrapnelMaterials[stem] then
+        local mat = Material("casunknown-images/shrapnelminigame/" .. stem .. "_red.png")
+        if not mat or (mat.IsError and mat:IsError()) then return nil end
+        redShrapnelMaterials[stem] = mat
+    end
+    return redShrapnelMaterials[stem]
+end
 
 --- Installed unconditionally (not only when handanim is enabled): the HUD
 --- filter needs the current material to decide whether a draw call belongs to
@@ -1826,6 +1962,11 @@ function WSZC.InstallMaterialTracker()
                 WSZC._DrawMaterialName = MaterialName(mat)
             end
         end
+        local redPiece = RedShrapnelMaterial(WSZC._DrawMaterialName)
+        if redPiece then
+            mat = redPiece
+            WSZC._DrawMaterialName = MaterialName(mat)
+        end
         return origSetMaterial(mat)
     end
 
@@ -1836,17 +1977,87 @@ function WSZC.InstallMaterialTracker()
     -- is removed by the Clip.DrawHeader / DrawExitGuide / DrawBackdrop hooks
     -- and the font filter instead; gameplay sprites always draw.
 
-    -- C:U multiplies the doll's middle sprite by `finalMiddle`, normally
-    -- pure black.  Our `_fill.png` is the standard black of the archive
-    -- layers, so it needs a white tint to stay visible.  Only the fills are
-    -- overridden; the `_edge.png` contours keep C:U's `finalOutline`, so the
-    -- white outline and its hover reaction (white -> black) are preserved.
-    -- C:U's alpha is preserved.
+    -- `_fill.png` sprites carry a neutral white `(255, 255, 255)` RGB mask so
+    -- GMod's multiplicative `surface.SetDrawColor` renders `(0, 0, 0)` black at
+    -- 100% muscle, smoothly transitions to red as muscle drops, and stays solid
+    -- `(255, 0, 0)` red at `< 10%` / `0%` muscle instead of letting C:U's
+    -- sinusoidal `flashAlpha` blink the limb transparent over the 3D world.
+    -- `_edge.png` contours keep C:U's `finalOutline` untouched.
+    local limbOrderCache = nil
+    local function LimbOrderForId(limbId)
+        if not limbId then return 0 end
+        if not limbOrderCache then
+            local limbs = FindCULimbs()
+            if type(limbs) == "table" then
+                limbOrderCache = {}
+                for _, entry in ipairs(limbs) do
+                    if type(entry) == "table" and type(entry.id) == "string" then
+                        limbOrderCache[entry.id] = tonumber(entry.order) or 0
+                    end
+                end
+            end
+        end
+        return (limbOrderCache and limbOrderCache[limbId]) or 0
+    end
+
+    local function Clamp01(v)
+        v = tonumber(v) or 0
+        if v < 0 then return 0 end
+        if v > 1 then return 1 end
+        return v
+    end
+
+    local function ClampByte(v)
+        v = math.floor((tonumber(v) or 0) + 0.5)
+        if v < 0 then return 0 end
+        if v > 255 then return 255 end
+        return v
+    end
+
+    local function DollLimbFillDrawColor(name, r, g, b, a)
+        if type(r) == "table" then
+            r, g, b, a = r.r, r.g, r.b, r.a
+        end
+        local limbId = DollLimbIdFromMaterial(name)
+        local cs = _G.WoundSystemClientState
+        local playerLimbs = type(cs) == "table" and cs.PlayerLimbs or nil
+        local state = (limbId and type(playerLimbs) == "table") and playerLimbs[limbId] or nil
+        local guiState = FindCUGUIState()
+
+        local limbAlpha
+        if type(guiState) == "table" and type(guiState.openTime) == "number" and type(CurTime) == "function" then
+            local openDelay = guiState.openTime + (LimbOrderForId(limbId) * 0.03)
+            limbAlpha = ClampByte(Clamp01((CurTime() - openDelay) * 8) * 255)
+        else
+            local numR, numG, numB, numA = tonumber(r) or 0, tonumber(g) or 0, tonumber(b) or 0, tonumber(a)
+            if numA == nil or (type(state) == "table" and (tonumber(state.muscle) or 100) < 10)
+                or (numR >= 200 and numG == 0 and numB == 0) then
+                limbAlpha = 255
+            else
+                limbAlpha = ClampByte(numA)
+            end
+        end
+
+        if not cvDollTint:GetBool() then
+            return 0, 0, 0, limbAlpha
+        end
+
+        if type(state) == "table" and state.muscle ~= nil then
+            local muscle = Clamp01((tonumber(state.muscle) or 100) * 0.01) * 100
+            local hover = Clamp01(guiState and guiState.HoverAnims and guiState.HoverAnims[limbId])
+            local red = ClampByte((1 - muscle * 0.01) * 255 * (1 - hover))
+            return red, 0, 0, limbAlpha
+        end
+
+        return ClampByte(r), ClampByte(g), ClampByte(b), limbAlpha
+    end
+    WSZC.DollLimbFillDrawColor = DollLimbFillDrawColor
+
     if type(surface.SetDrawColor) == "function" then
         origSetDrawColor = surface.SetDrawColor
         surface.SetDrawColor = function(r, g, b, a)
-            if cvDollTint:GetBool() and IsDollLimbMaterial(WSZC._DrawMaterialName) then
-                return origSetDrawColor(255, 255, 255, a or 255)
+            if IsDollLimbMaterial(WSZC._DrawMaterialName) then
+                return origSetDrawColor(DollLimbFillDrawColor(WSZC._DrawMaterialName, r, g, b, a))
             end
             return origSetDrawColor(r, g, b, a)
         end
@@ -2007,11 +2218,29 @@ local function WorldPanel()
     return nil
 end
 
+local function SetMinigameOverlayCursors(cursor)
+    local names = {
+        "WSZCBandageMinigame", "WSZCSyringeMinigame",
+        "WoundSystemDislocationMinigame", "WoundSystemShrapnelMinigame",
+        "WoundSystemAEDMinigame", "WoundSystemBandageMinigame",
+        "WoundSystemSyringeMinigame", "WoundSystemSelfHarmMinigame",
+    }
+    for _, name in ipairs(names) do
+        local mg = _G[name]
+        local panel = type(mg) == "table" and mg.overlay or nil
+        local valid = panel and (not IsValid or IsValid(panel))
+        if valid and type(panel.SetCursor) == "function" then
+            pcall(panel.SetCursor, panel, cursor)
+        end
+    end
+end
+
 -- A blank VGUI cursor hides only the OS arrow; mouse input and gui.MousePos()
--- remain enabled.  It is allowed exclusively when the visible hand is the
--- pointer.  hide_minigame_hand 1 is therefore a safe standard-arrow fallback.
+-- remain enabled.  Apply it to the world AND each game's overlay: some GMod
+-- builds prefer the hovered overlay's cursor over the world cursor.  Hiding
+-- the hand artwork is independent and must never bring the arrow back.
 function WSZC.BlankMinigameCursor()
-    if not cvHideCursor:GetBool() or not WSZC.ShowMinigameHand() then
+    if not cvHideCursor:GetBool() then
         WSZC.RestoreMinigameCursor(true)
         return false
     end
@@ -2022,6 +2251,7 @@ function WSZC.BlankMinigameCursor()
         if ok and value and value ~= "blank" then savedCursor = value end
     end
     pcall(panel.SetCursor, panel, "blank")
+    SetMinigameOverlayCursors("blank")
     cursorHidden = true
     return true
 end
@@ -2031,6 +2261,7 @@ function WSZC.RestoreMinigameCursor(force)
     -- Force "arrow", not `savedCursor`: that value could itself be "blank"
     -- from a previous session.
     if panel then pcall(panel.SetCursor, panel, "arrow") end
+    SetMinigameOverlayCursors("arrow")
     cursorHidden = false
     return true
 end
@@ -2039,7 +2270,7 @@ function WSZC.SyncMinigameCursor()
     local active = (WSZC.MinigameActive and WSZC.MinigameActive())
         or (WSZC.WSZCMinigameActive and WSZC.WSZCMinigameActive())
         or (WSZC.NativeMinigameActive and WSZC.NativeMinigameActive())
-    if active and cvHideCursor:GetBool() and WSZC.ShowMinigameHand() then
+    if active and cvHideCursor:GetBool() then
         return WSZC.BlankMinigameCursor()
     end
     WSZC.RestoreMinigameCursor(true)
@@ -2136,8 +2367,8 @@ local function PatchActionButtonOffset()
 end
 WSZC.PatchActionButtonOffset = PatchActionButtonOffset
 
---- C:U's stock brokenneck moodle reads head.broken.  The native ZCity skull
---- fracture is now owned by the independent neck state, so re-register ONLY
+--- C:U's stock brokenneck moodle reads head.broken.  ZCity's cervical spine
+--- (spine3) is owned by the independent neck state, so re-register ONLY
 --- that public definition; all other moodles and their layout stay untouched.
 function WSZC.InstallNeckMoodle()
     local moodles = WoundSystem and WoundSystem.Moodles or nil
@@ -2176,6 +2407,8 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     WSZC.NextUnitmenuInstall = now + 1
     WSZC.InstallMaterialTracker()
     if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
+    if WSZC.InstallArterialBleedingStatus then WSZC.InstallArterialBleedingStatus() end
+    WSZC.InstallCUHudFilter()
     WSZC.InstallDisinfectedIconFilter()
     PatchActionButtonOffset()
     WSZC.InstallNeckMoodle()

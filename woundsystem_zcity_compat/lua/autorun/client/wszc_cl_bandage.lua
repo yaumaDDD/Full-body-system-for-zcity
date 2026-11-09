@@ -2,8 +2,15 @@
 -- ZCity SWEP sessions never mix with the native C:U inventory sessions.
 if WSZCBandageMinigame and WSZCBandageMinigame._Loaded then return end
 
-if not (WoundSystem and WoundSystem.MinigameClip) and file.Exists("woundsystem/client/minigames/cl_clip.lua", "LUA") then
-    include("woundsystem/client/minigames/cl_clip.lua")
+local function OptionalInclude(path)
+    if WSZC and WSZC.OptionalInclude then return WSZC.OptionalInclude(path) end
+    if file and file.Exists and not file.Exists(path, "LUA") then return nil end
+    local ok, result = pcall(include, path)
+    return ok and result or nil
+end
+
+if not (WoundSystem and WoundSystem.MinigameClip) then
+    OptionalInclude("woundsystem/client/minigames/cl_clip.lua")
 end
 
 local function DrawRectInt(x, y, w, h)
@@ -58,9 +65,9 @@ local matStick = Material(path .. "bandageStick.png")
 local matRoll = Material(path .. "bandageRoll.png")
 local matHandIdle = Material(path .. "handGraspIdle1.png")
 local matHandClick = Material(path .. "handGraspClick.png")
-local HandPhysics = include("woundsystem/client/minigames/sh_handphysics.lua")
+local HandPhysics = OptionalInclude("woundsystem/client/minigames/sh_handphysics.lua")
 if not istable(HandPhysics) then
-    ErrorNoHalt("[WoundSystem] Bandage minigame could not load sh_handphysics.lua; using emergency fallback.\n")
+    if WSZC and WSZC.Warn then WSZC.Warn("Bandage minigame could not load sh_handphysics.lua; using emergency fallback.") end
     HandPhysics = {
         Init = function(mg)
             mg.handScreenX = mg.handScreenX or (ScrW() * 0.5)
@@ -88,7 +95,7 @@ end
 -- Kill the pain-driven mouse shake: with ZCity's pain values the hand used to
 -- oscillate so hard that the bandage roll could not be grabbed.
 if WSZC and WSZC.StabilizeHandPhysics then WSZC.StabilizeHandPhysics(HandPhysics) end
-local DevMinigameCfg = include("woundsystem/client/minigames/minigame_dev_config.lua") or {}
+local DevMinigameCfg = OptionalInclude("woundsystem/client/minigames/minigame_dev_config.lua") or {}
 
 -- bandage uses its own hand physics (restore original logic)
 
@@ -104,6 +111,10 @@ local BleedIcons = {
     extremeBandaged = Material(iconPath .. "bleedingbandaged.png")
 }
 local matInfection = Material(iconPath .. "infection.png")
+local matFracture = Material("wszc/unitmenu/status/fracture.png")
+if matFracture and matFracture.IsError and matFracture:IsError() then
+    matFracture = Material(iconPath .. "fracturedbone.png")
+end
 
 WSZCBandageMinigame = WSZCBandageMinigame or {}
 local MG = WSZCBandageMinigame
@@ -222,6 +233,8 @@ local function LocalReset()
     MG.totalDegreesWrapped = 0
     MG.totalDegreesUnwrapped = 0
     MG.lastUnwrapActionAngle = 0
+    MG.wrapTravel = 0
+    MG.wrapCredited = 0
     MG.completedWraps = 0
     MG.unsentDegrees = 0
     MG.didWrap = false
@@ -361,6 +374,9 @@ local function GetBleedIcon(state)
     if MG.mode == "unwrap" then
         return matInfection, Color(205, 55, 55, 255)
     end
+    if MG.mode == "fracture" then
+        return matFracture, Color(235, 75, 75, 255)
+    end
     if not state then return nil end
 
     local rate = (tonumber(state.bleed) or 0) * 0.075
@@ -463,9 +479,10 @@ local function DrawBleedProgress(cx, cy, innerSize)
     local normalStopped = (tonumber(MG.bleedInitial) or 0) <= 0.0001
         or (tonumber(MG.bleedCurrent) or 0) <= 0.0001
     local text = MG.mode == "unwrap" and ("UNWRAP " .. tostring(percent) .. "%")
-        or ("STOP " .. tostring(percent) .. "%")
+        or (MG.mode == "fracture" and ("WRAP " .. tostring(percent) .. "%")
+        or ("STOP " .. tostring(percent) .. "%"))
     local textColor = progress >= 0.999 and Color(12, 80, 34, 255) or Color(24, 24, 24, 255)
-    if MG.mode ~= "unwrap" and arterial > 0.0001 and normalStopped then
+    if MG.mode ~= "unwrap" and MG.mode ~= "fracture" and arterial > 0.0001 and normalStopped then
         text = "TOURNIQUET"
         textColor = Color(155, 22, 22, 255)
     end
@@ -862,82 +879,55 @@ hook.Add("Think", "WSZC_BandageInput", function()
         MG.handScreenVelX = Lerp(dt * 34 * speedMult, MG.handScreenVelX or 0, 0)
         MG.handScreenVelY = Lerp(dt * 34 * speedMult, MG.handScreenVelY or 0, 0)
 
-        if MG.mode == "unwrap" then
-            -- Mirror the angular coordinate: only COUNTER-winding produces
-            -- positive server input in this mode.  Forward wrapping still
-            -- uses the untouched C:U-derived branch below.
-            local physicalAngle = GetAngleFromVector(normX, normY)
-            local reverseAngle = (360 - physicalAngle) % 360
-            local currentReverse = (360 - (MG.bandageAngle or 0)) % 360
-            local num = reverseAngle - currentReverse
-            local num2 = reverseAngle - (MG.lastUnwrapActionAngle or 0)
-            if num < 20 then
-                local step = false
-                if currentReverse > 350 and (reverseAngle < 90 or reverseAngle == 360) then
-                    MG.lastUnwrapActionAngle = (MG.lastUnwrapActionAngle or 0) - 360
-                    MG.didUnwrap = true
-                    step = true
-                    surface.PlaySound("bandage.ogg")
-                    if WoundSystem.BroadcastMinigameSound then
-                        WoundSystem.BroadcastMinigameSound("bandage.ogg", 0.5)
-                    end
-                elseif num2 > 20 then
-                    step = true
-                end
-                if step then
-                    MG.lastUnwrapActionAngle = (MG.lastUnwrapActionAngle or 0) + 20
-                    MG.totalDegreesUnwrapped = (MG.totalDegreesUnwrapped or 0) + 20
-                    MG.totalDegreesWrapped = math.max(0, 360 - MG.totalDegreesUnwrapped)
-                    MG.unsentDegrees = MG.unsentDegrees + 20
-                end
-                MG.bandageAngle = (360 - reverseAngle) % 360
+        -- Work in an unwrapped angular coordinate.  The old >350 -> <90
+        -- crossing test lost a whole revolution if a frame skipped 350°, and
+        -- rejected turns moving more than 20° per frame.  Signed shortest
+        -- deltas handle the 0/360 seam and uneven frame rates in both modes.
+        local angle = GetAngleFromVector(normX, normY)
+        local delta = (angle - (MG.bandageAngle or 0) + 180) % 360 - 180
+        MG.bandageAngle = angle
+        if MG.mode == "unwrap" then delta = -delta end
+        MG.wrapTravel = (MG.wrapTravel or 0) + delta
+        local credited = MG.wrapCredited or 0
+        local steps = math.max(math.floor(((MG.wrapTravel or 0) - credited + 0.0001) / 20), 0)
+        if steps > 0 then
+            local degrees = steps * 20
+            MG.wrapCredited = credited + degrees
+            MG.unsentDegrees = (MG.unsentDegrees or 0) + degrees
+            local previous
+            if MG.mode == "unwrap" then
+                previous = MG.totalDegreesUnwrapped or 0
+                MG.totalDegreesUnwrapped = previous + degrees
+                MG.totalDegreesWrapped = math.max(0, 360 - MG.totalDegreesUnwrapped)
+                MG.didUnwrap = MG.totalDegreesUnwrapped >= 360
+            else
+                previous = MG.totalDegreesWrapped or 0
+                MG.totalDegreesWrapped = previous + degrees
+                MG.didWrap = MG.totalDegreesWrapped >= 360
             end
-        else
-            local angleFromVector = GetAngleFromVector(normX, normY)
-            local num = angleFromVector - MG.bandageAngle
-            local num2 = angleFromVector - (MG.lastActionAngle or 0)
-
-            if num < 20 then
-                -- wrap detection (C# compares >350 then <90)
-                if MG.bandageAngle > 350 and (angleFromVector < 90 or angleFromVector == 360) then
-                    MG.bandageAngle = MG.bandageAngle - 360
-                    MG.lastActionAngle = (MG.lastActionAngle or 0) - 360
-                    MG.didWrap = true
-                    surface.PlaySound("bandage.ogg")
-                    if WoundSystem.BroadcastMinigameSound then
-                        WoundSystem.BroadcastMinigameSound("bandage.ogg", 0.5)
-                    end
-                    -- perform bandage action (20° step)
-                    MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
-                    MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
-                    MG.unsentDegrees = MG.unsentDegrees + 20
-                    if MG.didWrap then
-                        MG.sizeMultiplier = (MG.sizeMultiplier or 0.9) + 0.0015
-                    end
-                elseif num2 > 20 then
-                    -- normal step action every 20 degrees
-                    MG.lastActionAngle = (MG.lastActionAngle or 0) + 20
-                    MG.totalDegreesWrapped = MG.totalDegreesWrapped + 20
-                    MG.unsentDegrees = MG.unsentDegrees + 20
+            if math.floor((previous + degrees) / 360) > math.floor(previous / 360) then
+                surface.PlaySound("bandage.ogg")
+                if WoundSystem.BroadcastMinigameSound then
+                    WoundSystem.BroadcastMinigameSound("bandage.ogg", 0.5)
                 end
-
-                MG.bandageAngle = angleFromVector
             end
         end
     end
 
     if now - MG.lastSentAt > 0.1 then
         if MG.unsentDegrees > 0 then
-            net.Start("WSZC_BandageInput")
-            net.WriteUInt(MG.sessionId, 24)
-            net.WriteFloat(MG.unsentDegrees)
-            net.WriteUInt(WoundSystem and WSZC.MinigameNextInputSeq and WSZC.MinigameNextInputSeq(MG) or 0, 24)
-            net.SendToServer()
-            -- Do not predict the old fixed 100/12 C:U cost here.  Native
-            -- ZCity consumption equals the severity actually removed; the
-            -- server's WSZC_MinigameSlot packet is the only correct remainder
-            -- for partial wounds, big bandages and the last physical unit.
-            MG.unsentDegrees = 0
+            -- The server caps each input at 360 degrees. Split delayed batches
+            -- instead of silently discarding all turns above that limit.
+            while MG.unsentDegrees > 0 do
+                local batch = math.min(MG.unsentDegrees, 360)
+                net.Start("WSZC_BandageInput")
+                net.WriteUInt(MG.sessionId, 24)
+                net.WriteFloat(batch)
+                net.WriteUInt(WoundSystem and WSZC.MinigameNextInputSeq and WSZC.MinigameNextInputSeq(MG) or 0, 24)
+                net.SendToServer()
+                MG.unsentDegrees = MG.unsentDegrees - batch
+            end
+            -- ZCity consumption remains server-authoritative.
             MG.lastSentAt = now
         end
     end

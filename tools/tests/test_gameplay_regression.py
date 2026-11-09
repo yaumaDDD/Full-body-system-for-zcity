@@ -21,6 +21,7 @@ def check(name, value):
 
 
 organism_s = ORGANISM.read_text(encoding="utf-8")
+shared_s = (CONN / "lua/autorun/sh_zcity_woundsystem_compat.lua").read_text(encoding="utf-8")
 server_main_s = SERVER_MAIN.read_text(encoding="utf-8")
 server_mg_s = SERVER_MG.read_text(encoding="utf-8")
 client_mg_s = CLIENT_MG.read_text(encoding="utf-8")
@@ -29,6 +30,8 @@ with ZipFile(ROOT / "zcity.zip") as zcity_zip:
     tourniquet_swep_s = zcity_zip.read("z_city/lua/weapons/weapon_tourniquet.lua").decode("utf-8-sig")
     bandage_swep_s = zcity_zip.read("z_city/lua/weapons/weapon_bandage_sh.lua").decode("utf-8-sig")
     woundbridge_s = zcity_zip.read("z_city/lua/homigrad/woundbridge/sv_woundbridge.lua").decode("utf-8-sig")
+    native_org_s = zcity_zip.read("z_city/lua/homigrad/organism/tier_1/sv_organism.lua").decode("utf-8-sig")
+    native_input_s = zcity_zip.read("z_city/lua/homigrad/organism/tier_1/sv_input.lua").decode("utf-8-sig")
 with ZipFile(ROOT / "zcity_full_pack.zip") as full_pack:
     limb_statuses_s = full_pack.read(
         "garrysmod/addons/casualties_unknown_health_system_beta/lua/woundsystem/shared/sh_limb_statuses.lua"
@@ -53,7 +56,7 @@ check("S03 every lodged piece grows a real wound; explicit reset clears it",
       "function WSZC.TickLodgedShrapnel" in organism_s
       and "wound.wszcShrapnel = SHRAPNEL_WOUND_TAG" in organism_s
       and "function WSZC.ClearAllShrapnel" in organism_s
-      and "SnapshotZCityStructure(org, false)" in organism_s
+      and "SnapshotZCityStructure(org, false, true)" in organism_s
       and "_ExplicitResetDepth" in organism_s)
 check("S04 added WoundView cards are rolled back; native geometry remains",
       "zc_woundsystem_compat_woundview_polish" not in layout_s
@@ -124,6 +127,23 @@ check("S14 conscious ragdoll is not an incapacitated minigame operator",
 check("S15 a generic Fake transition closes only a genuinely incapacitated operator",
       'hook.Add("Fake", "WSZC_MinigameUnconscious"' in server_mg_s
       and 'if PlayerIncapacitated(ply) then' in server_mg_s.split('hook.Add("Fake", "WSZC_MinigameUnconscious"', 1)[1])
+check("S17 legacy radial reduction is blocked at both bridge and command levels",
+      'function WSZC.InstallLegacyRadialMedicineBlock' in organism_s
+      and 'wb.FixDislocation = legacyFixDislocationWrapper' in organism_s
+      and 'concommand.Add("hg_fixdislocation"' in organism_s
+      and 'WSZC.InstallLegacyRadialMedicineBlock()' in organism_s)
+check("S18 rendered reduction is server-validated and closes the native session",
+      'function WSZC.HandleDislocationVisualComplete' in organism_s
+      and 'WSZC.DislocationVisualAligned(x, y)' in organism_s
+      and 'session.id ~= sessionId' in organism_s
+      and 'WSZC.RemoteMedicalValidPair(operator, target)' in organism_s
+      and 'state.dislocated = false' in organism_s
+      and 'WSZC.CUCloseDislocationSession, target, "complete"' in organism_s
+      and 'WSZC.RefreshNativeSessionRefs(true)' in organism_s
+      and 'WSZC.RefreshNativeSessionRefs(true)' in server_main_s
+      and server_main_s.index('WSZC.RefreshNativeSessionRefs(true)')
+          < server_main_s.index('if (caps and caps.cu_native_api)')
+      and 'net.Receive("WSZC_DislocationVisualComplete"' in server_mg_s)
 
 try:
     sys.path.insert(0, "/tmp/lupa_pkg")
@@ -462,8 +482,17 @@ local transitionKept = ply.organism.otrub == true
     and ply.organism.wszc_bandaged_shrapnel.hand_R.infection == 12
     and ply.organism.wszc_infection == 12
 ply.organism.blood, ply.organism.pain = 1200, 80
+-- Reproduce the reported high-fall brain injury immediately before reset.
+ply.organism.brain, ply.organism.alive = 0.85, false
+ply.organism.unconscious, ply.organism.otrub_start = true, 80
+ply.organism.needotrub, ply.organism.uncon_timer = true, 20
+ply.organism.fake, ply.organism.needfake = true, true
+ply._body.unconscious = true
+ply._nw.WoundSystemUnconscious = true
+ply._WSZCShadowNext = 1000 -- prove explicit reset bypasses the 4 Hz throttle
 local resetResult = hg.WoundBridge.ResetOrganism(ply)
-local explicitCleared = resetResult == true and restoreCalls == 0 and ply.organism.otrub == true
+local explicitCleared = resetResult == true and restoreCalls == 0 and ply.organism.otrub == false
+    and ply.organism.fake == true and ply.organism.needfake == true
     and ply.organism.blood == 5000
     and (ply.organism.wszc_shrapnel == nil or (ply.organism.wszc_shrapnel.hand_R or 0) == 0)
     and ply.organism.wszc_shrapnel_sources == nil
@@ -473,6 +502,15 @@ local explicitCleared = resetResult == true and restoreCalls == 0 and ply.organi
     and ply.organism.bleed == 0 and ply._limbs.hand_R.shrapnel == 0
     and ply._limbs.hand_R.isBandaged == false and ply._limbs.hand_R.infection == 0
     and next(ply.bandaged_limbs) == nil and next(ply.tourniquets) == nil
+local brainReset = resetResult == true and restoreCalls == 0
+    and ply.organism.alive == true and (tonumber(ply.organism.brain) or 0) == 0
+    and ply.organism.otrub == false and ply.organism.needotrub == false
+    and ply.organism.unconscious == false and ply.organism.otrub_start == nil
+    and ply.organism.uncon_timer == 0
+    and ply.organism.fake == true and ply.organism.needfake == true
+    and ply._body.unconscious == false
+    and ply:GetNWBool("WoundSystemUnconscious", true) == false
+    and ply._WSZCShadowNext < 1000
 ResetDebug = { result = resetResult, restoreCalls = restoreCalls,
     otrub = ply.organism.otrub, blood = ply.organism.blood, pain = ply.organism.pain,
     shrapnel = ply.organism.wszc_shrapnel, sources = ply.organism.wszc_shrapnel_sources,
@@ -482,16 +520,115 @@ ResetDebug = { result = resetResult, restoreCalls = restoreCalls,
     limbShrapnel = ply._limbs.hand_R.shrapnel, limbBandaged = ply._limbs.hand_R.isBandaged,
     limbInfection = ply._limbs.hand_R.infection,
     bandages = next(ply.bandaged_limbs), tourniquets = next(ply.tourniquets) }
-return transitionKept, explicitCleared
+return transitionKept, explicitCleared, brainReset
 ''')
     check("R06 ordinary ragdoll clear still preserves fragments", reset[0])
     check("R07 explicit reset fully clears fragments and medical residue", reset[1])
+    check("R94 brain-injury reset clears death/unconscious state but keeps conscious ragdoll", reset[2])
     if not reset[1]:
         debug = lua.globals().ResetDebug
         print("RESET_DEBUG", {k: debug[k] for k in (
             "result", "restoreCalls", "otrub", "blood", "pain", "shrapnel", "sources",
             "irritation", "covered", "infection", "wounds", "bleed", "limbShrapnel",
             "limbBandaged", "limbInfection", "bandages", "tourniquets")})
+
+    fresh_after_reset = lua.execute(r'''
+local bone = "ValveBiped.Bip01_R_Hand"
+local ply = MakePlayer()
+local rag = { bandaged_limbs = {}, SetNetVar = function(self, key, val) self.net = self.net or {}; self.net[key] = val end }
+local current = { bandaged_limbs = {}, SetNetVar = rag.SetNetVar }
+ply.FakeRagdoll = rag
+hg.GetCurrentCharacter = function() return current end
+WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+WSZC.ApplyBandageToOrganism({ ply = ply, limbId = "hand_R", limb = ply._limbs.hand_R },
+    { effects = { bandageSlowAmount = 15 } }, 1)
+local formerlyCovered = WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and ply.bandaged_limbs[bone] and rag.bandaged_limbs[bone] and current.bandaged_limbs[bone]
+-- The native C:U reset may detach the old ragdoll before hg.organism.Clear.
+local originalReset = WoundSystem.Health.ResetPlayer
+WoundSystem.Health.ResetPlayer = function(target)
+    local ok = originalReset(target)
+    target.FakeRagdoll = nil
+    hg.GetCurrentCharacter = function(p) return p end
+    return ok
+end
+local success = hg.WoundBridge.ResetOrganism(ply)
+WoundSystem.Health.ResetPlayer = originalReset
+local clean = success and next(ply.bandaged_limbs) == nil and next(rag.bandaged_limbs) == nil
+    and next(current.bandaged_limbs) == nil and next(rag.net.bandaged_limbs) == nil
+    and next(current.net.bandaged_limbs) == nil and ply._limbs.hand_R.isBandaged == false
+    and not ply.organism.wszc_bandaged_shrapnel
+-- Simulate a later transition pulling the old representation back in.
+ply.FakeRagdoll = rag
+ply.bandaged_limbs = table.Copy(rag.bandaged_limbs)
+WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+local fresh = ply._limbs.hand_R.shrapnel == 3
+    and not WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and WSZC.GetBandageBleeding(ply, "hand_R") > 0
+    and (not ply.organism.wszc_shrapnel_closed or not ply.organism.wszc_shrapnel_closed.hand_R)
+WSZC.SyncShrapnel(ply, ply.organism)
+WSZC.TickLodgedShrapnel(ply, ply.organism, 0.5)
+local stable = not WSZC.IsShrapnelBandaged(ply, "hand_R") and WSZC.GetBandageBleeding(ply, "hand_R") > 0
+hg.GetCurrentCharacter = nil
+return formerlyCovered, clean, fresh and stable
+''')
+    check("R107 real dressing reaches player, ragdoll and current character", fresh_after_reset[0])
+    check("R108 reset clears detached and current character dressing tables and netvars", fresh_after_reset[1])
+    check("R109 a new pellet after reset remains an uncovered bleeding wound", fresh_after_reset[2])
+
+    tracked_reset = lua.execute(r'''
+local ply = MakePlayer()
+local rag = { bandaged_limbs = { old = true }, tourniquets = { { 1 } },
+    wounds = { { 5 } }, arterialwounds = { { 10 } },
+    SetNetVar = function(self, key, value) self.net = self.net or {}; self.net[key] = value end }
+ply.FakeRagdoll = rag
+hook._t.Fake.WSZC_ShrapnelRagdollKeep(ply, rag)
+ply.FakeRagdoll = nil -- the old body is no longer discoverable by current-character lookups
+ply.bandaged_limbs, ply.tourniquets = { old = true }, { { 1 } }
+ply._limbs.hand_R.customStatuses = { TOURNIQUET = 5, OTHER_MEDICAL = 10 }
+ply._limbs.hand_R.hasInjection, ply._limbs.hand_R.disinfectTime = true, 55
+hg.TourniquetGuys = { rag, ply }
+local ok = hg.WoundBridge.ResetOrganism(ply)
+local clean = ok and next(rag.bandaged_limbs) == nil and next(rag.tourniquets) == nil
+    and next(rag.net.bandaged_limbs) == nil and next(rag.net.Tourniquets) == nil
+    and next(rag.wounds) == nil and next(rag.arterialwounds) == nil
+    and next(rag.net.wounds) == nil and next(rag.net.arterialwounds) == nil
+    and next(ply.bandaged_limbs) == nil and next(ply.tourniquets) == nil
+    and #hg.TourniquetGuys == 0 and next(ply._limbs.hand_R.customStatuses) == nil
+    and not ply._limbs.hand_R.hasInjection and ply._limbs.hand_R.disinfectTime == 0
+return clean
+''')
+    check("R111 explicit reset clears tracked detached bodies, tourniquets and all medical statuses", tracked_reset)
+
+    physical_on_error = lua.execute(r'''
+local ply = MakePlayer()
+local rag = { bandaged_limbs = { old = true }, tourniquets = { 1 },
+    SetNetVar = function(self, key, value) self.net = self.net or {}; self.net[key] = value end }
+ply.FakeRagdoll = rag
+local previous = WoundSystem.Health.GetLimbs
+WoundSystem.Health.GetLimbs = function() error("broken C:U limb accessor") end
+local ok = pcall(WSZC.ClearAllShrapnel, ply, ply.organism)
+WoundSystem.Health.GetLimbs = previous
+return not ok and next(rag.bandaged_limbs) == nil and next(rag.tourniquets) == nil
+    and next(rag.net.bandaged_limbs) == nil and next(rag.net.Tourniquets) == nil
+''')
+    check("R112 physical dressing cleanup runs even if C:U limb reset fails", physical_on_error)
+
+    visual_broadcast = lua.execute(r'''
+local previous = net
+local written = {}
+net = { Start = function(name) written.name = name end,
+    WriteUInt = function(value, bits) written[#written + 1] = { value, bits } end,
+    Broadcast = function() written.broadcast = true end }
+WSZC.SendMedicalVisualReset({ { EntIndex = function() return 14 end },
+    { EntIndex = function() return 29 end } })
+net = previous
+return written.name == "WSZC_ResetMedicalVisuals" and written.broadcast
+    and written[1][1] == 2 and written[1][2] == 8
+    and written[2][1] == 14 and written[2][2] == 16
+    and written[3][1] == 29 and written[3][2] == 16
+''')
+    check("R115 reset notifies all clients to remove physical treatment models", visual_broadcast)
 
     death_reset = lua.execute(r'''
 local dead = MakePlayer()
@@ -518,6 +655,9 @@ end
 local originalResolver = hg.RagdollOwner
 WSZC.AddShrapnel(dead, "hand_R", 1, "shotgun")
 propertyNick = nil
+ragdoll.bandaged_limbs, ragdoll.tourniquets = { stale = true }, { 1 }
+ragdoll.SetNetVar = function(self, key, value) self.net = self.net or {}; self.net[key] = value end
+dead.DeathRagdoll = nil -- admin targets a ragdoll no longer attached to its owner
 local property = { Filter = function() return true end }
 property.Receive = function(self, length, admin)
     local ent = net.ReadEntity()
@@ -536,6 +676,8 @@ local propertyWorks = ok and propertyNick == "regression_player"
     and (dead.organism.wszc_shrapnel == nil or (dead.organism.wszc_shrapnel.hand_R or 0) == 0)
     and dead.organism.blood == 5000
     and hg.RagdollOwner == originalResolver and WSZC._ExplicitResetDepth == 0
+    and WSZC._ResetPropertyTarget == nil and next(ragdoll.bandaged_limbs) == nil
+    and next(ragdoll.tourniquets) == nil and next(ragdoll.net.Tourniquets) == nil
 if not ok then propertyError = tostring(err) end
 
 local cleanupPlayer = MakePlayer()
@@ -623,6 +765,26 @@ local unwrapGate = installed and closed == 1 and unwrapStarted == 1
     and ply._limbs.hand_R.shrapnel == 3
     and WSZC.IsShrapnelBandaged(ply, "hand_R")
     and entry.infectionAge == infectionBefore and limb.isBandaged ~= false
+-- In real GMod net.Receive stores lowercase keys. A remote covered click
+-- must open the operator's session for the patient, and retries must not stack.
+local medic = MakePlayer()
+local capturedOperator, capturedPatient
+WSZC.RemoteNativeOperator = function(patient) if patient == ply then return medic end end
+WSZC.StartShrapnelUnwrap = function(operator, limbId, target)
+    capturedOperator, capturedPatient = operator, target
+    return limbId == "hand_R"
+end
+net.Receivers = { woundsystem_shrapnelstart = function() end }
+net.Receive = function(name, fn) net.Receivers[string.lower(name)] = fn end
+local installedLower = WSZC.InstallShrapnelBandageGuard()
+local guarded = net.Receivers.woundsystem_shrapnelstart
+local retry = WSZC.InstallShrapnelBandageGuard()
+net.Receivers.woundsystem_shrapnelstart(0, ply)
+local remoteGuard = installedLower and retry and guarded == net.Receivers.woundsystem_shrapnelstart
+    and capturedOperator == medic and capturedPatient == ply and WSZC.IsShrapnelBandaged(ply, "hand_R")
+WSZC.RemoteNativeOperator = nil
+net.Receivers.WoundSystem_ShrapnelStart = net.Receivers.woundsystem_shrapnelstart
+
 -- This is the callback used by the server after a 360-degree reverse input.
 local completionUnwrapped = WSZC.RemoveBandageForShrapnel(ply, "hand_R")
     and not WSZC.IsShrapnelBandaged(ply, "hand_R")
@@ -697,7 +859,7 @@ local preDressedCovered = WSZC.IsShrapnelBandaged(preDressed, "hand_R")
     and preDressed._limbs.hand_R.infection >= 25
     and preDressed._limbs.hand_R.disinfectTime == 0
 return bandageAllowed, noRegrow, infected, unwrapGate, secondClickNative,
-    extractionPersists, rebandageCures, preDressedCovered, partialCovered
+    extractionPersists, rebandageCures, preDressedCovered, partialCovered, remoteGuard
 ''')
     check("R14 a complete bandage stops external bleeding with shrapnel still lodged", complications[0])
     check("R53 covered shrapnel never regrows or recreates its external wound", complications[1])
@@ -708,6 +870,7 @@ return bandageAllowed, noRegrow, infected, unwrapGate, secondClickNative,
     check("R54 only full re-bandaging clears extraction aftercare and infection", complications[6])
     check("R22 a pellet into an already dressed limb is covered without external bleed", complications[7])
     check("R59 partial extraction can be re-bandaged without curing remaining infection", complications[8])
+    check("R96 lowercase native shrapnel guard is idempotent and opens remote unwrap for medic", complications[9])
 
     timed_bandage = lua.execute(r'''
 -- Real GAUZE: a 100-durability roll, 12 complete turns, one partial effect per
@@ -902,6 +1065,101 @@ return initialLimb, torsoStage, brainStage, beforeFatal and fatal
     check("R56 torso infection reaches the brain at 420 seconds", infection_timeline[2])
     check("R57 untreated covered shrapnel is fatal at 600 seconds, not before", infection_timeline[3])
 
+    infection_all_parts = lua.execute(r'''
+local ids = { "head", "neck", "thorax", "abdomen", "pelvis",
+    "arm_L", "forearm_L", "hand_L", "arm_R", "forearm_R", "hand_R",
+    "thigh_L", "crus_L", "foot_L", "thigh_R", "crus_R", "foot_R" }
+local errors = {}
+for _, id in ipairs(ids) do
+    local ply = MakePlayer()
+    for _, part in ipairs(ids) do
+        if not ply._limbs[part] then
+            ply._limbs[part] = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+                infection = 0, infectionSpeed = 0 }
+        end
+    end
+    local function fail(phase) errors[#errors + 1] = id .. ":" .. phase end
+    if not WSZC.AddShrapnel(ply, id, 1, "shotgun") then fail("spawn") end
+    WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+    if (ply._limbs[id].infection or 0) ~= 0 then fail("uncovered") end
+    local treated = WSZC.ApplyBandageToOrganism(
+        { ply = ply, limbId = id, limb = ply._limbs[id] },
+        { effects = { bandageSlowAmount = 15 } }, 1)
+    local entry = ply.organism.wszc_bandaged_shrapnel and ply.organism.wszc_bandaged_shrapnel[id]
+    if treated <= 0 or not entry or entry.infectionAge ~= 0
+        or ply._limbs[id].infection ~= 25 or not WSZC.IsShrapnelBandaged(ply, id) then
+        fail("bandage")
+    else
+        for _ = 1, 480 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
+        if entry.infectionAge ~= 240 or (ply._limbs[id].infection or 0) < 25
+            or (ply._limbs.thorax.infection or 0) < 25 then fail("torso") end
+        for _ = 1, 360 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
+        if entry.infectionAge ~= 420 or (ply._limbs[id].infection or 0) < 25
+            or (ply._limbs.head.infection or 0) < 25 then fail("head") end
+        if not WSZC.RemoveBandageForShrapnel(ply, id) then fail("unwrap") end
+        ply._WSZCLimbsRef = ply._limbs
+        ply._limbs[id].shrapnel = 0
+        WSZC.SyncShrapnel(ply, ply.organism)
+        WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+        if (ply._limbs[id].infection or 0) < 25 or entry.infectionAge ~= 420.5 then
+            fail("extraction")
+        end
+        WSZC.ApplyBandageToOrganism(
+            { ply = ply, limbId = id, limb = ply._limbs[id] },
+            { effects = { bandageSlowAmount = 15 } }, 1)
+        if ply.organism.wszc_bandaged_shrapnel[id] ~= nil
+            or ply.organism.wszc_infection ~= nil or (ply._limbs[id].infection or 0) ~= 0
+            or (ply._limbs.thorax.infection or 0) ~= 0 or (ply._limbs.head.infection or 0) ~= 0 then
+            fail("aftercare")
+        end
+    end
+end
+return table.concat(errors, ", ")
+''')
+    check("covered shrapnel infection starts, spreads and fully heals on all 17 body parts" +
+          (": " + infection_all_parts if infection_all_parts else ""), not infection_all_parts)
+
+    core_infection = lua.execute(r'''
+local function patient()
+    local ply = MakePlayer()
+    ply._limbs.abdomen = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0 }
+    ply._alive, ply._kills = true, 0
+    ply.Alive = function(self) return self._alive end
+    ply.Kill = function(self) self._alive = false; self._kills = self._kills + 1 end
+    return ply
+end
+local terminal = true
+for _, id in ipairs({ "head", "thorax", "abdomen" }) do
+    local ply = patient()
+    WSZC.AddShrapnel(ply, id, 1, "shotgun")
+    WSZC.ApplyBandageToOrganism({ ply = ply, limbId = id, limb = ply._limbs[id] },
+        { effects = { bandageSlowAmount = 15 } }, 1)
+    local entry = ply.organism.wszc_bandaged_shrapnel[id]
+    entry.infectionAge = 599.5
+    WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+    terminal = terminal and entry.terminal and ply._kills == 1 and ply.organism.brain == 1
+        and ply._limbs.head.infection == 99 and ply._limbs[id].infection >= 25
+end
+local ply = patient()
+for _, id in ipairs({ "thorax", "head" }) do
+    WSZC.AddShrapnel(ply, id, 1, "shotgun")
+    WSZC.ApplyBandageToOrganism({ ply = ply, limbId = id, limb = ply._limbs[id] },
+        { effects = { bandageSlowAmount = 15 } }, 1)
+end
+local first = ply.organism.wszc_bandaged_shrapnel.thorax
+local second = ply.organism.wszc_bandaged_shrapnel.head
+first.infectionAge, second.infectionAge = 500, 1
+WSZC.TickBandagedShrapnel(ply, ply.organism, 0)
+local before = ply._limbs.head._wszcShrapnelInfectionOwner == first
+WSZC.ClearShrapnelInfection(ply, ply.organism, "thorax")
+WSZC.TickBandagedShrapnel(ply, ply.organism, 0)
+local takeover = ply._limbs.head._wszcShrapnelInfectionOwner == second
+    and ply._limbs.head.infection >= 25 and ply.organism.wszc_infection > 0
+return terminal, before and takeover
+''')
+    check("untreated head, thorax and abdomen infections reach the native fatal outcome", core_infection[0])
+    check("a remaining head infection takes over after an older source is cleared", core_infection[1])
+
     zero_aftercare = lua.execute(r'''
 local ply = MakePlayer()
 WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
@@ -924,9 +1182,13 @@ return treated == 0
     and ply._limbs.hand_R.infection == 0
 ''')
     check("R58 final dressing completes aftercare even if extraction bleeding clotted", zero_aftercare)
-    check("S16 processing icon is filtered alone; infection and disinfect mechanics survive",
+    check("S16 disinfect/injection + ordinary bleed are filtered; fracture/dislocation and mechanics survive",
           "function WSZC.InstallDisinfectedIconFilter()" in layout_s
-          and "mat == icons.disinfected" in layout_s
+          and "HIDDEN_NATIVE_STATUS_KEYS" in layout_s
+          and "disinfected = true, injection = true" in layout_s
+          and "fracture = true, fracture2 = true" not in layout_s
+          and "WSZC.IsHiddenNativeStatusIcon(mat, nativeIcons)" in layout_s
+          and "WSZC_ARTERIAL_BLEEDING" in shared_s
           and 'icons.disinfected = Material("casunknown-images/icons/infection.png"' not in layout_s
           and "state.disinfectTime = 0" in organism_s
           and "state.infectionSpeed = 0" in organism_s)
@@ -1463,6 +1725,43 @@ return patched and tourniquet == "arm_R" and bandage == "hand_R"
 ''')
     check("R49 installed BestLimb uses real tourniquet/bandage targets despite stale shadow flags", selector_upvalue)
 
+    selector_no_debug = lua.execute(r'''
+local ply = MakePlayer()
+ply._limbs.arm_R = { bleed = 15, dismembered = false, tourniqueted = false }
+ply.organism.rarmamputated = true
+ply.organism.arterialwounds = {
+    { 5, Vector(), Angle(), "ValveBiped.Bip01_R_UpperArm", 0, Vector(), "rarmartery" },
+}
+local BestLimb = function() return "native_bandage_site" end
+local NativeSwepHeal = function(target, spec, preferred)
+    return BestLimb(target, spec, preferred)
+end
+local wb = hg.WoundBridge
+local saved = { wb._WSZCEmbedded, wb._WSZCBridgeRefs, wb._WSZCReplaceBestLimb, wb.SwepHeal }
+wb._WSZCEmbedded = true
+wb._WSZCBridgeRefs = { version = 1, BestLimb = BestLimb }
+wb.SwepHeal = NativeSwepHeal
+local replaced = false
+wb._WSZCReplaceBestLimb = function(swepHeal, replacement)
+    if swepHeal ~= NativeSwepHeal or type(replacement) ~= "function" then return false end
+    BestLimb = replacement
+    replaced = true
+    return true
+end
+local previousDebug = debug
+debug = nil
+local ok, result = pcall(function()
+    local patched = WSZC.PatchTourniquetBestLimb(NativeSwepHeal)
+    local tourniquet = NativeSwepHeal(ply, { kind = "apply", item = "TOURNIQUET", pick = "extremity" })
+    local syringe = NativeSwepHeal(ply, { kind = "syringe", item = "MORPHINE" })
+    return patched and replaced and tourniquet == "arm_R" and syringe == "native_bandage_site"
+end)
+debug = previousDebug
+wb._WSZCEmbedded, wb._WSZCBridgeRefs, wb._WSZCReplaceBestLimb, wb.SwepHeal = saved[1], saved[2], saved[3], saved[4]
+return ok and result == true
+''')
+    check("R89 embedded BestLimb selector works without debug upvalues", selector_no_debug)
+
     status_client = LuaRuntime(unpack_returned_tuples=True)
     status_client.execute(r'''
 CLIENT = true; SERVER = false
@@ -1479,9 +1778,9 @@ assert(WSZC.InstallAmputationStatus())
 local state = { customStatuses = { TOURNIQUET = 4, WSZC_AMPUTATION = true } }
 local active = WoundSystem.Statuses.GetActive(state)
 return #active == 2 and active[1].id == "WSZC_AMPUTATION" and active[2].id == "TOURNIQUET"
-    and active[1].data.icon == "casunknown-images/moodles/amputation.png"
+    and active[1].data.icon == ""
 ''')
-    check("R50 native Statuses.GetActive draws amputation before tourniquet/bleed statuses", native_status_order)
+    check("R50 amputation stays tracked without an extra WoundView icon", native_status_order)
 
     internal_registration = shared_s.split('WSZC.INTERNAL_BLEEDING_STATUS_ID =', 1)[1].split('-- Short-lived context flag:', 1)[0]
     status_client.execute('WSZC.INTERNAL_BLEEDING_STATUS_ID =' + internal_registration)
@@ -1496,6 +1795,31 @@ state.customStatuses.WSZC_INTERNAL_BLEEDING = 0
 return ok and #WoundSystem.Statuses.GetActive(state) == 0
 ''')
     check("R43 native client status resolves the red internal-bleed icon only above zero", native_internal_icon)
+
+    native_arterial_icon = status_client.execute(r'''
+assert(WSZC.InstallArterialBleedingStatus())
+local state = { customStatuses = { WSZC_ARTERIAL_BLEEDING = 12 } }
+local active = WoundSystem.Statuses.GetActive(state)
+local ok = #active == 1 and active[1].id == "WSZC_ARTERIAL_BLEEDING"
+    and active[1].data.icon == "wszc/unitmenu/status/arterial.png"
+    and active[1].data.color[1] == 255 and active[1].data.color[2] == 255
+    and active[1].data.type == "number" and active[1].data.order == -8000
+state.customStatuses.WSZC_ARTERIAL_BLEEDING = 0
+return ok and #WoundSystem.Statuses.GetActive(state) == 0
+''')
+    check("R96 arterial marker uses its own red blood material and disappears at zero", native_arterial_icon)
+
+    refreshed_status = status_client.execute(r'''
+local statuses = WoundSystem.Statuses.Stored
+statuses.WSZC_AMPUTATION.icon = "casunknown-images/moodles/amputation.png"
+statuses.WSZC_ARTERIAL_BLEEDING.icon = "casunknown-images/icons/strongbleed.png"
+assert(WSZC.InstallAmputationStatus() and WSZC.InstallArterialBleedingStatus())
+return statuses.WSZC_AMPUTATION.icon == ""
+    and statuses.WSZC_ARTERIAL_BLEEDING.icon == "wszc/unitmenu/status/arterial.png"
+    and statuses.WSZC_ARTERIAL_BLEEDING.color[2] == 255
+''')
+    check("R113 reload removes the unwanted icon and refreshes the distinct arterial marker", refreshed_status)
+    check("R114 distinct arterial icon is bundled", (CONN / "materials/wszc/unitmenu/status/arterial.png").is_file())
 
     neck_state = lua.execute(r'''
 local ply = MakePlayer()
@@ -1522,7 +1846,7 @@ local firstLife = ply._limbs.neck ~= nil
     and h.Const.RagdollDamageBones[1].limb == "neck"
     and #h.Const.LimbToBones.head == 1
 
-ply.organism.skull = 1
+ply.organism.skull, ply.organism.spine3 = 1, 0.7
 ply.organism.wounds = {
     { 2, Vector(), Angle(), "ValveBiped.Bip01_Neck1", 0 },
     { 3, Vector(), Angle(), "ValveBiped.Bip01_Head1", 0 },
@@ -1533,30 +1857,29 @@ ply.organism.arterialwounds = {
 assert(WSZC.RestoreBones(ply))
 WSZC.SyncOrganismShadow(ply, ply.organism)
 local separated = ply._limbs.neck.broken == true and ply._limbs.head.broken == false
-    and ply._limbs.neck.muscle == 0 and ply._limbs.head.muscle == 100
-    and ply._limbs.neck.boneHealTimer == 100 and ply._limbs.head.boneHealTimer == 0
+    and math.abs(ply._limbs.neck.muscle - 30) < 0.001 and ply._limbs.head.muscle == 0
+    and ply._limbs.neck.boneHealTimer == 70 and ply._limbs.head.boneHealTimer == 0
 local bleed = WSZC.LimbBleedMap(ply, ply.organism)
 local routed = bleed.neck == 16 and bleed.head == 6
 
--- A head-only muscle heal must NOT heal the neck's native fracture field.
+-- Skull and cervical spine are independent; C:U muscle treatments cannot
+-- silently fix the cervical spine in place of ZCity's native regeneration.
 ply._limbs.head.muscle = 0
 local beforeHead = WSZC.SnapshotMedical(ply, "head")
-ply.organism.skull = 1
 ply._limbs.head.muscle = 100
 WSZC.ApplyMedicalDelta(ply, "head", beforeHead)
-local headTreatmentIndependent = ply.organism.skull == 1
-
+local headOnly = math.abs(ply.organism.skull) < 0.0001 and ply.organism.spine3 == 0.7
 ply._limbs.neck.muscle = 0
 local beforeNeck = WSZC.SnapshotMedical(ply, "neck")
 ply._limbs.neck.muscle = 100
 WSZC.ApplyMedicalDelta(ply, "neck", beforeNeck)
-local neckTreatmentWorks = math.abs(ply.organism.skull) < 0.0001
-return firstLife, separated, routed, headTreatmentIndependent and neckTreatmentWorks
+local spineProtected = ply.organism.spine3 == 0.7
+return firstLife, separated, routed, headOnly and spineProtected
 ''')
     check("R65 first-life InitPlayer creates and synchronizes one real neck state", neck_state[0])
-    check("R66 skull fracture/muscle render on neck only, never duplicated on head", neck_state[1])
+    check("R66 cervical fracture uses spine3; skull muscle damage stays on head", neck_state[1])
     check("R67 Neck1 and neckartery route separately from Head1 wounds", neck_state[2])
-    check("R68 neck treatment heals skull; head treatment cannot heal the neck", neck_state[3])
+    check("R68 head treatment addresses skull and never substitutes for spine treatment", neck_state[3])
 
     pelvis_state = lua.execute(r'''
 local ply = MakePlayer()
@@ -1682,6 +2005,792 @@ return present, abdomenOnly and mechanicsUntouched, cleared, networked
     check("R74 internal marker is abdomen-only and preserves disinfection/infection/custom statuses", internal_bleeding_shadow[1])
     check("R75 stopping internal bleeding clears the marker and native status", internal_bleeding_shadow[2])
     check("R76 native WriteNet/ReadNet round-trip carries the abdomen marker to the client", internal_bleeding_shadow[3])
+    external_only = lua.execute(r'''
+local ply = MakePlayer()
+ply.organism.internalBleed = 0
+ply.organism.bleed = 12
+ply._body.internalBleeding = 9 -- stale native shadow from an earlier event
+ply._limbs.abdomen = { bleed = 0, pain = 0, muscle = 100, skin = 100,
+    customStatuses = { [WSZC.INTERNAL_BLEEDING_STATUS_ID] = 9 } }
+WSZC.SyncOrganismShadow(ply, ply.organism)
+return ply._body.internalBleeding == 0
+    and ply._limbs.abdomen.customStatuses[WSZC.INTERNAL_BLEEDING_STATUS_ID] == nil
+    and ply.organism.bleed == 12 and ply.organism.internalBleed == 0
+''')
+    check("R97 external bleeding clears stale internal-bleed presentation without changing organism", external_only)
+
+    internal_resync = lua.execute(r'''
+local ply = MakePlayer()
+local id = WSZC.INTERNAL_BLEEDING_STATUS_ID
+local h = WoundSystem.Health
+local oldSend = h.SendLimbUpdate
+local sent, failOnce = {}, true
+h.SendLimbUpdate = function(target, limb, force)
+    if limb == "abdomen" and failOnce then error("simulated send failure") end
+    sent[limb] = { force = force, value = target._limbs[limb].customStatuses
+        and target._limbs[limb].customStatuses[id] }
+end
+ply.organism.internalBleed = 0
+ply._limbs.abdomen = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    customStatuses = { [id] = 5, KEEP = true } }
+ply._limbs.forearm_R.customStatuses = { [id] = 5, KEEP = true }
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local staleCleared = ply._limbs.forearm_R.customStatuses[id] == nil
+    and ply._limbs.forearm_R.customStatuses.KEEP and sent.forearm_R.force
+    and sent.forearm_R.value == nil and ply._WSZCInternalBleedPending.abdomen
+failOnce = false
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local retried = sent.abdomen.force and sent.abdomen.value == nil
+    and ply._WSZCInternalBleedPending == nil
+ply.organism.internalBleed = 0.001
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local positive = ply._limbs.abdomen.customStatuses[id] == 0.001
+    and sent.abdomen.force and sent.abdomen.value == 0.001
+ply.organism.internalBleed = 0
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local stopped = ply._limbs.abdomen.customStatuses[id] == nil and sent.abdomen.value == nil
+h.SendLimbUpdate = oldSend
+return staleCleared, retried, positive, stopped
+''')
+    check("internal-bleed stale markers on other limbs are removed and force-sent", internal_resync[0])
+    check("failed internal-bleed updates are retried", internal_resync[1])
+    check("even small positive ZCity internal bleeding remains visible", internal_resync[2])
+    check("zero internal bleeding force-clears the abdomen marker", internal_resync[3])
+
+    # Use the actual C:U icon chooser and status wire to distinguish an ordinary
+    # abdomen hit from genuine organism-wide internal bleeding.  Both can be
+    # present simultaneously and neither may suppress the other.
+    gui_s = (CONN / "lua/wszc_vendor/cu/woundsystem/client/cl_health_gui.lua").read_text(encoding="utf-8")
+    rate_s = 'local function ClientLimbBleedRate(state)' + gui_s.split('local function ClientLimbBleedRate(state)', 1)[1].split('WoundSystemHealthHUDOpen =', 1)[0]
+    icon_s = 'local function BleedPhaseColor(rate, alpha)' + gui_s.split('local function BleedPhaseColor(rate, alpha)', 1)[1].split('WoundSystemActionButtonPos =', 1)[0]
+    lua.execute('''
+local Icons = { smallbleed = "normal", midbleed = "normal", strongbleed = "normal",
+    extremebleed = "normal", smallbleed_bandaged = "bandaged", midbleed_bandaged = "bandaged",
+    strongbleed_bandaged = "bandaged", extremebleed_bandaged = "bandaged" }
+local function ClientBleedingSpeedMultiplier() return 1 end
+local function Color(r, g, b, a) return { r, g, b, a } end
+local function LerpColor(t, a, b) return a end
+''' + rate_s + icon_s + '\nTestActualBleedHudIcon = GetBleedHudIcon\n')
+    bleed_paths = lua.execute(r'''
+local ply = MakePlayer()
+local id = WSZC.INTERNAL_BLEEDING_STATUS_ID
+ply._limbs.abdomen = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+ply.organism.wounds = {
+    { 2, Vector(), Angle(), "ValveBiped.Bip01_Spine1", 0 },
+    { 2, Vector(), Angle(), "ValveBiped.Bip01_R_Forearm", 0 },
+}
+ply.organism.bleed, ply.organism.internalBleed = 4, 0
+local function sync()
+    ply._WSZCShadowNext = 0
+    WSZC.SyncOrganismShadow(ply, ply.organism)
+end
+local function wireCopy(state)
+    local wire, i = {}, 0
+    local function push(v) wire[#wire + 1] = v end
+    local function pop() i = i + 1; return wire[i] end
+    local old = net
+    net = { WriteUInt = push, WriteString = push, WriteFloat = push, WriteBool = push,
+        ReadUInt = pop, ReadString = pop, ReadFloat = pop, ReadBool = pop }
+    SERVER, CLIENT = true, false
+    WoundSystem.Statuses.WriteNet(state)
+    local result = { bleed = state.bleed }
+    SERVER, CLIENT = false, true
+    WoundSystem.Statuses.ReadNet(result)
+    SERVER, CLIENT, net = true, false, old
+    return result
+end
+sync()
+local abdomen, arm = wireCopy(ply._limbs.abdomen), wireCopy(ply._limbs.forearm_R)
+local ordinary = TestActualBleedHudIcon(abdomen, 255) == "normal"
+    and TestActualBleedHudIcon(arm, 255) == "normal"
+    and abdomen.bleed == arm.bleed and not WoundSystem.Statuses.Has(abdomen, id)
+ply.organism.internalBleed = 1.25
+sync()
+abdomen, arm = wireCopy(ply._limbs.abdomen), wireCopy(ply._limbs.forearm_R)
+local both = TestActualBleedHudIcon(abdomen, 255) == "normal"
+    and WoundSystem.Statuses.GetValue(abdomen, id) == 1.25
+    and not WoundSystem.Statuses.Has(arm, id)
+ply.organism.wounds, ply.organism.bleed = {}, 0
+sync()
+abdomen = wireCopy(ply._limbs.abdomen)
+local internalOnly = TestActualBleedHudIcon(abdomen, 255) == nil
+    and WoundSystem.Statuses.Has(abdomen, id)
+ply.organism.internalBleed = 0
+sync()
+abdomen = wireCopy(ply._limbs.abdomen)
+local neither = TestActualBleedHudIcon(abdomen, 255) == nil
+    and not WoundSystem.Statuses.Has(abdomen, id)
+ply._limbs.abdomen.customStatuses[id] = 0
+ply.organism.internalBleed = 0.001
+sync()
+local positiveAfterZero = WoundSystem.Statuses.Has(wireCopy(ply._limbs.abdomen), id)
+return ordinary, both, internalOnly, neither, positiveAfterZero
+''')
+    check("ordinary abdomen and arm wounds use the same native bleed icon, not the internal icon", bleed_paths[0])
+    check("real internal and ordinary abdomen bleeding display independently together", bleed_paths[1])
+    check("internal bleeding alone does not create an external wound icon", bleed_paths[2])
+    check("both icons clear when their independent ZCity sources stop", bleed_paths[3])
+    check("a stale zero status cannot hide small positive internal bleeding", bleed_paths[4])
+
+    arterial_bleeding_shadow = lua.execute(r'''
+assert(WSZC.InstallArterialBleedingStatus())
+local ply = MakePlayer()
+local id = WSZC.ARTERIAL_BLEEDING_STATUS_ID
+ply.organism.wounds = {
+    { 2, vector_origin, angle_zero, "ValveBiped.Bip01_R_Forearm", 0, 0 },
+}
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local ordinaryOnly = ply._limbs.forearm_R.bleed > 0
+    and (not ply._limbs.forearm_R.customStatuses
+        or ply._limbs.forearm_R.customStatuses[id] == nil)
+
+ply.organism.arterialwounds = {
+    { 4, vector_origin, angle_zero, "ValveBiped.Bip01_R_Forearm", 0, 0, "rarmartery" },
+}
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local state = ply._limbs.forearm_R
+local active = WoundSystem.Statuses.GetActive(state)
+local present = state.customStatuses[id] == 12 and state.bleed > 12
+    and #active == 1 and active[1].id == id
+    and active[1].data.icon == "wszc/unitmenu/status/arterial.png"
+    and (not ply._limbs.hand_R.customStatuses
+        or ply._limbs.hand_R.customStatuses[id] == nil)
+
+ply.organism.arterialwounds = {}
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local cleared = state.customStatuses[id] == nil and state.bleed > 0
+    and #WoundSystem.Statuses.GetActive(state) == 0
+return ordinaryOnly, present, cleared
+''')
+    check("R97 ordinary wound bleeding never creates an arterial marker", arterial_bleeding_shadow[0])
+    check("R98 real arterialwounds create the native red marker on the mapped limb", arterial_bleeding_shadow[1])
+    check("R99 closing the artery clears only its marker; ordinary bandage bleed remains", arterial_bleeding_shadow[2])
+
+    standing_fall = lua.execute(r'''
+if type(WSZC.ApplyStandingFall) ~= "function" then return false, false, false end
+local ply = MakePlayer()
+local org = ply.organism
+org.lleg, org.rleg, org.immobilization = 0, 0, 0
+org.painadd, org.shock, org.adrenaline, org.alive = 0, 0, 0, true
+org.wsmovemult = 0.02 -- stale C:U override would bypass every vanilla slowdown term
+ply._body.jumpSpeed = 6.5
+for _, id in ipairs({ "foot_L", "foot_R", "crus_L", "crus_R", "thigh_L", "thigh_R" }) do
+    ply._limbs[id] = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+end
+WoundSystem.Health.GetRecentFallSpeed = function() return 900 end
+WoundSystem.Health.FallSpeedToImpactForce = function(speed)
+    return math.max((speed - 420) / 60, 0)
+end
+local function FallDamage()
+    return { IsFallDamage = function() return true end, GetDamage = function() return 30 end }
+end
+local dmg = FallDamage()
+local handled = WSZC.ApplyStandingFall(ply, dmg, 30)
+local injured = handled == true and org.lleg > 0 and org.rleg > 0
+    and org.immobilization > 0 and org.painadd > 0 and org.wsmovemult == nil
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, org)
+local shadowMatches = ply._limbs.foot_L.muscle < 100 and ply._limbs.foot_R.muscle < 100
+
+local rag = MakePlayer()
+rag.organism.lleg, rag.organism.rleg, rag.organism.immobilization = 0, 0, 0
+rag.FakeRagdoll = {}
+local ragHandled = WSZC.ApplyStandingFall(rag, FallDamage(), 30)
+local noDouble = ragHandled == false and rag.organism.lleg == 0
+    and rag.organism.rleg == 0 and rag.organism.immobilization == 0
+
+local low = MakePlayer()
+low.organism.lleg, low.organism.rleg, low.organism.immobilization = 0, 0, 0
+low._body.jumpSpeed = 6.5
+WoundSystem.Health.GetRecentFallSpeed = function() return 600 end
+local lowHandled = WSZC.ApplyStandingFall(low, FallDamage(), 0)
+local lowSafe = lowHandled == false and low.organism.lleg == 0
+    and low.organism.rleg == 0 and low.organism.immobilization == 0
+return injured and shadowMatches, noDouble, lowSafe
+''')
+    check("R77 nonfatal standing fall damages authoritative legs and adds temporary slowdown", standing_fall[0])
+    check("R78 standing-fall mirror never double-hits an existing fake ragdoll", standing_fall[1])
+    check("R79 sub-threshold landing remains free of artificial muscle damage", standing_fall[2])
+
+    fatal_fall = lua.execute(r'''
+local p = MakePlayer()
+p.Alive = function() return false end
+p.organism.lleg, p.organism.rleg, p.organism.immobilization = 0, 0, 0
+local dmg = { IsFallDamage = function() return true end, GetDamage = function() return 100 end }
+return WSZC.ApplyStandingFall(p, dmg, 100) == false
+    and p.organism.lleg == 0 and p.organism.rleg == 0 and p.organism.immobilization == 0
+''')
+    check("R87 fatal fall receives no post-mortem standing-leg mirror", fatal_fall)
+
+    small_fall_minute = lua.execute(r'''
+local prevCurTime = CurTime
+local simNow = 1000
+CurTime = function() return simNow end
+
+local ply = MakePlayer()
+local org = ply.organism
+org.lleg, org.rleg, org.immobilization = 0, 0, 0
+org.painadd, org.shock, org.adrenaline, org.analgesia, org.painkiller = 0, 0, 0, 0, 0
+org.alive = true
+for _, id in ipairs({ "foot_L", "foot_R", "crus_L", "crus_R", "thigh_L", "thigh_R" }) do
+    ply._limbs[id] = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+end
+
+-- Exact GMod small-height -10 HP fall (speed ~540 u/s, default mp_falldamage 0 -> 10 HP)
+WoundSystem.Health.GetRecentFallSpeed = function() return 540 end
+local dmg10 = { IsFallDamage = function() return true end, GetDamage = function() return 10 end }
+local okLanding = WSZC.ApplyStandingFall(ply, dmg10, 10)
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, org)
+
+local speedMultAt0 = math.Clamp(5 / ((org.immobilization or 0) + 1), 0.45, 1)
+local initialOK = okLanding == true
+    and org.lleg >= 0.25 and org.lleg < 1.0
+    and org.rleg >= 0.25 and org.rleg < 1.0
+    and ply._limbs.foot_L.muscle <= 75 and ply._limbs.foot_R.muscle <= 75
+    and speedMultAt0 < 0.65
+
+-- Simulate vanilla ZCity sv_pain + WSZC.TickFallSlowdown for 45s (must STILL have slowdown + muscle damage)
+for step = 1, 45 do
+    simNow = simNow + 1
+    org.immobilization = math.max((org.immobilization or 0) - 2, 0)
+    org.lleg = math.max((org.lleg or 0) - (1 / 240), 0)
+    org.rleg = math.max((org.rleg or 0) - (1 / 240), 0)
+    WSZC.TickFallSlowdown(ply, org, 1, false)
+end
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, org)
+local speedMultAt45 = math.Clamp(5 / ((org.immobilization or 0) + 1), 0.45, 1)
+local midMinuteOK = org.lleg > 0.05 and org.rleg > 0.05
+    and ply._limbs.foot_L.muscle < 95
+    and org.immobilization > 4.0 and speedMultAt45 < 0.95
+
+-- Advance past ~65s: both muscle bruise and slowdown recover naturally to 100%
+for step = 1, 22 do
+    simNow = simNow + 1
+    org.immobilization = math.max((org.immobilization or 0) - 2, 0)
+    org.lleg = math.max((org.lleg or 0) - (1 / 240), 0)
+    org.rleg = math.max((org.rleg or 0) - (1 / 240), 0)
+    WSZC.TickFallSlowdown(ply, org, 1, false)
+end
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, org)
+local speedMultAt67 = math.Clamp(5 / ((org.immobilization or 0) + 1), 0.45, 1)
+local recoveredOK = org.lleg == 0 and org.rleg == 0
+    and ply._limbs.foot_L.muscle == 100 and ply._limbs.foot_R.muscle == 100
+    and speedMultAt67 == 1 and org.wszc_fall_slow_until == nil
+
+-- Also verify speed > 600 where ZCity fallStun creates FakeRagdoll on the same OnPlayerHitGround tick
+local stunned = MakePlayer()
+stunned.organism.lleg, stunned.organism.rleg, stunned.organism.immobilization = 0, 0, 0
+stunned.organism.alive = true
+stunned._wszcStandingLandingTime = simNow
+stunned._wszcStandingLandingSpeed = 620
+stunned.FakeRagdoll = {} -- created on landing tick by ZCity fallStun
+local stunHandled = WSZC.ApplyStandingFall(stunned, { IsFallDamage = function() return true end, GetDamage = function() return 10 end }, 10)
+local stunOK = stunHandled == true and stunned.organism.lleg >= 0.25 and stunned.organism.immobilization > 4
+
+CurTime = prevCurTime
+return initialOK and midMinuteOK and recoveredOK, stunOK
+''')
+    check("R96 small -10 HP fall deals ~1-minute leg muscle damage and sustained slowdown", small_fall_minute[0])
+    check("R97 same-tick ZCity fallStun landing (>600 speed) still applies 1-minute fall bruise", small_fall_minute[1])
+
+    genuine_life = lua.execute(r'''
+if type(WSZC.InstallSpawnContextGuard) ~= "function" then return false, false end
+local function InjuredPlayer()
+    local p = MakePlayer()
+    p._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 30, skin = 100,
+        dislocated = true, dislocationTimer = 35 }
+    p.organism.otrub, p.organism.fake = true, true
+    p.organism.rarm, p.organism.rarmdislocation = 0.7, true
+    p.organism.wounds = { { 7 } }
+    p.organism.wszc_shrapnel = { arm_R = 3 }
+    p._limbs.arm_R.shrapnel = 3
+    p.FakeRagdoll = {}
+    return p
+end
+hook.Add("Player Spawn", "homigrad-organism", function(p)
+    hg.organism.Clear(p.organism)
+end)
+WSZC.InstallSpawnContextGuard()
+
+local dead = InjuredPlayer()
+dead._WSZCRagdollTransitionUntil = CurTime() + 5
+dead.Alive = function() return false end
+local death = hook._t.PlayerDeath and hook._t.PlayerDeath.WSZC_RagdollTransitionDeath
+if death then death(dead) end
+dead.Alive = function() return true end
+OverrideSpawn = nil
+hook._t["Player Spawn"]["homigrad-organism"](dead)
+WSZC.ReconcileSpawnShrapnel(dead)
+dead._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(dead, dead.organism)
+local clean = (tonumber(dead.organism.rarm) or 0) == 0
+    and dead.organism.rarmdislocation ~= true
+    and #dead.organism.wounds == 0
+    and (dead.organism.wszc_shrapnel == nil or (dead.organism.wszc_shrapnel.arm_R or 0) == 0)
+    and (dead._limbs.arm_R.shrapnel or 0) == 0
+    and dead._limbs.arm_R.dislocated ~= true
+
+local standing = InjuredPlayer()
+OverrideSpawn = true
+hook._t["Player Spawn"]["homigrad-organism"](standing)
+OverrideSpawn = nil
+local fakeUpKept = standing.organism.rarm == 0.7
+    and standing.organism.rarmdislocation == true
+    and #standing.organism.wounds >= 1 and standing.organism.wounds[1][1] == 7
+    and standing.organism.wszc_shrapnel.arm_R == 3
+return clean, fakeUpKept
+''')
+    check("R80 genuine death/respawn clears organism and connector injuries despite stale down flags", genuine_life[0])
+    check("R81 the same native spawn hook still preserves the complete organism during FakeUp", genuine_life[1])
+
+    corpse_life = lua.execute(r'''
+local p = MakePlayer()
+WSZC.AddShrapnel(p, "hand_R", 1, "shotgun")
+local corpse = {}
+for key, value in pairs(p.organism) do corpse[key] = value end -- native table.Merge is shallow
+local woundCount = #corpse.wounds
+local death = hook._t.PlayerDeath and hook._t.PlayerDeath.WSZC_RagdollTransitionDeath
+if death then death(p) end
+p.Alive = function() return false end
+hg.organism.Clear(p.organism)
+local tagged = false
+for _, wound in pairs(corpse.wounds) do if wound.wszcShrapnel then tagged = true end end
+local corpseKept = #corpse.wounds == woundCount and tagged
+    and corpse.wszc_shrapnel.hand_R == 3
+p.Alive = function() return true end
+OverrideSpawn = nil
+hook._t["Player Spawn"]["homigrad-organism"](p)
+local newLifeClean = (p.organism.wszc_shrapnel == nil
+    or (p.organism.wszc_shrapnel.hand_R or 0) == 0)
+    and #p.organism.wounds == 0
+return corpseKept, newLifeClean
+''')
+    check("R84 PostPlayerDeath clear does not erase shallow-copied corpse wounds", corpse_life[0])
+    check("R85 the following genuine spawn still removes the previous life's connector state", corpse_life[1])
+
+    reconcile_fallback = lua.execute(r'''
+local p = MakePlayer()
+p.organism.wszc_shrapnel = { hand_R = 3 }
+p.organism.wounds = { { 4, wszcShrapnel = true } }
+p._limbs.hand_R.shrapnel = 3
+p._WSZCSpawnKind = "genuine"
+p._WSZCSpawnCleanupAt = nil
+WSZC.ReconcileSpawnShrapnel(p)
+local clean = (p.organism.wszc_shrapnel == nil
+    or (p.organism.wszc_shrapnel.hand_R or 0) == 0)
+    and p._limbs.hand_R.shrapnel == 0 and #p.organism.wounds == 0
+local knownCleanTable = p._WSZCLimbsRef == p._limbs
+-- The following ordinary shadow pass must not interpret this as a ragdoll
+-- table replacement and restore the previous life again.
+p._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(p, p.organism)
+return clean and knownCleanTable and p._limbs.hand_R.shrapnel == 0
+''')
+    check("R86 genuine Reconcile is a self-sufficient fallback against shrapnel resurrection", reconcile_fallback)
+
+    delayed_respawn = lua.execute(r'''
+local p = MakePlayer()
+p._WSZCSpawnKind = "genuine"
+p._WSZCSpawnCleanupAt = nil
+local closes = 0
+WSZC.StopAllMinigames = function() closes = closes + 1 return true end
+WSZC.ReconcileSpawnShrapnel(p, false)
+-- C:U LoadPlayerPersistData merges old values into THIS SAME limb table from
+-- a later PlayerSpawn hook.  Identity and the CurTime cleanup marker stay put.
+p._limbs.hand_R.shrapnel = 3
+p._limbs.hand_R.dislocated = true
+p.organism.wszc_shrapnel = { hand_R = 3 }
+WSZC.ReconcileSpawnShrapnel(p, true)
+return closes == 2 and p._limbs.hand_R.shrapnel == 0
+    and p._limbs.hand_R.dislocated == false
+    and (p.organism.wszc_shrapnel == nil or (p.organism.wszc_shrapnel.hand_R or 0) == 0)
+    and p._WSZCLimbsRef == p._limbs
+''')
+    check("R88 delayed genuine reset clears a late same-table C:U persist restore", delayed_respawn)
+
+    native_reduction = lua.execute(r'''
+if type(WSZC.InstallNativeDislocationBridge) ~= "function" then return false, false end
+local oldNet = net
+net = { Receivers = {} }
+local p = MakePlayer()
+p._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    dislocated = true, dislocationTimer = 20 }
+p.organism.rarmdislocation = true
+p._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(p, p.organism)
+net.Receivers.WoundSystem_DislocationInput = function()
+    -- This mock represents ONLY the native server's already accepted success
+    -- transition (session timer < native threshold), not a client prediction.
+    p._limbs.arm_R.dislocated = false
+    p._limbs.arm_R.dislocationTimer = 0
+end
+WSZC.InstallNativeDislocationBridge()
+net.Receivers.WoundSystem_DislocationInput(0, p)
+local committed = p.organism.rarmdislocation == false
+
+local missed = MakePlayer()
+missed._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    dislocated = true, dislocationTimer = 20 }
+missed.organism.rarmdislocation = true
+net.Receivers.WoundSystem_DislocationInput = function() end
+WSZC.InstallNativeDislocationBridge()
+net.Receivers.WoundSystem_DislocationInput(0, missed)
+local missKept = missed.organism.rarmdislocation == true
+local lower = MakePlayer()
+lower._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    dislocated = true, dislocationTimer = 20 }
+lower.organism.rarmdislocation = true
+net.Receivers = { woundsystem_dislocationinput = function()
+    lower._limbs.arm_R.dislocated = false
+    lower._limbs.arm_R.dislocationTimer = 0
+end }
+local installedLower = WSZC.InstallNativeDislocationBridge()
+net.Receivers.woundsystem_dislocationinput(0, lower)
+local lowerCommitted = installedLower and lower.organism.rarmdislocation == false
+net = oldNet
+return committed, missKept, lowerCommitted
+''')
+    check("R82 accepted native dislocation success commits to ZCity immediately", native_reduction[0])
+    check("R83 unsuccessful native dislocation input cannot clear the ZCity injury", native_reduction[1])
+    check("R98 lowercase GMod native dislocation input commits to organism", native_reduction[2])
+
+    visual_fn_start = shared_s.index('function WSZC.DislocationVisualAligned')
+    visual_fn_end = shared_s.index('\nend\n', visual_fn_start) + 5
+    lua.execute(shared_s[visual_fn_start:visual_fn_end])
+    session_refs_fn_start = server_main_s.index('function WSZC.RefreshNativeSessionRefs')
+    session_refs_fn_end = server_main_s.index('\nend\n', session_refs_fn_start) + 5
+    lua.execute(server_main_s[session_refs_fn_start:session_refs_fn_end])
+    visual_reduction = lua.execute(r'''
+WSZC.Ready = true
+WSZC.RemoteNativeSessions = {}
+local closed = {}
+WSZC.CUCloseDislocationSession = function(target, reason)
+    closed[target] = (closed[target] or 0) + 1
+    WSZC.CUSessions.Dislocation[target] = nil
+end
+local function Injured(sessionId)
+    local p = MakePlayer()
+    p._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+        dislocated = true, dislocationTimer = 35 }
+    p.organism.rarmdislocation = true
+    WSZC.SyncOrganismShadow(p, p.organism)
+    WSZC.CUSessions = WSZC.CUSessions or { Dislocation = {} }
+    WSZC.CUSessions.Dislocation[p] = {
+        id = sessionId, limbId = "arm_R", boneX = 800, boneY = 400,
+        boneVelX = 20, boneVelY = -10, dislocationTimer = 35,
+    }
+    return p
+end
+WSZC.CUSessions = { Dislocation = {} }
+local selfPatient = Injured(501)
+local selfOK = WSZC.HandleDislocationVisualComplete(selfPatient, 501, 451.82, 229.82)
+local selfCommitted = selfOK and selfPatient._limbs.arm_R.dislocated == false
+    and selfPatient._limbs.arm_R.dislocationTimer == 0
+    and selfPatient.organism.rarmdislocation == false
+    and closed[selfPatient] == 1 and WSZC.CUSessions.Dislocation[selfPatient] == nil
+
+local rejected = Injured(502)
+local wrongId = WSZC.HandleDislocationVisualComplete(rejected, 999, 421.82, 229.82)
+local far = WSZC.HandleDislocationVisualComplete(rejected, 502, 521.82, 229.82)
+-- A circular 40-unit radius accepts a near miss but never the 50-unit
+-- minimum start displacement; malformed inputs and outside positions fail.
+local thresholdForgiving = WSZC.DislocationVisualAligned(461.81, 229.82) == true
+    and WSZC.DislocationVisualAligned(461.83, 229.82) == false
+    and WSZC.DislocationVisualAligned(449.82, 257.82) == true
+    and WSZC.DislocationVisualAligned(450.82, 258.82) == false
+    and not WSZC.DislocationVisualAligned(471.82, 229.82)
+    and not WSZC.DislocationVisualAligned(nil, 229.82)
+    and not WSZC.DislocationVisualAligned(0/0, 229.82)
+    and not WSZC.DislocationVisualAligned(math.huge, 229.82)
+local rejectionHeld = wrongId == false and far == false and thresholdForgiving
+    and rejected._limbs.arm_R.dislocated == true
+    and rejected.organism.rarmdislocation == true and closed[rejected] == nil
+
+local medic, remotePatient = MakePlayer(), Injured(503)
+WSZC.RemoteNativeSessions[remotePatient] = { Dislocation = { operator = medic } }
+WSZC.RemoteMedicalValidPair = function(operator, target)
+    return operator == medic and target == remotePatient
+end
+local remoteOK = WSZC.HandleDislocationVisualComplete(medic, 503, 445.82, 253.82)
+local remoteCommitted = remoteOK and remotePatient._limbs.arm_R.dislocated == false
+    and remotePatient.organism.rarmdislocation == false
+    and closed[remotePatient] == 1 and closed[medic] == nil
+    and WSZC.RemoteNativeSessions[remotePatient] == nil
+
+-- Reproduce the modern native-api early return: NO test session refs are
+-- preinstalled in WSZC.  The receiver must discover the real native tables.
+local lazyPatient = Injured(504)
+local nativeSessions = WSZC.CUSessions
+local nativeClose = WSZC.CUCloseDislocationSession
+WSZC.CUSessions, WSZC.CUCloseDislocationSession = nil, nil
+WoundSystem.Health._WSZCBridgeRefs = {
+    Sessions = nativeSessions, CloseDislocationSession = nativeClose,
+}
+local oldFindUpvalue = WSZC.FindUpvalue
+WSZC.FindUpvalue = function(wanted)
+    if wanted == "Sessions" then return nativeSessions end
+    if wanted == "CloseDislocationSession" then return nativeClose end
+    return nil
+end
+local lazyOK = WSZC.HandleDislocationVisualComplete(lazyPatient, 504, 421.82, 229.82)
+local lazyCommitted = lazyOK and WSZC.CUSessions == nativeSessions
+    and WSZC.CUCloseDislocationSession == nativeClose
+    and lazyPatient._limbs.arm_R.dislocated == false
+    and lazyPatient.organism.rarmdislocation == false and closed[lazyPatient] == 1
+WSZC.FindUpvalue = oldFindUpvalue
+WoundSystem.Health._WSZCBridgeRefs = nil
+return selfCommitted, rejectionHeld, remoteCommitted, lazyCommitted
+''')
+    check("R90 approximate socket hit commits native + ZCity reduction immediately", visual_reduction[0])
+    check("R91 wrong-session and non-aligned visual packets cannot heal", visual_reduction[1])
+    check("R92 rendered remote reduction treats the patient and clears operator metadata", visual_reduction[2])
+    check("R95 modern native-api path lazily discovers Sessions and accepts visual completion", visual_reduction[3])
+
+    legacy_block = lua.execute(r'''
+local previousCommand, previousWB = concommand, hg.WoundBridge
+local previousBlocked = WSZC.LegacyRadialMedicineBlocked
+local previousWrapper = WSZC._LegacyFixDislocationCommandWrapper
+local blocked = true
+WSZC.LegacyRadialMedicineBlocked = function() return blocked end
+local bridgeCalls, commandCalls = 0, 0
+local wb = { FixDislocation = function() bridgeCalls = bridgeCalls + 1 return "legacy_bridge" end }
+hg.WoundBridge = wb
+local commands = { hg_fixdislocation = function()
+    commandCalls = commandCalls + 1
+    return "legacy_command"
+end }
+concommand = {
+    GetTable = function() return commands end,
+    Add = function(name, callback) commands[name] = callback end,
+}
+WSZC._LegacyFixDislocationCommandWrapper = nil
+WSZC.InstallLegacyRadialMedicineBlock()
+WSZC.InstallLegacyRadialMedicineBlock() -- reapply must not stack wrappers
+local blockedBridge = wb.FixDislocation(nil, {}) == true and bridgeCalls == 0
+local blockedCommand = commands.hg_fixdislocation(nil, nil, {}) == true and commandCalls == 0
+blocked = false
+local fallbackBridge = wb.FixDislocation(nil, {}) == "legacy_bridge" and bridgeCalls == 1
+local fallbackCommand = commands.hg_fixdislocation(nil, nil, {}) == "legacy_command" and commandCalls == 1
+concommand, hg.WoundBridge = previousCommand, previousWB
+WSZC.LegacyRadialMedicineBlocked = previousBlocked
+WSZC._LegacyFixDislocationCommandWrapper = previousWrapper
+return blockedBridge and blockedCommand and fallbackBridge and fallbackCommand
+''')
+    check("R93 ready gate blocks radial bridge/command; unsupported state preserves fallback", legacy_block)
+
+    reset_regression = lua.execute(r'''
+local ply = MakePlayer()
+local org = ply.organism
+org.blood, org.pain, org.rarm, org.chest, org.brokenribs = 900, 90, 1, 1, 3
+org.rarmdislocation, org.rarmamputated = true, true
+org.otrub, org.unconscious, org.fake, org.needfake = true, true, true, true
+ply.FakeRagdoll = { valid = true, organism = org }
+ply._limbs.forearm_R.broken, ply._limbs.forearm_R.dismembered = true, true
+ply._limbs.forearm_R.muscle, ply._limbs.forearm_R.skin = 1, 1
+ply._limbs.forearm_R.customStatuses = { WSZC_ARTERIAL_BLEEDING = 10 }
+-- Simulate a late replacement bridge which returns success without calling
+-- organism.Clear. WB.Sync projects authoritative fractures back to the UI.
+local previousReset, previousSync = hg.WoundBridge.ResetOrganism, hg.WoundBridge.Sync
+local updates, cancellations = 0, 0
+local previousNotify, previousCancel = WSZC.NotifyRemotePatientUpdated, WSZC.CancelRemotePatientTreatment
+WSZC.NotifyRemotePatientUpdated = function(target) if target == ply then updates = updates + 1 end end
+WSZC.CancelRemotePatientTreatment = function(target) if target == ply then cancellations = cancellations + 1 end end
+hg.WoundBridge.ResetOrganism = function() return true end
+hg.WoundBridge.Sync = function(target, source)
+    target._limbs.forearm_R.broken = (tonumber(source.rarm) or 0) >= 1
+    target._limbs.thorax.broken = (tonumber(source.brokenribs) or 0) > 0
+end
+WSZC.InstallResetStructureGuard()
+local result = hg.WoundBridge.ResetOrganism(ply)
+hg.WoundBridge.Sync(ply, org)
+local clean = result and org.blood == 5000 and org.pain == 0 and org.rarm == 0
+    and org.chest == 0 and org.brokenribs == 0 and not org.rarmdislocation
+    and not org.rarmamputated and not org.otrub and not org.unconscious
+    and org.fake and org.needfake and ply.FakeRagdoll.organism == org
+    and not ply._limbs.forearm_R.broken and not ply._limbs.thorax.broken
+    and not ply._limbs.forearm_R.dismembered and ply._limbs.forearm_R.muscle == 100
+    and not ply._limbs.forearm_R.customStatuses.WSZC_ARTERIAL_BLEEDING
+    and updates > 0 and cancellations > 0
+hg.WoundBridge.ResetOrganism, hg.WoundBridge.Sync = previousReset, previousSync
+WSZC.NotifyRemotePatientUpdated, WSZC.CancelRemotePatientTreatment = previousNotify, previousCancel
+return clean
+''')
+    check("R99 successful bridge without Clear still resets organism and survives sync", reset_regression)
+
+    direct_reset = lua.execute(r'''
+local ply = MakePlayer()
+local bone = "ValveBiped.Bip01_R_Hand"
+local rag = { bandaged_limbs = { [bone] = true }, SetNetVar = function(self, key, value) self[key .. "Net"] = value end }
+ply.FakeRagdoll = rag
+ply.bandaged_limbs = { [bone] = true }
+ply._limbs.hand_R.isBandaged = true
+local oldClear = hg.organism.Clear
+hg.organism.Clear = function(org)
+    org.owner.FakeRagdoll = nil
+    org.wounds = {}; org.arterialwounds = {}
+end
+WSZC.InstallResetStructureGuard()
+WSZC._ExplicitResetDepth = 1
+hg.organism.Clear(ply.organism)
+WSZC._ExplicitResetDepth = 0
+local cleaned = next(rag.bandaged_limbs) == nil and next(rag.bandaged_limbsNet) == nil
+    and next(ply.bandaged_limbs) == nil and not ply._limbs.hand_R.isBandaged
+WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+local open = not WSZC.IsShrapnelBandaged(ply, "hand_R") and WSZC.GetBandageBleeding(ply, "hand_R") > 0
+hg.organism.Clear = oldClear
+return cleaned and open
+''')
+    check("R110 direct explicit organism clear retains old ragdoll reference for cleanup", direct_reset)
+
+    # Execute the exact movement expressions from the shipped ZCity archive,
+    # then compare them to the actual connector shadow at the same thresholds.
+    movement_start = native_org_s.index('\torg.canmove = (org.spine2 < hg.organism.fake_spine2')
+    movement_end = native_org_s.index('\n\tif (org.blood < 2700)', movement_start)
+    movement_source = native_org_s[movement_start:movement_end]
+    lua.execute('function NativeZCitySpineTick(org)\n' + movement_source + '\nend')
+    spine = lua.execute(r'''
+local ply = MakePlayer()
+local org = ply.organism
+hg.organism = { fake_spine1 = 1, fake_spine2 = 1, fake_spine3 = 0.5 }
+org.spine1, org.spine2, org.stun, org.otrub = 0, 0, 0, false
+org.skull, org.spine3 = 1, 0
+org.needfake = false
+NativeZCitySpineTick(org)
+ply._WSZCShadowNext = 0; WSZC.SyncOrganismShadow(ply, org)
+local skullOnly = org.canmove and org.canmovehead and not org.needfake
+    and not ply._limbs.neck.broken and ply._limbs.head.muscle == 0
+org.spine3 = 0.5; org.needfake = false
+NativeZCitySpineTick(org)
+ply._WSZCShadowNext = 0; WSZC.SyncOrganismShadow(ply, org)
+local broken = not org.canmove and not org.canmovehead and org.needfake
+    and ply._limbs.neck.broken and not ply._limbs.head.broken
+    and not WSZC.CanBandageZCityFracture(ply, "neck")
+    and WSZC.CanBandageZCityFracture(ply, "head")
+ply._limbs.neck.splinted = true
+ply._limbs.neck.customStatuses = { SPLINTED = 100 }
+WSZC.TickSplints(ply, org, 1)
+local noFictionalCure = org.spine3 == 0.5
+ply._limbs.neck.splinted = false
+local bandaged = WSZC.StabilizeZCityFracture(ply, "head", ply, nil)
+    and math.abs(org.skull - 0.59) < 0.001 and org.spine3 == 0.5
+org.spine3 = 0.49; org.needfake = false
+NativeZCitySpineTick(org)
+ply._WSZCShadowNext = 0; WSZC.SyncOrganismShadow(ply, org)
+local healed = org.canmove and org.canmovehead and not org.needfake and not ply._limbs.neck.broken
+-- Honour servers changing the native fake_spine3 threshold.
+hg.organism.fake_spine3 = 0.7
+org.spine3 = 0.6; org.needfake = false
+NativeZCitySpineTick(org)
+ply._WSZCShadowNext = 0; WSZC.SyncOrganismShadow(ply, org)
+local custom = org.canmove and org.canmovehead and not ply._limbs.neck.broken
+return skullOnly, broken and bandaged and noFictionalCure, healed and custom
+''')
+    check("R100 skull alone never produces a neck fracture or fake", spine[0])
+    check("R101 actual ZCity spine3 threshold disables movement and shows neck fracture", spine[1])
+    check("R102 native recovery and custom spine3 thresholds restore movement and icon", spine[2])
+    check("S19 actual ZCity lethal neck snap remains native and is never synthesized from skull",
+          'function hg.BreakNeck(ent)' in native_input_s
+          and 'if ply:Alive() then ply:Kill() end' in native_input_s
+          and 'if neck_not_broken and org.spine3 >= 0.8 then' in native_input_s
+          and 'hg.BreakNeck(' not in organism_s and 'hg.BreakNeck(' not in server_main_s)
+
+    # Install the real bridge context and the real Org Think wrapper around a
+    # representative native early return and the archive's movement code.
+    context_start = shared_s.index('function WSZC.WithVanillaContext(fn, ...)')
+    context_end = shared_s.index('\nlocal attempts = 0', context_start)
+    lua.execute(r'''
+hg.WoundBridge = { IsBridged = function() return true end }
+WSZC.Supports = function() return true end
+WSZC.InVanillaContext = function() return (WSZC.VanillaContext or 0) > 0 end
+WSZC.OrganismAuthority = function() return true end
+WSZC.Warn = function() end
+''')
+    lua.execute(shared_s[context_start:context_end])
+    lua.execute('WSZC.PatchIsBridged()')
+    wrapper_start = organism_s.index('local function WrapHook(event, name, pre, post)')
+    wrapper_end = organism_s.index('local function CaptureRawDamage', wrapper_start)
+    lua.execute(r'''
+WrappedRuns = 0
+hook.Add("Org Think", "Main", function(owner, org, dt)
+    if hg.WoundBridge.IsBridged(owner) then return end
+    WrappedRuns = WrappedRuns + 1
+    NativeZCitySpineTick(org)
+end)
+''')
+    lua.execute('local wrappedByKey, wrappedFns = {}, {}; local function Authority() return WSZC.OrganismAuthority() end; local function Debug() end; local function Warn() end\n'
+                + organism_s[wrapper_start:wrapper_end]
+                + '\nWrapHook("Org Think", "Main", function(owner, org, dt) WSZC.TickFallSlowdown(owner, org, dt, true) end, function(owner, org, dt) WSZC.TickFallSlowdown(owner, org, dt, false) end)')
+    wrapped = lua.execute(r'''
+local ply = MakePlayer()
+local org = ply.organism
+hg.organism = { fake_spine1 = 1, fake_spine2 = 1, fake_spine3 = 0.5 }
+org.spine1, org.spine2, org.spine3, org.stun, org.otrub, org.needfake = 0, 0, 0.6, 0, false, false
+hook._t["Org Think"].Main(ply, org, 0.1)
+return WrappedRuns == 1 and not org.canmove and not org.canmovehead and org.needfake
+    and hg.WoundBridge.IsBridged(ply) and not WSZC.InVanillaContext()
+''')
+    check("R105 real Org Think wrapper lets native paralysis run despite bridge early return", wrapped)
+    fakeup_start = native_org_s.index('hook.Add("Should Fake Up", "organism"')
+    fakeup_end = native_org_s.index('\nlocal hg_unreliable_nets', fakeup_start)
+    lua.execute(native_org_s[fakeup_start:fakeup_end])
+    fakeup = lua.execute(r'''
+local ply = MakePlayer(); local org = ply.organism
+org.spine1, org.spine2, org.spine3 = 0, 0, 0.5
+org.otrub, org.fake, org.lleg, org.rleg, org.berserk, org.blood, org.consciousness = false, false, 0, 0, 0, 5000, 1
+local f = hook._t["Should Fake Up"].organism
+local blocked = f(ply) == false
+org.spine3 = 0.49
+return blocked and f(ply) == nil
+''')
+    check("R106 shipped ZCity Should Fake Up blocks standing until spine recovers", fakeup)
+
+    # Exercise the exact wake callback, which is registered by the legacy
+    # adapter, including the original normal-wake behaviour and authority-off.
+    wake_start = server_main_s.index('    hook.Add("HG_OnWakeOtrub", "WSZC_Wake"')
+    wake_end = server_main_s.index('    local function ClearRagdollState(ply)', wake_start)
+    lua.execute(r'''
+WSZC.Ready = true
+WSZC.OrganismAuthority = function() return WakeAuthority end
+WakeAuthority = true
+hg.organism = { fake_spine1 = 1, fake_spine2 = 1, fake_spine3 = 0.5 }
+hg.WoundBridge = { RestoreRagdoll = function() WakeRestores = WakeRestores + 1 end }
+WoundSystem.Health.RestorePlayerFromUnconsciousRagdoll = function() CUrises = CUrises + 1 end
+''')
+    lua.execute('local H = WoundSystem.Health; local WB = hg.WoundBridge; local function BridgeEnabled() return true end\n'
+                + server_main_s[wake_start:wake_end])
+    wake = lua.execute(r'''
+local hookFn = hook._t.HG_OnWakeOtrub.WSZC_Wake
+local ply = MakePlayer()
+ply.FakeRagdoll = { name = "native_fake" }
+ply.organism.spine1, ply.organism.spine2, ply.organism.spine3 = 0, 0, 0.5
+ply.organism.fake, ply.organism.needfake = true, true
+ply._body.unconscious, ply._body.unconsciousRagdoll = true, ply.FakeRagdoll
+WakeRestores, CUrises = 0, 0
+hookFn(ply)
+local remains = WakeRestores == 0 and CUrises == 0 and ply.organism.fake
+    and ply.organism.needfake and ply._body.unconscious == false
+    and ply._body.unconsciousRagdoll == ply.FakeRagdoll
+ply.organism.spine3 = 0.49
+hookFn(ply)
+local normal = WakeRestores == 1 and CUrises == 1 and not ply.organism.fake
+    and not ply.organism.needfake
+WakeAuthority = false
+ply.organism.spine3 = 1; ply.organism.fake = true
+hookFn(ply)
+local legacy = WakeRestores == 2 and CUrises == 2 and not ply.organism.fake
+WakeAuthority = true
+return remains, normal and legacy
+''')
+    check("R103 waking with cervical injury never forces standing or clears fake state", wake[0])
+    check("R104 normal recovery and non-authority wake retain previous behavior", wake[1])
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

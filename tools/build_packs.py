@@ -8,13 +8,18 @@ only the parts this repository owns:
 
   * garrysmod/addons/woundsystem_zcity_compat/**      <- the connector folder
   * garrysmod/addons/casualties_unknown_health_system_beta/materials/**
-        <- the exact same 653 UI materials mirrored into C:U
+        <- the exact same 654 UI materials mirrored into C:U
+  * C:U resource/fonts/** and shaders/fxc/** are RELOCATED into the connector,
+    so the standalone connector owns every UI resource it needs
+  * the connector also carries an isolated embedded C:U + WoundBridge runtime;
+    external Workshop/GitHub APIs still take priority at runtime
   * root docs (README_INSTALL.md / ZCity_binds.md / WORKSHOP_IDS.txt)
   * garrysmod/cfg/zcity_binds.cfg
-  * MANIFEST.txt (counts + sha256 of the 11 connector Lua files)
+  * MANIFEST.txt (counts + sha256 of the 89 connector/vendor Lua files)
 
-No file of any upstream addon is modified except the single already-patched
-line in z_city/lua/homigrad/woundbridge/sv_woundbridge.lua.
+No upstream Lua is modified except the single already-patched line in
+z_city/lua/homigrad/woundbridge/sv_woundbridge.lua.  C:U's six font/shader
+payloads are moved byte-for-byte into the connector, not edited.
 
 Usage: python3 tools/build_packs.py
 """
@@ -31,6 +36,12 @@ COMPAT_ZIP = ROOT / 'woundsystem_zcity_compat.zip'
 
 CONN_PREFIX = 'garrysmod/addons/woundsystem_zcity_compat/'
 CU_MAT = 'garrysmod/addons/casualties_unknown_health_system_beta/materials/'
+# These global resource paths work from any legacy addon.  Keep one physical
+# owner in the full pack so copying only the connector is enough for the UI.
+CU_RELOCATED = (
+    'garrysmod/addons/casualties_unknown_health_system_beta/resource/fonts/',
+    'garrysmod/addons/casualties_unknown_health_system_beta/shaders/fxc/',
+)
 ROOT_DOCS = {
     'README_INSTALL.md': ROOT / 'INSTALL_RU.md',
     'ZCity_binds.md': ROOT / 'ZCity_binds.md',
@@ -136,8 +147,18 @@ def main():
     conn = collect_connector()
     lua = [r for r in conn if r.endswith('.lua')]
     mats = [r for r in conn if r.startswith('materials/')]
-    assert len(lua) == 11, ('connector Lua count', len(lua))
-    assert len(mats) >= 653, ('connector material count', len(mats))
+    assert len(lua) == 89, ('connector + embedded Lua count', len(lua))
+    assert len(mats) >= 654, ('connector material count', len(mats))
+    embedded_cu = [r for r in lua if r.startswith('lua/wszc_vendor/cu/')]
+    embedded_bridge = [r for r in lua if r.startswith('lua/wszc_vendor/zcity/woundbridge/')]
+    assert len(embedded_cu) == 71, ('embedded C:U count', len(embedded_cu))
+    assert len(embedded_bridge) == 3, ('embedded bridge count', len(embedded_bridge))
+    assert 'lua/wszc_vendor/bootstrap.lua' in conn
+    assert 'VENDOR_RUNTIME.sha256' in conn
+    fonts = [r for r in conn if r.startswith('resource/fonts/') and r.endswith('.ttf')]
+    shaders = [r for r in conn if r.startswith('shaders/fxc/') and r.endswith('.vcs')]
+    assert len(fonts) == 3, ('portable font count', fonts)
+    assert len(shaders) == 3, ('portable shader count', shaders)
     for marker in ('limbs/head_fill.png', 'limbs/neck_fill.png',
                    'limbs/neck_edge.png', 'limbs/thorax_edge.png',
                    'homigrad/handanim/hand.png', 'handanim/3_3.png',
@@ -155,7 +176,8 @@ def main():
 
     entries = {}
     for name, data in base.items():
-        if name.startswith(CONN_PREFIX) or name.startswith(CU_MAT):
+        if (name.startswith(CONN_PREFIX) or name.startswith(CU_MAT)
+                or any(name.startswith(prefix) for prefix in CU_RELOCATED)):
             continue
         if name in DOCS_IN_ZIP or name == CFG_ENTRY:
             continue
@@ -179,6 +201,8 @@ def main():
     mirrored = sum(1 for n in entries if n.startswith(CU_MAT))
     print('connector files:', len(conn))
     print('materials mirrored into C:U addon:', mirrored)
+    print('portable C:U resources in connector: %d fonts + %d shaders' % (len(fonts), len(shaders)))
+    print('embedded runtime: %d C:U Lua + %d WoundBridge Lua + bootstrap' % (len(embedded_cu), len(embedded_bridge)))
     print('validation: 0 duplicates, 0 unsafe paths, connector Lua + addon.json OK')
     print('full pack', FULL_ZIP.stat().st_size, 'bytes', len(entries), 'files')
     print('connector zip', COMPAT_ZIP.stat().st_size, 'bytes', len(compat), 'files')

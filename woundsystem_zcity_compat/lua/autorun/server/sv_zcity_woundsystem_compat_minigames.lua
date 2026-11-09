@@ -45,6 +45,7 @@ local NET_STRINGS = {
     "WSZC_SyringeState",
     "WSZC_SyringeClose",
     "WSZC_SyringeInput",
+    "WSZC_DislocationVisualComplete",
 }
 
 if util and util.AddNetworkString then
@@ -97,6 +98,8 @@ end
 
 local function OwnMinigamesEnabled()
     if cvOwnMinigames and not cvOwnMinigames:GetBool() then return false end
+    if WSZC.ExternalMinigameMode == "wszc" and WSZC.Supports
+        and not WSZC.Supports("external_minigames") then return false end
     local cv = GetConVar and GetConVar("zc_woundsystem_minigames") or nil
     if cv and not cv:GetBool() then return false end
     return true
@@ -132,6 +135,11 @@ local function Upvalue(fn, wanted)
 end
 
 local function ClosureValue(data, name)
+    -- Native ZCity WB.StartMinigame keeps these values in closure upvalues.
+    -- Remote treatment has no SWEP closure, so it supplies the SAME contract
+    -- explicitly in data. Prefer that public form when present; native bridge
+    -- behaviour and its appliedLive upvalue sharing remain unchanged.
+    if type(data) == "table" and data[name] ~= nil then return data[name] end
     local value = Upvalue(data.onProgress, name)
     if value ~= nil then return value end
     return Upvalue(data.onClose, name)
@@ -159,18 +167,22 @@ local function NativeBandageContext(data, maxDur)
     if not (WSZC.OrganismAuthority and WSZC.OrganismAuthority()) then return nil end
     if type(WSZC.BandageSeverityPerFullEffect) ~= "function"
         or type(WSZC.BandageSeverityOnLimb) ~= "function" then return nil end
-    if not debug or type(debug.setupvalue) ~= "function" then return nil end
+    local setAppliedLive = type(data._WSZCSetAppliedLive) == "function"
+        and data._WSZCSetAppliedLive or nil
+    if not setAppliedLive and (not debug or type(debug.setupvalue) ~= "function") then return nil end
     local swep = ClosureValue(data, "swep")
     local idx = tonumber(ClosureValue(data, "idx")) or 1
-    local appliedLiveIdx = ClosureUpvalueIndex(data.onProgress, "appliedLive")
-    if not IsValid(swep) or type(swep.modeValues) ~= "table" or not appliedLiveIdx then return nil end
+    local appliedLiveIdx = not setAppliedLive
+        and ClosureUpvalueIndex(data.onProgress, "appliedLive") or nil
+    if not IsValid(swep) or type(swep.modeValues) ~= "table"
+        or not (setAppliedLive or appliedLiveIdx) then return nil end
     local def = swep.modeValuesdef and swep.modeValuesdef[idx]
     if type(def) == "table" then def = def[1] end
     def = tonumber(def)
     if not def or def <= 0 then return nil end -- unsafe custom SWEP: keep native onProgress
     return {
         swep = swep, idx = idx, def = def, maxDur = maxDur,
-        appliedLiveIdx = appliedLiveIdx,
+        appliedLiveIdx = appliedLiveIdx, setAppliedLive = setAppliedLive,
     }
 end
 
@@ -312,6 +324,21 @@ local function SendBandageState(ply, session)
             net.WriteFloat(0)
         end)
         return
+    elseif session.mode == "fracture" then
+        local required = math.max(tonumber(session.fractureRequired) or 1440, 1)
+        local wrapped = math.Clamp(tonumber(session.fractureProgress) or 0, 0, required)
+        local progress = wrapped / required
+        session.lastBleed = required - wrapped
+        session.lastArterialBleed = 0
+        session.lastBleedProgress = progress
+        Send("WSZC_BandageState", ply, function()
+            net.WriteUInt(session.id, 24)
+            net.WriteFloat(required)
+            net.WriteFloat(required - wrapped)
+            net.WriteFloat(progress)
+            net.WriteFloat(0)
+        end)
+        return
     end
     local initial = math.max(tonumber(session.initialBleed) or 0, 0)
     local current = CurrentBandageBleeding(session)
@@ -368,10 +395,30 @@ local function CUSessionActive(ply)
     return false
 end
 
+local function IsRemoteOwnedNativeSession(ply, kind)
+    local remote = WSZC.RemoteNativeSessions
+    local byKind = type(remote) == "table" and remote[ply] or nil
+    local meta = type(byKind) == "table" and byKind[kind] or nil
+    return type(meta) == "table" and IsValid(meta.operator) and meta.operator ~= ply
+end
+
+local function HasAnyRemoteOwnedNativeSession(ply)
+    for _, kind in ipairs({ "Shrapnel", "Dislocation", "Aed" }) do
+        if IsRemoteOwnedNativeSession(ply, kind) then return true end
+    end
+    return false
+end
+
+local function HasActiveRemoteOperatorSession(ply)
+    local remote = WSZC.RemoteMedicalSessions
+    return type(remote) == "table" and remote[ply] ~= nil
+end
+
 local function StopCUSessions(ply, reason)
     local sessions = WSZC.CUSessions
     if type(sessions) ~= "table" then return end
     reason = reason or "disabled"
+    local keepRemoteOwned = IsValid(ply) and ply:Alive()
 
     if sessions.Bandage and sessions.Bandage[ply] and WSZC.CUCloseBandageSession then
         pcall(WSZC.CUCloseBandageSession, ply, reason)
@@ -379,21 +426,24 @@ local function StopCUSessions(ply, reason)
     if sessions.Syringe and sessions.Syringe[ply] and WSZC.CUCloseSyringeSession then
         pcall(WSZC.CUCloseSyringeSession, ply, reason)
     end
-    if sessions.Shrapnel and sessions.Shrapnel[ply] then
+    if sessions.Shrapnel and sessions.Shrapnel[ply]
+        and not (keepRemoteOwned and IsRemoteOwnedNativeSession(ply, "Shrapnel")) then
         if WSZC.CUCloseShrapnelSession then
             pcall(WSZC.CUCloseShrapnelSession, ply, reason)
         else
             sessions.Shrapnel[ply] = nil
         end
     end
-    if sessions.Dislocation and sessions.Dislocation[ply] then
+    if sessions.Dislocation and sessions.Dislocation[ply]
+        and not (keepRemoteOwned and IsRemoteOwnedNativeSession(ply, "Dislocation")) then
         if WSZC.CUCloseDislocationSession then
             pcall(WSZC.CUCloseDislocationSession, ply, reason)
         else
             sessions.Dislocation[ply] = nil
         end
     end
-    if sessions.Aed and sessions.Aed[ply] then
+    if sessions.Aed and sessions.Aed[ply]
+        and not (keepRemoteOwned and IsRemoteOwnedNativeSession(ply, "Aed")) then
         if WSZC.CUCloseAedSession then
             pcall(WSZC.CUCloseAedSession, ply, reason)
         else
@@ -406,7 +456,10 @@ local function HasNativeSession(ply)
     local sessions = WSZC.CUSessions
     if type(sessions) ~= "table" then return false end
     for _, kind in ipairs({ "Bandage", "Syringe", "Shrapnel", "Dislocation", "Aed" }) do
-        if type(sessions[kind]) == "table" and sessions[kind][ply] then return true end
+        if type(sessions[kind]) == "table" and sessions[kind][ply]
+            and not IsRemoteOwnedNativeSession(ply, kind) then
+            return true
+        end
     end
     return false
 end
@@ -466,14 +519,20 @@ end
 local function StopAllMinigames(ply, reason, forceClient)
     if not IsValid(ply) then return false end
     reason = tostring(reason or "disabled")
-    local had = WSZC.MinigameSessions[ply] ~= nil or HasNativeSession(ply)
+    local hadRemoteOp = HasActiveRemoteOperatorSession(ply)
+    local had = WSZC.MinigameSessions[ply] ~= nil or HasNativeSession(ply) or hadRemoteOp
+    if hadRemoteOp and type(WSZC.CloseRemoteMedical) == "function" then
+        pcall(WSZC.CloseRemoteMedical, ply, reason)
+    end
     StopMinigame(ply, reason)
     StopCUSessions(ply, reason)
-    local health = WSZC.H or (WoundSystem and WoundSystem.Health)
-    if health and type(health.CancelActiveMedicalSessions) == "function" then
-        pcall(health.CancelActiveMedicalSessions, ply, reason)
-    elseif type(WoundSystemCloseAllMedicalSessions) == "function" then
-        pcall(WoundSystemCloseAllMedicalSessions, ply, reason)
+    if not (ply:Alive() and HasAnyRemoteOwnedNativeSession(ply)) then
+        local health = WSZC.H or (WoundSystem and WoundSystem.Health)
+        if health and type(health.CancelActiveMedicalSessions) == "function" then
+            pcall(health.CancelActiveMedicalSessions, ply, reason)
+        elseif type(WoundSystemCloseAllMedicalSessions) == "function" then
+            pcall(WoundSystemCloseAllMedicalSessions, ply, reason)
+        end
     end
     -- This is also a safety net for a native session whose private close
     -- upvalue could not be captured: the client must never keep its overlay,
@@ -491,23 +550,42 @@ local function HasMinigame(ply)
     return CUSessionActive(ply)
 end
 
+local function StartResult(ok, reason)
+    WSZC.LastMinigameStartResult = tostring(reason)
+    if not ok then Debug("start rejected: %s", tostring(reason)) end
+    return ok
+end
+
 local function StartMinigame(ply, data)
-    if not (WSZC.Ready and BridgeEnabled() and OwnMinigamesEnabled() and HealthEnabled()) then return false end
-    if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
-    if PlayerIncapacitated(ply) then return false end
-    if HasMinigame(ply) then return true end
-    if type(data) ~= "table" then return false end
+    if not WSZC.Ready then return StartResult(false, "connector not ready") end
+    if not BridgeEnabled() then
+        return StartResult(false, "bridge disabled (zc_woundsystem_bridge/woundsys_enabled)")
+    end
+    if not OwnMinigamesEnabled() then
+        return StartResult(false, "minigames disabled by convar/capability")
+    end
+    if not HealthEnabled() then return StartResult(false, "C:U health disabled") end
+    if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then
+        return StartResult(false, "invalid/dead operator")
+    end
+    if PlayerIncapacitated(ply) then return StartResult(false, "operator incapacitated") end
+    if HasMinigame(ply) then return StartResult(true, "already active") end
+    if type(data) ~= "table" then return StartResult(false, "missing data") end
 
     local kind = data.kind
-    if kind ~= "bandage" and kind ~= "syringe" then return false end
-    if type(data.onProgress) ~= "function" or type(data.onClose) ~= "function" then return false end
+    if kind ~= "bandage" and kind ~= "syringe" then
+        return StartResult(false, "unsupported kind=" .. tostring(kind))
+    end
+    if type(data.onProgress) ~= "function" or type(data.onClose) ~= "function" then
+        return StartResult(false, "missing callbacks")
+    end
 
     -- `spec` is an upvalue of the bridge closures.  `spec.mg` is ZCity's
     -- minigame-capable marker, but after the owner's correction it is not
     -- sufficient by itself: one-dose specs still stay instant.
     local spec = ClosureValue(data, "spec")
     if type(spec) ~= "table" or type(spec.mg) ~= "table" or spec.mg.kind ~= kind then
-        return false
+        return StartResult(false, "invalid spec/minigame marker")
     end
 
     -- The owner explicitly wants one-dose / vehicle / body items to stay
@@ -521,25 +599,36 @@ local function StartMinigame(ply, data)
             if ok then className = class end
         end
         Debug("instant fallback for %s (one-dose ZCity item)", tostring(className))
-        return false
+        return StartResult(false, "intentional instant item=" .. tostring(className))
     end
 
     local H = WSZC.H
-    if type(H) ~= "table" or type(H.ApplyItemToBody) ~= "function" then return false end
+    local authorityDirect = WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+        and (data._WSZCZCityDirect == true
+            or (kind == "bandage" and type(WSZC.ApplyBandageToOrganism) == "function"))
+    if type(H) ~= "table" or (not authorityDirect and type(H.ApplyItemToBody) ~= "function") then
+        return StartResult(false, "ApplyItemToBody unavailable")
+    end
 
     local target = ClosureValue(data, "target")
-    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then return false end
-    if not Bridged(target) then return false end
+    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then
+        return StartResult(false, "invalid/dead target")
+    end
+    if not Bridged(target) then return StartResult(false, "target not bridged") end
 
     local limbId = data.limbId
-    if type(limbId) ~= "string" or limbId == "" then return false end
+    if type(limbId) ~= "string" or limbId == "" then
+        return StartResult(false, "missing limb")
+    end
     if H.InitPlayer and H.GetLimbs and not H.GetLimbs(target) then pcall(H.InitPlayer, target) end
-    if limbId ~= "body" and H.GetLimbState and not H.GetLimbState(target, limbId) then return false end
+    if limbId ~= "body" and H.GetLimbState and not H.GetLimbState(target, limbId) then
+        return StartResult(false, "unknown limb=" .. tostring(limbId))
+    end
 
     local Items = WoundSystem and WoundSystem.Items
     local itemId = NormalizeItemId(data.itemId)
     local item = Items and Items.Get and Items.Get(itemId)
-    if not item then return false end
+    if not item then return StartResult(false, "unknown item=" .. tostring(itemId)) end
 
     local maxDur = tonumber(ClosureValue(data, "maxDur"))
     if not maxDur or maxDur <= 0 then
@@ -566,11 +655,13 @@ local function StartMinigame(ply, data)
         local okAng, ang = pcall(ply.EyeAngles, ply)
         if okAng then frozenAngles = ang end
     end
-    local initialBleed = kind == "bandage"
+    local bandageMode = data.bandageMode
+    local initialBleed = (kind == "bandage" and bandageMode ~= "fracture")
         and CurrentBandageBleeding({ target = target, limbId = limbId }) or 0
     local session = {
         id = id,
         kind = kind,
+        mode = bandageMode,
         itemId = itemId,
         item = item,
         limbId = limbId,
@@ -587,7 +678,12 @@ local function StartMinigame(ply, data)
         initialBleed = initialBleed,
         lastBleed = initialBleed,
         lastBleedProgress = 0,
-        nativeBandage = kind == "bandage" and live and NativeBandageContext(data, maxDur) or nil,
+        fractureRequired = bandageMode == "fracture" and (tonumber(data.fractureRequired) or 1440) or nil,
+        fractureProgress = bandageMode == "fracture" and 0 or nil,
+        fractureCost = bandageMode == "fracture" and (tonumber(data.fractureCost) or 25) or nil,
+        onFractureComplete = bandageMode == "fracture" and data.onFractureComplete or nil,
+        nativeBandage = (kind == "bandage" and bandageMode ~= "fracture" and live)
+            and NativeBandageContext(data, maxDur) or nil,
         onProgress = data.onProgress,
         onClose = data.onClose,
         data = data,
@@ -609,7 +705,7 @@ local function StartMinigame(ply, data)
         Send("WSZC_BandageOpen", ply, function()
             net.WriteUInt(session.id, 24)
             net.WriteString(session.limbId)
-            net.WriteString(profile.mode or "gauze")
+            net.WriteString(session.mode or profile.mode or "gauze")
             net.WriteUInt(session.slotIdx, 3)
         end)
         SendBandageState(ply, session)
@@ -626,22 +722,29 @@ local function StartMinigame(ply, data)
     Debug("opened %s session %s owner=%s target=%s item=%s limb=%s amount=%.2f live=%s oneDose=%s",
         kind, tostring(id), tostring(ply), tostring(target), itemId, limbId,
         startAmount, tostring(session.live), tostring(session.oneDose))
-    return true
+    return StartResult(true, "opened " .. kind .. " #" .. tostring(id))
 end
 
 --- Covered shrapnel cannot be exposed by a click.  Start the SAME client
 --- bandage minigame in reverse mode, with a virtual roll that costs no item.
 --- ProcessBandageInput() is the only path that may remove this dressing.
-function WSZC.StartShrapnelUnwrap(ply, limbId)
+function WSZC.StartShrapnelUnwrap(ply, limbId, target)
+    target = target or ply
     if not (WSZC.Ready and OwnMinigamesEnabled() and HealthEnabled()) then return false end
     if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
-    if PlayerIncapacitated(ply) or not Bridged(ply) then return false end
-    if not (WSZC.IsShrapnelBandaged and WSZC.IsShrapnelBandaged(ply, limbId)) then return false end
+    if PlayerIncapacitated(ply) or not Bridged(target) then return false end
+    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then return false end
+    if target ~= ply then
+        local inspection = WSZC.RemoteMedicalSessions and WSZC.RemoteMedicalSessions[ply]
+        if not (inspection and inspection.target == target and WSZC.RemoteMedicalValidPair
+            and WSZC.RemoteMedicalValidPair(ply, target)) then return false end
+    end
+    if not (WSZC.IsShrapnelBandaged and WSZC.IsShrapnelBandaged(target, limbId)) then return false end
 
     local existing = WSZC.MinigameSessions[ply]
     if existing then
         return existing.kind == "bandage" and existing.mode == "unwrap"
-            and existing.limbId == limbId
+            and existing.limbId == limbId and existing.target == target
     end
     if HasMinigame(ply) then return false end
 
@@ -657,7 +760,7 @@ function WSZC.StartShrapnelUnwrap(ply, limbId)
     local session = {
         id = id, kind = "bandage", mode = "unwrap",
         itemId = "WSZC_UNWRAP", limbId = limbId, slotIdx = MINIGAME_SLOT,
-        owner = ply, target = ply,
+        owner = ply, target = target, remote = target ~= ply,
         maxDur = 360, amount = 360, startAmount = 360, deferredUsed = 0,
         initialBleed = 360, lastBleed = 360, lastBleedProgress = 0,
         unwrapRequired = 360, unwrapProgress = 0,
@@ -689,12 +792,161 @@ WSZC.StartExternalMinigameImpl = StartMinigame
 WSZC.StopExternalMinigameImpl = StopExternal
 WSZC.StopMinigame = StopMinigame
 
+-- Connector-owned medical entrypoint.  Unlike both WB.SwepHeal adapters this
+-- path does not depend on any Workshop SWEP:Heal implementation.  The physical
+-- weapon only supplies owner/capacity; the session, treatment and consumption
+-- are created directly here.  It is exposed as weapon_wszc_bandage so the
+-- original ZCity class hierarchy remains untouched.
+local STANDALONE_BANDAGE_SPEC = {
+    kind = "bandage", item = "GAUZE", rate = 25, mg = { kind = "bandage" },
+}
+
+local function StandaloneBandageReject(owner, reason)
+    WSZC.LastMedicalHealRoute = "weapon_wszc_bandage -> standalone (" .. tostring(reason) .. ")"
+    WSZC.LastMinigameStartResult = "standalone: " .. tostring(reason)
+    if IsValid(owner) and owner.PrintMessage then
+        pcall(owner.PrintMessage, owner, HUD_PRINTCENTER or 2, tostring(reason))
+    end
+    return false
+end
+
+function WSZC.UseStandaloneBandage(swep, target, opts)
+    local owner = IsValid(swep) and swep.GetOwner and swep:GetOwner() or nil
+    if not (IsValid(owner) and owner:IsPlayer() and owner:Alive()) then
+        return StandaloneBandageReject(owner, "invalid operator")
+    end
+    if not WSZC.Ready then return StandaloneBandageReject(owner, "connector not ready") end
+    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then
+        return StandaloneBandageReject(owner, "no living patient")
+    end
+    if target ~= owner and (type(WSZC.RemoteMedicalValidPair) ~= "function"
+        or not WSZC.RemoteMedicalValidPair(owner, target)) then
+        return StandaloneBandageReject(owner, "patient is too far away")
+    end
+
+    swep.modeValues = type(swep.modeValues) == "table" and swep.modeValues or { 40 }
+    swep.modeValuesdef = type(swep.modeValuesdef) == "table" and swep.modeValuesdef or { { 40, true } }
+    local def = swep.modeValuesdef[1]
+    if type(def) == "table" then def = def[1] end
+    def = tonumber(def) or 40
+    local remaining = math.max(tonumber(swep.modeValues[1]) or 0, 0)
+    if remaining <= 0.0005 then return StandaloneBandageReject(owner, "bandage is empty") end
+
+    local preferred = type(opts) == "table" and opts.preferredLimb or nil
+    local forceFracture = type(opts) == "table" and opts.forceFracture == true
+    local forceWound = type(opts) == "table" and opts.forceWound == true
+    local strictLimb = type(opts) == "table" and opts.strictLimb == true and preferred ~= nil
+
+    local limbId = nil
+    if not forceFracture and WSZC.BestBandageLimb then
+        limbId = WSZC.BestBandageLimb(target, STANDALONE_BANDAGE_SPEC, preferred, strictLimb)
+    end
+    local fractureMode, fractureCost = false, 0
+    if not limbId and not forceWound and WSZC.BestZCityFractureLimb and WSZC.ZCityFractureBandageCost then
+        fractureCost = WSZC.ZCityFractureBandageCost(owner)
+        if remaining >= fractureCost - 0.0001 then
+            limbId = WSZC.BestZCityFractureLimb(target, preferred, strictLimb)
+            if limbId then fractureMode = true end
+        end
+    end
+    if not limbId then return StandaloneBandageReject(owner, "no treatable wound or fracture") end
+
+    local items = WoundSystem and WoundSystem.Items
+    local maxDur = (items and items.GetMax and items.GetMax("GAUZE")) or 100
+    local amount = remaining / math.max(def, 0.0001) * maxDur
+    local appliedLive = 0
+    local health = WSZC.H
+    local data
+    data = {
+        kind = "bandage", itemId = "GAUZE", limbId = limbId, amount = amount,
+        bandageMode = fractureMode and "fracture" or nil,
+        fractureRequired = fractureMode and 1440 or nil,
+        fractureCost = fractureMode and fractureCost or nil,
+        swep = swep, idx = 1, spec = STANDALONE_BANDAGE_SPEC, target = target,
+        maxDur = maxDur, live = true, oneDose = false,
+        _WSZCZCityDirect = true,
+        _WSZCSetAppliedLive = function(value)
+            appliedLive = math.max(tonumber(value) or 0, 0)
+        end,
+        onFractureComplete = fractureMode and function()
+            if WSZC.StabilizeZCityFracture
+                and WSZC.StabilizeZCityFracture(target, limbId, owner, swep) then
+                appliedLive = math.max(appliedLive, 1)
+                if WSZC.SyncOrganismShadow and type(target.organism) == "table" then
+                    target._WSZCShadowNext = 0
+                    pcall(WSZC.SyncOrganismShadow, target, target.organism)
+                end
+                if WSZC.NotifyRemotePatientUpdated then
+                    pcall(WSZC.NotifyRemotePatientUpdated, target)
+                end
+            end
+        end or nil,
+        onProgress = function(ply, session, durCost)
+            -- Used only outside the organism-authority native-cost path.  The
+            -- authoritative path consumes exact ZCity severity in
+            -- ProcessNativeBandageInput and deliberately never calls this.
+            if not IsValid(swep) or not IsValid(target) then return end
+            local start = math.max(session.startAmount or amount, 0.0001)
+            durCost = math.min(tonumber(durCost) or 0, math.max(start - appliedLive, 0))
+            if durCost <= 0 then return end
+            local H = WSZC.H or health
+            if not (H and H.ApplyItemToBody) then return end
+            local ok = H.ApplyItemToBody(target, "GAUZE", limbId, durCost)
+            if not ok then return end
+            appliedLive = appliedLive + durCost
+            swep.modeValues[1] = math.max(remaining * (1 - appliedLive / start), 0)
+            if swep.SetNetVar then pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues) end
+        end,
+        onClose = function()
+            -- Keep the native appliedLive closure reachable and remove only a
+            -- genuinely exhausted physical item, never an unused bandage.
+            local _ = appliedLive
+            if not IsValid(swep) or (tonumber(swep.modeValues[1]) or 0) > 0.0005 then return end
+            if IsValid(owner) and owner.SelectWeapon then pcall(owner.SelectWeapon, owner, "weapon_hands_sh") end
+            swep:Remove()
+        end,
+    }
+
+    local started = StartMinigame(owner, data)
+    WSZC.LastMedicalHealRoute = "weapon_wszc_bandage -> standalone (" .. tostring(started) .. ")"
+    if started and WSZC.MinigameSessions[owner] then
+        WSZC.MinigameSessions[owner].remote = target ~= owner
+    end
+    if not started then
+        -- StartMinigame already recorded the precise gate/rejection reason.
+        return false
+    end
+    return true
+end
+
+-- Namespaced remote sessions have no physical ZCity SWEP in the patient's
+-- hands. Revalidate operator -> patient range/alive state for every input,
+-- exactly as the native-session/AED timer paths do.
+local function RemoteSessionValid(ply, session)
+    if not session.remote then return true end
+    local validator = WSZC.RemoteMedicalValidPair
+    return type(validator) == "function" and validator(ply, session.target) == true
+end
+
 function WSZC.InstallMinigameAPI(H)
     if type(H) ~= "table" then return false end
+
+    local caps = WSZC.RefreshCapabilities and WSZC.RefreshCapabilities() or nil
+    if (not WSZC.PreferNativeAPI or WSZC.PreferNativeAPI())
+        and caps and caps.cu_native_api and WSZC.HasNativeExternalMinigameAPI(H) then
+        -- Modern C:U already owns the external protocol and its client UI.
+        -- Replacing it with the legacy WSZC copies would break that build.
+        WSZC.ExternalMinigameMode = "native"
+        WSZC.H = H
+        return true
+    end
+    if WSZC.Supports and not WSZC.Supports("external_minigames") then return false end
 
     H.HasExternalMinigame = HasMinigame
     H.StopExternalMinigame = StopExternal
     H.StartExternalMinigame = StartMinigame
+    H._WSZCOwnsExternalMinigameAPI = true
+    WSZC.ExternalMinigameMode = "wszc"
     WSZC.H = H
     return true
 end
@@ -711,7 +963,11 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
         return true, true
     end
     local H = WSZC.H
-    if not (H and type(H.ApplyItemToBody) == "function") then return false, false end
+    local directBandage = WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+        and type(WSZC.ApplyBandageToOrganism) == "function"
+    if not directBandage and not (H and type(H.ApplyItemToBody) == "function") then
+        return false, false
+    end
     if type(swep.modeValues) ~= "table" then return false, false end
 
     local remaining = math.max(tonumber(swep.modeValues[idx]) or 0, 0)
@@ -734,17 +990,36 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
         beforeSeverity, remaining
     )
     if desired <= 0.000001 and not finalAftercare then return true, false end
+    local applyFraction = desired > 0.000001
+        and (desired / severityPerFull)
+        or baseEffectFraction
     local applyAmount = desired > 0.000001
-        and ((desired / severityPerFull) * perWrap * effectDivisor)
+        and (applyFraction * perWrap * effectDivisor)
         or baseCost -- zero-bleed aftercare still needs its final dressing input
 
-    local callOk, ok = pcall(H.ApplyItemToBody,
-        session.target, session.itemId, session.limbId, applyAmount)
-    if not callOk then
-        Warn("native ZCity bandage apply failed: " .. tostring(ok))
-        return true, false
+    if directBandage then
+        local limbState = H and H.GetLimbState and H.GetLimbState(session.target, session.limbId) or nil
+        local callOk, err = pcall(WSZC.ApplyBandageToOrganism, {
+            ply = session.target, limbId = session.limbId, limb = limbState,
+        }, profile, applyFraction)
+        if not callOk then
+            Warn("direct ZCity bandage apply failed: " .. tostring(err))
+            return true, false
+        end
+        if H and H.SendLimbUpdate then pcall(H.SendLimbUpdate, session.target, session.limbId, true) end
+        if H and H.SendCardioUpdate then pcall(H.SendCardioUpdate, session.target) end
+        if WSZC.NotifyRemotePatientUpdated then
+            pcall(WSZC.NotifyRemotePatientUpdated, session.target, not finalAftercare)
+        end
+    else
+        local callOk, ok = pcall(H.ApplyItemToBody,
+            session.target, session.itemId, session.limbId, applyAmount)
+        if not callOk then
+            Warn("native ZCity bandage apply failed: " .. tostring(ok))
+            return true, false
+        end
+        if not ok then return true, false end
     end
-    if not ok then return true, false end
 
     local afterSeverity = WSZC.BandageSeverityOnLimb
         and WSZC.BandageSeverityOnLimb(session.target, session.limbId)
@@ -753,6 +1028,16 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
     if desired > 0 then treated = math.min(treated, desired + 0.000001) end
 
     if treated > 0.000001 then
+        local org = session.target and session.target.organism
+        if type(org) == "table" then
+            if tonumber(org.pain) then
+                org.pain = math.max(tonumber(org.pain) - treated * 0.25, 0)
+            end
+            if swep.poisoned2 then
+                org.poison4 = CurTime and CurTime() or 0
+                swep.poisoned2 = nil
+            end
+        end
         local left = math.max(remaining - treated, 0)
         swep.modeValues[idx] = left > 0.0005 and left or 0
         -- Mirror the physical remainder into the virtual slot as well.  This
@@ -768,10 +1053,14 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
         -- WB's original onClose only needs appliedLive > 0.01 for a live
         -- bandage before it calls native AfterUse.  Share the upvalue with
         -- onProgress; never call that onProgress and consume a second time.
-        local i = native.appliedLiveIdx
-        if i and debug and debug.setupvalue then
-            pcall(debug.setupvalue, session.onProgress, i,
-                math.max(session.deferredUsed or 0, 0.02))
+        local applied = math.max(session.deferredUsed or 0, 0.02)
+        if native.setAppliedLive then
+            pcall(native.setAppliedLive, applied)
+        else
+            local i = native.appliedLiveIdx
+            if i and debug and debug.setupvalue then
+                pcall(debug.setupvalue, session.onProgress, i, applied)
+            end
         end
     end
 
@@ -795,6 +1084,10 @@ local function ProcessBandageInput(_, ply)
     end
     if not IsValid(session.target) or not session.target:Alive() or not Bridged(session.target) then
         StopMinigame(ply, "target_gone")
+        return
+    end
+    if not RemoteSessionValid(ply, session) then
+        StopMinigame(ply, "out_of_range")
         return
     end
 
@@ -821,6 +1114,58 @@ local function ProcessBandageInput(_, ply)
             StopMinigame(ply, removed and "unwrapped" or "unwrap_failed")
         end
         return -- no durability, bleeding treatment or foreign onProgress
+    elseif session.mode == "fracture" then
+        if WSZC.CanBandageZCityFracture
+            and not WSZC.CanBandageZCityFracture(session.target, session.limbId) then
+            SendAck(ply, session, ACK_BANDAGE, inputSeq)
+            StopMinigame(ply, "completed")
+            return
+        end
+        local swep = ClosureValue(session.data, "swep")
+        local idx = tonumber(ClosureValue(session.data, "idx")) or 1
+        if not IsValid(swep) or type(swep.modeValues) ~= "table" then
+            StopMinigame(ply, "target_gone")
+            return
+        end
+        local required = math.max(tonumber(session.fractureRequired) or 1440, 1)
+        local cost = math.max(tonumber(session.fractureCost) or 25, 0)
+        local remainingItem = math.max(tonumber(swep.modeValues[idx]) or 0, 0)
+        if remainingItem + 0.0001 < cost then
+            SendBandageState(ply, session)
+            SendAck(ply, session, ACK_BANDAGE, inputSeq)
+            StopMinigame(ply, "empty")
+            return
+        end
+        local beforeProgress = math.Clamp(tonumber(session.fractureProgress) or 0, 0, required)
+        local deltaDegrees = math.Clamp(math.min(degrees, required - beforeProgress), 0, required)
+        if deltaDegrees <= 0.0001 then
+            SendBandageState(ply, session)
+            SendAck(ply, session, ACK_BANDAGE, inputSeq)
+            return
+        end
+        session.fractureProgress = beforeProgress + deltaDegrees
+        SendBandageState(ply, session)
+        SendAck(ply, session, ACK_BANDAGE, inputSeq)
+        if session.fractureProgress >= required - 0.001 then
+            local left = math.max(remainingItem - cost, 0)
+            swep.modeValues[idx] = left > 0.0005 and left or 0
+            if swep.SetNetVar then pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues) end
+            local def = swep.modeValuesdef and swep.modeValuesdef[idx]
+            if type(def) == "table" then def = def[1] end
+            def = math.max(tonumber(def) or cost or 40, 0.0001)
+            session.deferredUsed = math.min(session.startAmount, cost * (session.maxDur / def))
+            if type(session.data._WSZCSetAppliedLive) == "function" then
+                pcall(session.data._WSZCSetAppliedLive, math.max(session.deferredUsed, 1))
+            end
+            SendSlot(ply, session)
+            if type(session.onFractureComplete) == "function" then
+                pcall(session.onFractureComplete, ply, session)
+            elseif WSZC.StabilizeZCityFracture then
+                pcall(WSZC.StabilizeZCityFracture, session.target, session.limbId, ply, swep)
+            end
+            StopMinigame(ply, "completed")
+        end
+        return
     end
 
     -- An artery is not a bandage target.  Do not spend even a partial roll
@@ -907,6 +1252,10 @@ local function ProcessSyringeInput(_, ply)
     end
     if not IsValid(session.target) or not session.target:Alive() or not Bridged(session.target) then
         StopMinigame(ply, "target_gone")
+        return
+    end
+    if not RemoteSessionValid(ply, session) then
+        StopMinigame(ply, "out_of_range")
         return
     end
 
@@ -1107,10 +1456,18 @@ hook.Add("Think", "WSZC_MinigameWatch", function()
     -- sweep players too.  StopAllMinigames only networks when one exists.
     if player and player.GetAll then
         for _, ply in ipairs(player.GetAll()) do
-            if PlayerIncapacitated(ply) and HasNativeSession(ply) then
+            if PlayerIncapacitated(ply) and (HasNativeSession(ply) or HasActiveRemoteOperatorSession(ply)) then
                 StopAllMinigames(ply, "unconscious", true)
             end
         end
+    end
+end)
+
+net.Receive("WSZC_DislocationVisualComplete", function(_, ply)
+    local sessionId = net.ReadUInt(24)
+    local x, y = net.ReadFloat(), net.ReadFloat()
+    if WSZC.HandleDislocationVisualComplete then
+        WSZC.HandleDislocationVisualComplete(ply, sessionId, x, y)
     end
 end)
 

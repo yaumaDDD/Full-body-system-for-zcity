@@ -13,6 +13,7 @@ WSZC = WSZC or {}
 
 if SERVER then
     SetGlobalBool("WSZC_Ready", false)
+    if type(SetGlobalString) == "function" then SetGlobalString("WSZC_ActiveAdapter", "") end
 end
 
 if WSZC._ServerLoaded then return end
@@ -21,31 +22,119 @@ WSZC._ServerLoaded = true
 AddCSLuaFile("autorun/sh_zcity_woundsystem_compat.lua")
 AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_minigames.lua")
 AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_inspect.lua")
+AddCSLuaFile("autorun/client/cl_zcity_woundsystem_compat_remote.lua")
 AddCSLuaFile("autorun/client/wszc_cl_bandage.lua")
 AddCSLuaFile("autorun/client/wszc_cl_syringe.lua")
 if not WSZC.PatchIsEnabled then
     include("autorun/sh_zcity_woundsystem_compat.lua")
 end
 
-local TAG = "[ZCity/CU compat] "
 -- Shared with sv_zcity_woundsystem_compat_organism.lua.  Weak keys because
 -- CTakeDamageInfo objects are transient and must not be retained.
 WSZC.RawDamage = WSZC.RawDamage or setmetatable({}, { __mode = "k" })
-local cvDebug = CreateConVar("zc_woundsystem_compat_debug", "0", { FCVAR_ARCHIVE, FCVAR_NOTIFY }, "Print diagnostics for the ZCity <-> WoundSystem compatibility addon")
+local cvResourceDownloads = CreateConVar("zc_woundsystem_compat_resource_downloads", "1", { FCVAR_ARCHIVE, FCVAR_NOTIFY }, "Register the connector's self-contained UI materials, C:U fonts and shaders for client download (map change/restart required)")
 
-function WSZC.Debug(fmt, ...)
-    if not (cvDebug and cvDebug:GetBool()) then return end
-    local ok, msg = pcall(string.format, fmt, ...)
-    print(TAG .. (ok and msg or tostring(fmt)))
+---------------------------------------------------------------------------
+-- Self-contained UI content / dedicated-server downloads
+---------------------------------------------------------------------------
+
+-- These are virtual GAME paths, not files inside another addon's private
+-- namespace.  Keeping them in this folder works with both the supplied C:U
+-- ZIP and a Workshop C:U installation.  The full-pack builder removes the
+-- duplicate fonts/shaders from C:U; materials intentionally also have a C:U
+-- mirror there for compatibility with the original package layout.
+local PORTABLE_RESOURCE_ROOTS = {
+    "materials/casunknown-images",
+    "materials/homigrad/bleedanim",
+    "materials/homigrad/handanim",
+    "materials/homigrad/limbs",
+    "materials/smiley",
+    "materials/traits",
+    "materials/woundsystem",
+    "materials/wszc",
+    "materials/zcity_delta/other",
+    "materials/zcity_delta/unitmenu",
+    "materials/zcity_delta_moodles",
+}
+-- Never recursively scan these GLOBAL roots: other addons put unrelated
+-- fonts/shaders there.  These six filenames come byte-for-byte from C:U.
+local PORTABLE_RESOURCE_FILES = {
+    "resource/fonts/i-pixel-u.ttf",
+    "resource/fonts/perfectdosvga437.ttf",
+    "resource/fonts/retro gaming.ttf",
+    "shaders/fxc/woundsystem_aberration_ps20b.vcs",
+    "shaders/fxc/woundsystem_condition_ps20b.vcs",
+    "shaders/fxc/woundsystem_pain_ps20b.vcs",
+}
+local PORTABLE_RESOURCE_EXTENSIONS = {
+    [".png"] = true, [".jpg"] = true, [".jpeg"] = true,
+    [".vmt"] = true, [".vtf"] = true,
+    [".ttf"] = true, [".otf"] = true, [".vcs"] = true,
+}
+
+--- Register every UI payload shipped by the connector.  file.Find(..., GAME)
+--- sees legacy-addon and mounted-content paths alike.  Native C:U's resource
+--- registry is honoured in BOTH load orders, so enabling both resource
+--- convars cannot enqueue the same path twice.
+function WSZC.InstallPortableResources()
+    if WSZC._PortableResourcesInstalled then return 0 end
+    if not cvResourceDownloads:GetBool() then return false end
+    if type(resource) ~= "table" or type(resource.AddFile) ~= "function" then return false end
+    if type(file) ~= "table" or type(file.Find) ~= "function" then return false end
+
+    local added, seen = 0, {}
+    -- C:U preserves an existing Resources/Added table in sv_resources.lua.
+    -- Creating just that small registry also covers connector-before-C:U load
+    -- order; it does not fabricate Health/API readiness.
+    if WoundSystem == nil then WoundSystem = {} end
+    if type(WoundSystem) == "table" then
+        WoundSystem.Resources = WoundSystem.Resources or {}
+        WoundSystem.Resources.Added = WoundSystem.Resources.Added or {}
+    end
+    local nativeAdded = type(WoundSystem) == "table" and WoundSystem.Resources
+        and WoundSystem.Resources.Added or nil
+
+    local function AddPath(path)
+        if seen[path] then return end
+        local lower = string.lower(path)
+        local supported = false
+        for extension in pairs(PORTABLE_RESOURCE_EXTENSIONS) do
+            if string.sub(lower, -#extension) == extension then
+                supported = true
+                break
+            end
+        end
+        if not supported then return end
+        if type(file.Exists) == "function" and not file.Exists(path, "GAME") then return end
+        seen[path] = true
+        if type(nativeAdded) == "table" and nativeAdded[path] == true then return end
+        resource.AddFile(path)
+        if type(nativeAdded) == "table" then nativeAdded[path] = true end
+        added = added + 1
+    end
+
+    local function AddTree(root, depth)
+        if depth > 32 then return end
+        local files, dirs = file.Find(root .. "/*", "GAME")
+        table.sort(files or {})
+        table.sort(dirs or {})
+        for _, name in ipairs(files or {}) do AddPath(root .. "/" .. name) end
+        for _, name in ipairs(dirs or {}) do
+            if name ~= "." and name ~= ".." then
+                AddTree(root .. "/" .. name, depth + 1)
+            end
+        end
+    end
+
+    for _, path in ipairs(PORTABLE_RESOURCE_FILES) do AddPath(path) end
+    for _, root in ipairs(PORTABLE_RESOURCE_ROOTS) do AddTree(root, 0) end
+    WSZC._PortableResourcesInstalled = true
+    WSZC._PortableResourceCount = added
+    WSZC.Debug("portable UI resources registered: %d files", added)
+    return added
 end
 
-function WSZC.Log(msg)
-    print(TAG .. tostring(msg))
-end
-
-function WSZC.Warn(msg)
-    ErrorNoHalt(TAG .. tostring(msg) .. "\n")
-end
+WSZC.InstallPortableResources()
 
 local function BridgeEnabled()
     local WB = hg and hg.WoundBridge
@@ -107,6 +196,12 @@ local function Upvalue(fn, wanted)
 end
 
 local function FindUpvalue(wanted)
+    local H = WoundSystem and WoundSystem.Health or nil
+    if type(WoundSystem) == "table" and WoundSystem._WSZCEmbedded == true
+        and type(H) == "table" and type(H._WSZCBridgeRefs) == "table" then
+        local value = H._WSZCBridgeRefs[wanted]
+        if value ~= nil then return value, nil end
+    end
     for _, fn in ipairs(RootFunctions()) do
         local value = Upvalue(fn, wanted)
         if value ~= nil then return value, fn end
@@ -115,6 +210,12 @@ local function FindUpvalue(wanted)
 end
 
 local function ReplaceUpvalue(fn, wanted, newValue)
+    local H = WoundSystem and WoundSystem.Health or nil
+    if type(WoundSystem) == "table" and WoundSystem._WSZCEmbedded == true
+        and type(H) == "table" and type(H._WSZCReplaceUpvalue) == "function" then
+        local ok, replaced = pcall(H._WSZCReplaceUpvalue, fn, wanted, newValue)
+        return ok and replaced == true
+    end
     if type(fn) ~= "function" or not debug then return false end
     local i = 1
     while true do
@@ -586,6 +687,8 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
     local bandageEffectFraction = 0
     local directTourniquetTreated, directTourniquetAfter = 0, nil
 
+    local authorityMode = WSZC.OrganismAuthority and WSZC.OrganismAuthority() or false
+
     if minigame == "bandage" then
         local profile = BandageProfile(itemId, item)
         local perWrap = math.max(tonumber(profile.durabilityPerWrap) or (maxDurability / 12), 0.0001)
@@ -595,11 +698,26 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         ctx.wrapFraction = wrapFraction
         ctx.degreesMoved = wrapFraction * 360
         ctx.profile = profile
+        local limb = type(ctx.limb) == "table" and ctx.limb or nil
+        local savedBroken = limb and limb.broken
+        local savedBoneTimer = limb and limb.boneHealTimer
+        local savedDislocated = limb and limb.dislocated
+        local savedDislocTimer = limb and limb.dislocationTimer
+        local savedDisinfect = limb and limb.disinfectTime
         if WSZC.ApplyBandageProfile then
             local callOk, result = pcall(WSZC.ApplyBandageProfile, ctx, profile)
             ok = callOk and result ~= false
         else
             ok = ApplyBandageProfile(ctx, profile, effectFraction)
+        end
+        if authorityMode and limb then
+            -- Bandaging bleeding wounds must never apply C:U's boneHealTimer /
+            -- dislocationTimer / disinfectTime side-effects in ZCity authority.
+            limb.broken = savedBroken
+            limb.boneHealTimer = savedBoneTimer
+            limb.dislocated = savedDislocated
+            limb.dislocationTimer = savedDislocTimer
+            limb.disinfectTime = savedDisinfect
         end
     elseif minigame == "syringe" then
         local profile = SyringeProfile(itemId, item)
@@ -607,11 +725,21 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         ctx.injectDepth = 1
         ctx.durabilityCost = used
         ctx.profile = profile
+        local limb = type(ctx.limb) == "table" and ctx.limb or nil
+        local savedInjection = limb and limb.hasInjection
+        local savedSyringeWound = limb and type(limb.customStatuses) == "table"
+            and limb.customStatuses.SYRINGE_WOUND or nil
         if WSZC.ApplySyringeProfile then
             local callOk, result = pcall(WSZC.ApplySyringeProfile, ctx, profile)
             ok = callOk and result ~= false
         else
             ok = ApplySyringeProfile(ctx, profile, ctx.syringeFraction)
+        end
+        if authorityMode and limb then
+            limb.hasInjection = savedInjection == true
+            if type(limb.customStatuses) == "table" and savedSyringeWound == nil then
+                limb.customStatuses.SYRINGE_WOUND = nil
+            end
         end
     else
         -- Ordinary item: reuse C:U's own use.apply/canUse/validLimbs logic
@@ -716,6 +844,42 @@ end
 
 WSZC.Upvalue = Upvalue
 WSZC.FindUpvalue = FindUpvalue
+
+-- Modern C:U exports HandleDamage/ApplyItemToBody, so Setup() takes its native
+-- API fast path and used to return BEFORE refs.CUSessions was assigned.  The
+-- rendered-dislocation receiver then rejected every packet: there was no live
+-- Sessions table or native close function to validate.  Resolve all native
+-- session refs independently of that adapter choice.  Embedded refs are O(1);
+-- discovery is needed only for external/legacy builds or a missing contract.
+function WSZC.RefreshNativeSessionRefs(discover)
+    local h = WoundSystem and WoundSystem.Health or nil
+    local nativeRefs = h and h._WSZCBridgeRefs or nil
+    local wantedByField = {
+        CUSessions = "Sessions",
+        CUCloseBandageSession = "CloseBandageSession",
+        CUCloseSyringeSession = "CloseSyringeSession",
+        CUCloseShrapnelSession = "CloseShrapnelSession",
+        CUCloseDislocationSession = "CloseDislocationSession",
+        CUCloseAedSession = "CloseAedSession",
+    }
+    for field, wanted in pairs(wantedByField) do
+        local current = WSZC[field]
+        local currentValid = wanted == "Sessions" and type(current) == "table"
+            or wanted ~= "Sessions" and type(current) == "function"
+        local value = type(nativeRefs) == "table" and nativeRefs[wanted] or nil
+        if value == nil and (discover == true or not currentValid) and WSZC.FindUpvalue then
+            value = WSZC.FindUpvalue(wanted)
+        end
+        if wanted == "Sessions" and type(value) == "table" then
+            WSZC[field] = value
+        elseif wanted ~= "Sessions" and type(value) == "function" then
+            WSZC[field] = value
+        end
+    end
+    return type(WSZC.CUSessions) == "table"
+        and type(WSZC.CUCloseDislocationSession) == "function"
+end
+
 WSZC.NormalizeItemId = NormalizeItemId
 WSZC.BandageProfile = BandageProfile
 WSZC.SyringeProfile = SyringeProfile
@@ -724,6 +888,7 @@ WSZC.ApplyItemToBodyImpl = ApplyItemToBodyImpl
 -- Registers WSZC.InstallMinigameAPI() and the namespaced net protocol.
 include("autorun/server/sv_zcity_woundsystem_compat_minigames.lua")
 include("autorun/server/sv_zcity_woundsystem_compat_organism.lua")
+include("autorun/server/sv_zcity_woundsystem_compat_remote.lua")
 
 ---------------------------------------------------------------------------
 -- One-time setup
@@ -734,18 +899,26 @@ function WSZC.Setup()
 
     local H = WoundSystem and WoundSystem.Health
     local WB = hg and hg.WoundBridge
+    local caps = WSZC.RefreshCapabilities and WSZC.RefreshCapabilities() or nil
     if not (H and WB and WB.IsEnabled and WB.ApplyDamage and WoundSystem.Items) then
         return false
     end
 
+    if WSZC.AdaptiveCompatibility and WSZC.AdaptiveCompatibility()
+        and caps and not caps.core then return false end
+
     WSZC.H = H
     if WSZC.InstallNeckState then WSZC.InstallNeckState(H) end
+    -- Must precede BOTH the modern native-api early return and legacy setup.
+    if WSZC.RefreshNativeSessionRefs then WSZC.RefreshNativeSessionRefs(true) end
 
-    -- A future C:U build may already provide the full bridge API.  Even then,
-    -- install our external-minigame implementation: the supplied C:U build has
-    -- none, and the ZCity bridge needs it for non-instant medical items.
-    if type(H.HandleDamage) == "function" and type(H.ApplyItemToBody) == "function" then
+    -- A newer C:U can export the complete native bridge contract.  Prefer it;
+    -- partial lookalikes still go through signature-checked legacy discovery.
+    local legacyNativeFallback = WSZC.AdaptiveCompatibility and not WSZC.AdaptiveCompatibility()
+        and type(H.HandleDamage) == "function" and type(H.ApplyItemToBody) == "function"
+    if (caps and caps.cu_native_api) or legacyNativeFallback then
         if WSZC.InstallMinigameAPI then WSZC.InstallMinigameAPI(H) end
+        if WSZC.Compatibility then WSZC.Compatibility.activeAdapter = "native-api" end
         WSZC.SetupDone = true
         return true
     end
@@ -892,8 +1065,14 @@ function WSZC.Setup()
                     return WSZC.OriginalFn and WSZC.OriginalFn[key]
                 end,
             })
-            ReplaceUpvalue(CUDamage, "Const", constProxy)
-            ReplaceUpvalue(CUDamage, "Fn", fnProxy)
+            local constReplaced = ReplaceUpvalue(CUDamage, "Const", constProxy)
+            local fnReplaced = ReplaceUpvalue(CUDamage, "Fn", fnProxy)
+            if WoundSystem._WSZCEmbedded and not (constReplaced and fnReplaced) then
+                if WSZC.MarkFeatureFailed then
+                    WSZC.MarkFeatureFailed("core", "embedded damage proxy contract rejected")
+                end
+                return false
+            end
             WSZC.ProxiedCUDamage = CUDamage
             WSZC.DamageProxiesApplied = true
         end
@@ -1070,6 +1249,26 @@ function WSZC.Setup()
     hook.Add("HG_OnWakeOtrub", "WSZC_Wake", function(ply)
         if not (WSZC.Ready and BridgeEnabled() and IsValid(ply) and ply:IsPlayer()) then return end
         local body = H.GetBody and H.GetBody(ply)
+        local org = ply.organism
+        if WSZC.OrganismAuthority and WSZC.OrganismAuthority() and type(org) == "table" then
+            local native = hg and hg.organism or {}
+            local spineBlocked = (tonumber(org.spine1) or 0) >= (tonumber(native.fake_spine1) or 1)
+                or (tonumber(org.spine2) or 0) >= (tonumber(native.fake_spine2) or 1)
+                or (tonumber(org.spine3) or 0) >= (tonumber(native.fake_spine3) or 0.5)
+            if spineBlocked then
+                -- Waking is not the same as being able to stand.  C:U's
+                -- restoration changes movetype/visibility and WB.RestoreRagdoll
+                -- forces FakeUp, bypassing the real ZCity spine restrictions.
+                if type(body) == "table" then
+                    body.unconscious = false
+                    body.fallingRagdoll, body.fallingRagdollWakeTime = nil, nil
+                    body.fallingRagdollReason = nil
+                    if IsValid(ply.FakeRagdoll) then body.unconsciousRagdoll = ply.FakeRagdoll end
+                    body.ragdollModeFailed = false
+                end
+                return
+            end
+        end
         if type(body) == "table" then
             if H.RestorePlayerFromUnconsciousRagdoll then
                 pcall(H.RestorePlayerFromUnconsciousRagdoll, ply, body, true, true)
@@ -1082,7 +1281,6 @@ function WSZC.Setup()
             body.ragdollModeFailed = false
         end
         if ply.SetNWEntity then ply:SetNWEntity("WoundSystemUnconsciousRagdoll", NULL) end
-        local org = ply.organism
         if type(org) == "table" then
             org.fake = false
             org.needfake = false
@@ -1103,6 +1301,7 @@ function WSZC.Setup()
     hook.Add("PlayerSpawn", "WSZC_SpawnClear", ClearRagdollState)
     hook.Add("PlayerDeath", "WSZC_DeathClear", ClearRagdollState)
 
+    if WSZC.Compatibility then WSZC.Compatibility.activeAdapter = "legacy-adapter" end
     WSZC.SetupDone = true
     return true
 end
@@ -1114,20 +1313,34 @@ end
 local attempts = 0
 local function Attempt()
     if WSZC.Ready then return true end
+    if WSZC.SetupFailed then return false end
     local ok, ready = pcall(WSZC.Setup)
     if not ok then
-        WSZC.Warn("setup error: " .. tostring(ready))
+        WSZC.SetupFailed = tostring(ready)
+        if WSZC.MarkFeatureFailed then
+            WSZC.MarkFeatureFailed("core", "setup error: " .. tostring(ready))
+        else
+            WSZC.Warn("setup error: " .. tostring(ready))
+        end
         SetGlobalBool("WSZC_Ready", false)
         return false
     end
     if not ready then return false end
 
     WSZC.Ready = true
+    WSZC.SetupFailed = nil
+    if WSZC.Compatibility then WSZC.Compatibility.failures.core = nil end
     SetGlobalBool("WSZC_Ready", true)
+    if type(SetGlobalString) == "function" then
+        SetGlobalString("WSZC_ActiveAdapter", tostring(WSZC.Compatibility.activeAdapter or ""))
+    end
     SetGlobalBool("WSZC_OrganismAuthority", WSZC.OrganismAuthority())
     if WSZC.PatchIsEnabled then WSZC.PatchIsEnabled() end
     if WSZC.PatchIsBridged then WSZC.PatchIsBridged() end
+    if WSZC.RefreshNativeSessionRefs then WSZC.RefreshNativeSessionRefs(false) end
+    if WSZC.InstallLegacyRadialMedicineBlock then WSZC.InstallLegacyRadialMedicineBlock() end
     if WSZC.InstallOrganismMode then WSZC.InstallOrganismMode() end
+    if WSZC.RefreshCapabilities then WSZC.RefreshCapabilities() end
 
     if WSZC.OrganismAuthority() then
         WSZC.Log("compatibility layer active (ply.organism owns health; C:U = HUD, minigames, shrapnel)")
@@ -1140,10 +1353,16 @@ end
 WSZC.Attempt = Attempt
 
 local function Chain()
-    if WSZC.Ready then return end
+    if WSZC.Ready or WSZC.SetupFailed then return end
     if Attempt() then return end
     attempts = attempts + 1
-    if attempts < 60 then timer.Simple(0.5, Chain) end
+    if attempts < 60 then
+        timer.Simple(0.5, Chain)
+    elseif not WSZC._CompatibilityStatusReported then
+        WSZC._CompatibilityStatusReported = true
+        WSZC.Log("no compatible ZCity/C:U core contract; connector remains inactive. Run wszc_compat_status for details.")
+        if WSZC.PrintCompatibilityStatus then WSZC.PrintCompatibilityStatus() end
+    end
 end
 
 if not WSZC._ChainStarted then

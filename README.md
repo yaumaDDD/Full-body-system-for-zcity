@@ -12,6 +12,36 @@
 `zc_woundsystem_compat_authority 0` возвращает прежний мост, где C:U полностью
 владела ранами.
 
+### Адаптивный запуск на других сборках
+
+Connector теперь не патчит любую найденную сборку вслепую. Перед активацией он
+проверяет полный core contract ZCity/C:U и отдельно возможности inspection,
+medicine, external minigames, remote treatment и organism extensions. Встроенные
+71 C:U Lua + 3 WoundBridge Lua находятся в изолированном `wszc_vendor/`:
+отдельные C:U/WoundBridge не обязательны, а внешние Workshop/GitHub API имеют
+приоритет и не получают второй runtime поверх себя:
+
+- приложенная legacy-сборка выбирает прежний адаптер со всеми функциями;
+- C:U с полным native API используется напрямую, её external-minigame API не
+  заменяется WSZC-копиями;
+- отсутствующие необязательные контракты отключают только связанные функции;
+- частичная/неизвестная сборка без core contract не активирует медицинский core,
+  а ошибка Setup блокирует повторные попытки до ручного reprobe.
+
+Диагностика в консоли: `wszc_compat_status`; повторное определение после смены
+или поздней загрузки аддонов: `wszc_compat_reprobe`. Конвары
+`zc_woundsystem_compat_adaptive 1` и
+`zc_woundsystem_compat_prefer_native_api 1` включены по умолчанию. Значение
+`adaptive 0` — только экспертный override для старого поведения, а не способ
+гарантировать совместимость.
+
+**Это не делает любую модификацию ZCity автоматически поддерживаемой.** Сама
+ZCity с `ply.organism`, gamemode и основными damage/ragdoll API необходима, но
+C:U и WoundBridge уже встроены и не требуют отдельной установки. Изменённые
+`ply.organism`, damage hooks или ragdoll API требуют отдельного адаптера и живой
+проверки. Для анализа нужны вывод `wszc_compat_status` (включая `runtime:`) и
+ZIP конкретной сборки.
+
 Шрапнель использует общий для родной мини-игры счётчик `state.shrapnel`, но
 источники хранятся раздельно: **дробовик**, взрыв и **стекло** (руки/ноги,
 ragdoll-коллизии). Дробовик и взрыв оставляют фрагменты на фактически поражённом
@@ -27,8 +57,30 @@ limb из `hitgroup/dmgstack/HitBones`, включая голову, торс и
 В круговом селекторе ZCity добавлена кнопка «Проверить травмы»: она открывает
 родную панель осмотра C:U (`WoundSystem.OpenHealthHUD`), а не новый интерфейс.
 Штатный пункт ZCity `Examine Body` перехватывается и переименовывается, дубля
-нет. Панель C:U показывает состояние `LocalPlayer()`, поэтому кнопка проверяет
-себя; осмотр другого игрока в этой панели не предусмотрен.
+нет. Живой персонаж может открыть осмотр и при `unconscious` после травмы
+мозга: connector лишь на время native open/Think маскирует два client-only
+флага, а серверное оглушение, ragdoll и incapacity-проверки мини-игр не меняет.
+При наведении на живого игрока или его ragdoll (до 256 units) отдельный пункт
+**«Лечить игрока»** открывает **тот же WoundView для пациента**.
+
+Remote treatment не имеет собственного doll, HUD или patient banner: используются
+те же 17 native limb id, включая `neck` и `pelvis`, та же анатомия, материалы,
+hitbox/hover и мини-игры, что при самоосмотре. Меняется только авторитетный
+snapshot `PlayerLimbs/Cardio/PlayerStats`; self-state сохраняется и восстанавливается.
+Пять слотов C:U остаются скрытыми и у пациента: визуально remote WoundView
+полностью совпадает с самоосмотром, исключения для инвентаря больше нет. Бинты,
+шприцы и жгуты применяются штатными ZCity SWEP непосредственно на игрока или его
+ragdoll; эффект получает пациент, предмет/заряд расходует лекарь. Общий connector
+resolver `WB.GetPlayer` покрывает все 12 standalone SWEP, 5 medkit modes и
+bloodbag даже для shared-organism proxy, который native resolver не принимает.
+В WoundView
+остаются native shrapnel/dislocation, снятие statuses и другие действия руками.
+Namespaced C:U item protocol сохранён только для совместимости с конфигурацией
+`zc_woundsystem_compat_hide_cu_inventory 0`. Сервер проверяет operator→patient,
+Alive, дистанцию до актуального player/ragdoll, активную inspection и схему
+каждого пакета; смерть, disconnect, закрытие панели и выход из дистанции
+завершают лечение. Вторая симуляция здоровья не создаётся. Конвар `zc_woundsystem_compat_remote_inspect_button 0`
+отключает remote treatment и его кнопку, команда для бинда — `wszc_treat_player`.
 
 Настоящие bandage/syringe мини-игры C:U поднимаются только для бинтов и
 непрерывных шприцевых препаратов (`weapon_bandage_sh`, `weapon_bigbandage_sh`,
@@ -49,7 +101,7 @@ limb из `hitgroup/dmgstack/HitBones`, включая голову, торс и
   Gore V2, WIP-текстуры интерфейса) и коннектором, плюс `garrysmod/cfg/zcity_binds.cfg`,
   `README_INSTALL.md`, `WORKSHOP_IDS.txt`, `ZCity_binds.md`, `MANIFEST.txt`.
 * **`woundsystem_zcity_compat.zip`** — только аддон-коннектор **с исходным Lua-кодом**
-  (11 файлов), `addon.json`, `README.md` и `SOURCE_INDEX.md`. Копируется одной
+  (13 файлов), `addon.json`, `README.md` и `SOURCE_INDEX.md`. Копируется одной
   папкой в `garrysmod/addons/`.
 
 ## Исправления этой сборки
@@ -83,8 +135,10 @@ ZCity-визуалы player/ragdoll и возвращает ровно один 
 При снятии до 180 секунд исходные раны восстанавливаются (новые раны не
 затираются); после 180 секунд обработанные раны остаются закрытыми. Повторный
 клик предмет не дублирует, второй жгут на занятую конечность не расходуется,
-а возвращённый SWEP можно наложить снова. `SPLINTED` и bridge-режим по-прежнему
-делегируются исходному C:U receiver.
+а возвращённый SWEP можно наложить снова. При самолечении его получает пациент,
+при remote removal — снявший жгут медик; 180-секундный advanced lifecycle и
+очистка wounds/status/visuals выполняются именно на пациенте. `SPLINTED` и
+bridge-режим по-прежнему делегируются исходному C:U receiver.
 
 **Живот и таз разделены (2026-11-07):** прежний единый `abdomen` разрезан по
 настоящему traced-шву `y=520`: верхняя часть — `abdomen`, нижняя — новый
@@ -124,11 +178,17 @@ white exterior кистей, швов и внешних white-anchors непос
 последнего обычного кровотечения native-сессия автоматически закрывается через
 `completed` → `onClose/AfterUse`, удаляя virtual slot и client overlay; расход
 по-прежнему равен реально удалённой severity без второго Consume. Ложный значок
-`disinfected/processing` пропускается только в native `AddHudIcon` — настоящие
-infection/bleed/fracture и действие `disinfectTime` сохраняются. Внешние контуры
-получили узкий alpha-fringe (`EDGE_AA_RADIUS=0.45`) и scoped LINEAR sampling с
-гарантированным восстановлением filter stack; pinned geometry, head/neck seam
-`y=317`, abdomen seam `y=520`, fit и hitboxes не изменены.
+`disinfected/processing` и след укола больше не рисуются в WoundView;
+**fracture/dislocation остаются видимыми**, как и infection/shrapnel; действие
+`disinfectTime` не меняется. Обычная
+C:U капля скрыта: вместо неё сервер создаёт `WSZC_ARTERIAL_BLEEDING` только по
+реальным `org.arterialwounds`, с отдельной красной 48px иконкой. Закрытие артерии
+удаляет значок, а обычное кровотечение и лечение бинтом продолжают использовать
+прежний `state.bleed`. Внешние контуры
+сохраняют узкий alpha-fringe (`EDGE_AA_RADIUS=0.45`), но добавленный scoped
+LINEAR sampling УБРАН: WoundView снова использует родное texture sampling и
+вообще не изменяет render filter stack. Pinned geometry, head/neck seam `y=317`,
+abdomen seam `y=520`, fit и hitboxes не изменены.
 
 **Медицинские значки по `Screenshot_13.png` (2026-11-07):** фильтр
 `disinfected` теперь захватывает настоящую локальную таблицу C:U `Icons` и
@@ -193,6 +253,10 @@ aftercare и отсутствие двойного Consume проверены ч
   ZCity-визуалы повязок/жгутов, residue и C:U limb-state. Отдельно обнуляется
   `brokenribs`: родной ZCity reset очищает `chest`, но забывает это производное
   поле, из-за чего красная иконка перелома рёбер возвращалась после ресета.
+  После падения/травмы мозга явный reset больше не восстанавливает старые
+  `alive=false`, `otrub`, `unconscious` и таймеры оглушения: сохраняются только
+  `fake/needfake`, поэтому персонаж остаётся лёжа, но conscious, а осмотр и
+  `WoundSystemUnconscious=false` восстанавливаются немедленно.
   Внутренний `ragdoll → standing` (`OverrideSpawn`) сохраняет весь organism: native и
   third-party поля, wounds/arterialwounds, ампутации, шрапнель и инфекцию.
   Настоящий respawn и явный reset эту медицинскую структуру не сохраняют.
@@ -348,7 +412,12 @@ aftercare и отсутствие двойного Consume проверены ч
   вывих не теряется в ragdoll, успешное вправление снимает флаг всей группы,
   добавляет `org.painadd` и не откатывается 4 Гц «тенью». На время сессии
   камера/движение зафиксированы, а `avgPain` ограничен, иначе C:U блокировала
-  каждый удар по кости при боли > 75.
+  каждый удар по кости при боли > 75. Как только НАРИСОВАННАЯ кость входит в
+  native-допуск стыка, сервер сразу подтверждает вправление: удержания и
+  дополнительного удара нет (`DislocationSuccessTimer = 3` — порог расстояния,
+  не секунды). Modern native-api `Setup()` теперь обязательно получает
+  `Sessions/CloseDislocationSession` до раннего return; раньше именно их
+  отсутствие заставляло сервер молча отклонять правильный visual-complete.
 * **Переломы остаются «как в ZCity»**: C:U только рисует иконку `state.broken`
   в WoundView по `org.larm/rarm/lleg/rleg >= 1` и `org.brokenribs > 0`.
   Отдельной мини-игры, своей симуляции костей и своих таймеров нет — создание,
@@ -474,6 +543,14 @@ aftercare и отсутствие двойного Consume проверены ч
   фона в папки `dislocationminigame`, `shrapnelminigame`, `syringeminigame`
   плюс `hemothoraxfill_red`. Итог проверяется assert'ом: ни одного
   неразрешённого материала. Полный список с хэшами — `MATERIALS.sha256`.
+  Дополнительно 3 C:U-шрифта и 3 собственных compiled `.vcs` перенесены из
+  исходного C:U ZIP непосредственно в `woundsystem_zcity_compat/resource/` и
+  `.../shaders/`; в full pack старые копии из папки C:U удалены. Коннектор сам
+  регистрирует все 659 material/font/shader paths для клиентов при
+  `zc_woundsystem_compat_resource_downloads 1` (по умолчанию), поэтому для
+  переноса UI на другую сборку достаточно одной папки коннектора. Звуков в
+  исходных архивах C:U нет; внешний Simple Custom Shaders относится только к
+  дополнительным Merc-эффектам и не заменяет перенесённые `.vcs`.
 
 ### По live-скриншотам №5: человеческие пропорции (анатомия сохранена)
 
@@ -528,8 +605,9 @@ Think `gui.MousePos()` записывается одновременно в `MG.
 (`..._hide_minigame_cursor 1`), повторно скрывается при каждой отрисовке руки
 и после КАЖДОГО срабатывания cursor watchdog, восстанавливается на выходе.
 Watchdog больше не ставит `arrow` каждые 0.05 с поверх `blank`. Для старого
-режима C:U с инерцией используется `..._hand_pin_cursor 0`; для обычной стрелки
-без руки — `..._hide_minigame_hand 1`.
+режима C:U с инерцией используется `..._hand_pin_cursor 0`.
+`..._hide_minigame_hand 1` скрывает только картинку руки: OS-курсор остаётся
+`blank` во время игры. Явный возврат стрелки — `..._hide_minigame_cursor 0`.
 
 **Фон WoundView.** `WoundDollAndPanel` рисует полноэкранный `woundbg` с альфой
 150, а `DrawConsciousnessBlackout` — чёрный квад поверх всего: отсюда
@@ -573,15 +651,16 @@ dislocation, AED) **по умолчанию НЕ растягиваются**:
 экран («я осколок рожаю или че, где нижняя часть откуда он достается?»).
 `fullscreen_native 1` оставляет прежнее растяжение доступным как опцию.
 
-**Бег после травмы и «Reset organism».** `RESET_KEEP` сохранял не только
-«лежачую» структуру, но и `canmove`, `stun`, `consciousness`, `brain` — то есть
-штрафы движения от травмы переживали ресет, и ZCity / `HG_MovementCalc_2`
-навсегда оставляли скорость ходьбы. Теперь сохраняются только `otrub`,
-`needotrub`, `fake`, `needfake`, `alive`, `otrub_start`, `unconscious`
-(персонаж по-прежнему не встаёт сам), чтобы снова можно было быстро бегать, а `WSZC.ClearMovementPenalties()`
-явно снимает `canmove=false`, `stun`, `pain` и числовые повреждения в
-`org.legs`. Вызывается во всех трёх путях: `hg.organism.Clear` стоя,
-`hg.organism.Clear` лёжа и `WB.ResetOrganism`.
+**Бег после травмы и «Reset organism».** Обычный ragdoll/FakeUp transition
+по-прежнему сохраняет `otrub / needotrub / fake / needfake / alive /
+otrub_start / unconscious`, потому что там травма не должна исчезать. Явный
+admin reset теперь сохраняет только физические `fake / needfake`: старые
+`alive=false`, `brain`, `otrub`, `unconscious`, `otrub_start/uncon_timer` после
+падения и черепно-мозговой травмы не восстанавливаются. Персонаж остаётся лёжа,
+но становится conscious; blackout и `WoundSystemUnconscious` снимаются сразу,
+без ожидания 4 Hz shadow. `WSZC.ClearMovementPenalties()` отдельно убирает
+`canmove=false`, `stun`, `pain` и числовые повреждения в `org.legs`, поэтому
+после вставания не остаётся вечный walking speed.
 
 **Скриншот 5.** «I don't want to experience this EVER AGAIN!» — это
 статусное сообщение ZCity (`sh_status_messages.lua:219`), а не экран смерти
@@ -882,7 +961,9 @@ GMod не запускался — принятие по свежему live-с�
    `100/400` и spring/collision отставание в этом режиме отключены. Значение `0`
    возвращает HandPhysics, инерцию, наклон и developer offsets;
    системная стрелка скрыта только во время активной мини-игры и возвращается
-   на выходе. Для прежнего arrow-only режима: `..._hide_minigame_hand 1`.
+   на выходе. `..._hide_minigame_hand 1` отключает только спрайт руки, а не скрытие
+   OS-курсора; для видимой стрелки нужно явно поставить
+   `..._hide_minigame_cursor 0`.
    Актуальная миграция `..._hand_mode_revision 6` заменяет слишком большой
    scale `1.0` общим `0.55` и устанавливает обоим мини-играм zoom `0.85`.
    Pivot теперь anchored на hand position при любом `rot`; центр спрайта
@@ -931,19 +1012,15 @@ GMod не запускался — принятие по свежему live-с�
    `cx/cy`, длины, POT-ширины, габарит `377..988 × 217..864`, симметрия
    `cx_R+cx_L=1500`, чёрный цвет и обводка по форме не изменились.
 
-2. **Курсор в мини-играх.** Прежняя ошибка была не в самом `blank`, а в том,
-   что стрелку скрывали при уже отключённой руке: игрок оставался вообще без
-   указателя. Теперь `SyncMinigameCursor()` разрешает `blank` только при
-   активной мини-игре и `ShowMinigameHand() == true`; при
-   `hide_minigame_hand 1`, после закрытия и для мёртвого игрока всегда
-   восстанавливается `arrow`. `WSZC_MinigameCursor` (Think) проверяет
-   `vgui.CursorVisible()` и перезапускает clicker после C:U watchdog /
-   радиального меню ZCity, не выключая mouse input. `UnitmenuHandMat()`
-   дополнительно вызывает `SyncMinigameCursor()` на КАЖДОЙ отрисовке руки,
-   поэтому стрелка не возвращается между периодическими Think-проверками.
-   Старые archived no-hand настройки мигрирует `MigrateHumanHandDefaults()` (revision 6),
-   поэтому обновление не оставляет прежнюю комбинацию «нет руки + blank».
-   Ручной выбор arrow-only сохраняется и больше не перезаписывается.
+2. **Курсор в мини-играх.** `SyncMinigameCursor()` теперь применяет `blank`
+   при КАЖДОЙ активной мини-игре независимо от `ShowMinigameHand()`: и к world
+   panel, и к overlay конкретной игры, поскольку часть GMod-сборок берёт cursor
+   именно с overlay. `hide_minigame_hand 1` отключает только рисунок руки и
+   больше не возвращает стрелку. Mouse input, `gui.MousePos()` и clicker
+   сохраняются. После закрытия и для мёртвого игрока `arrow` восстанавливается;
+   явный откат скрытия — `hide_minigame_cursor 0`. `UnitmenuHandMat()` и
+   cursor watchdog повторно применяют `blank`, поэтому C:U/ZCity не могут
+   вернуть системную стрелку между кадрами.
 
 3. **Морфин / фентанил / обезболивающие.** Настоящая причина найдена в
    `z_city/lua/homigrad/woundbridge/sv_woundbridge.lua` и
