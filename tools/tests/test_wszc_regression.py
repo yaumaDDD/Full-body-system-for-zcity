@@ -156,9 +156,10 @@ check('S14 docs describe human proportions, restored outline, hover, no minigame
 check('S23 WoundView dark backdrop is suppressed only while the HUD is open',
       'zc_woundsystem_compat_hide_woundview_backdrop' in layout_s
       and 'WoundSystemHealthHUDOpen == true' in layout_s)
-check('S24 white tint is for *_fill.png ONLY (outline hover stays C:U-owned)',
+check('S24 muscle-damage tint is for *_fill.png ONLY without flashAlpha blink (outline hover stays C:U-owned)',
       'zc_woundsystem_compat_unitmenu_tint' in layout_s
-      and 'origSetDrawColor(255, 255, 255, a or 255)' in layout_s
+      and 'DollLimbFillDrawColor' in layout_s
+      and 'DollLimbIdFromMaterial' in layout_s
       and 'IsDollLimbMaterial' in layout_s
       and 'lower:find("_fill", 1, true)' in layout_s
       and 'DollMiddleKind' not in layout_s)
@@ -643,14 +644,15 @@ try:
           worst_border == 0.0)
     thorax = Image.open(limb_dir / 'thorax_fill.png').convert('RGBA')
     r, g, b, a = thorax.getpixel((thorax.width // 2, thorax.height // 2))
-    check('S18 standard BLACK fill restored (not slate 42,56,60)',
-          a > 200 and (r, g, b) == (0, 0, 0))
+    check('S18 neutral white *_fill mask (renders black at 100% muscle, red on damage)',
+          a > 200 and (r, g, b) == (255, 255, 255))
     # Every outline must be non-empty (b47a0cb's transparent _edge was rejected)
     # and must follow its limb's shape rather than a box: white pixels sit in
     # the interior of the sprite, not on its border.
-    check('S37 generator emits standard black + shape-following per-limb contours',
+    check('S37 generator emits neutral white fill masks + shape-following per-limb contours',
           edge_boxes == 17
           and 'DOLL_RGB = (0, 0, 0)' in generator_s
+          and 'FILL_RGB = (255, 255, 255)' in generator_s
           and 'EDGE_PAD_MIN = 6' in generator_s
           and 'EDGE_WIDTH = 17' in generator_s
           and "EDGE_WIDTH_OVERRIDES = {'hand_R': 11, 'hand_L': 11}" in generator_s
@@ -1330,24 +1332,39 @@ end)()
 end)()
 ''')
 
-    rt('R18 *_fill tinted white; *_edge keeps C:U hover colour; icons untouched', '''
+    rt('R18 *_fill tints black->red by muscle without transparent blink; *_edge and icons untouched', '''
 (function()
     WSZC.InstallMaterialTracker()
+    local prevCS = _G.WoundSystemClientState
+    _G.WoundSystemClientState = {
+        PlayerLimbs = {
+            head = { muscle = 100 },
+            arm_R = { muscle = 50 },
+            crus_L = { muscle = 0 },
+        }
+    }
     surfaceCalls = {}
     surface.SetMaterial(Material("wszc/unitmenu/limbs/head_fill.png"))
     surface.SetDrawColor(0, 0, 0, 255)
+    surface.SetMaterial(Material("wszc/unitmenu/limbs/arm_R_fill.png"))
+    surface.SetDrawColor(128, 0, 0, 255)
+    surface.SetMaterial(Material("wszc/unitmenu/limbs/crus_L_fill.png"))
+    surface.SetDrawColor(255, 0, 0, 7) -- C:U flashAlpha near 0 must NOT blink transparent
     surface.SetMaterial(Material("wszc/unitmenu/limbs/head_edge.png"))
     surface.SetDrawColor(60, 70, 80, 255)
     surface.SetMaterial(Material("casunknown-images/icons/fracturedbone.png"))
     surface.SetDrawColor(12, 34, 56, 255)
+    _G.WoundSystemClientState = prevCS
     local cols = {}
     for _, c in ipairs(surfaceCalls) do
         if c.kind == "color" then cols[#cols + 1] = c end
     end
-    return #cols == 3
-       and cols[1].r == 255 and cols[1].g == 255 and cols[1].b == 255
-       and cols[2].r == 60 and cols[2].g == 70 and cols[2].b == 80
-       and cols[3].r == 12 and cols[3].g == 34 and cols[3].b == 56
+    return #cols == 5
+       and cols[1].r == 0 and cols[1].g == 0 and cols[1].b == 0 and cols[1].a == 255
+       and cols[2].r == 128 and cols[2].g == 0 and cols[2].b == 0 and cols[2].a == 255
+       and cols[3].r == 255 and cols[3].g == 0 and cols[3].b == 0 and cols[3].a == 255
+       and cols[4].r == 60 and cols[4].g == 70 and cols[4].b == 80 and cols[4].a == 255
+       and cols[5].r == 12 and cols[5].g == 34 and cols[5].b == 56 and cols[5].a == 255
 end)()
 ''')
 

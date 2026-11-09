@@ -462,14 +462,35 @@ end
 WSZC.IsDollDrawMaterial = IsDollDrawMaterial
 
 --- Only the archive doll's FILL sprites need a white draw colour: C:U
---- multiplies the middle sprite by `finalMiddle` (normally pure black), so a
---- slate `_fill.png` would otherwise render pure black.  The owner explicitly
---- asked to keep the doll's colour and NOT to introduce new colour overrides.
+--- Neutral-white `_fill.png` limb masks are tinted multiplicatively by
+--- `surface.SetDrawColor`: pure black `(0, 0, 0)` at 100% muscle, smoothly
+--- reddening as muscle drops, and solid red `(255, 0, 0)` at `< 10%` / `0%`
+--- muscle WITHOUT C:U's sinusoidal `flashAlpha` blinking the limb transparent
+--- over the open 3D viewport.
 ---
 --- The outline sprites (`*_edge.png`) are deliberately NOT in this list: C:U
---- must keep full control of `finalOutline` (white -> black on hover), so the
---- ORIGINAL white outline and the native hover reaction stay exactly as they
---- were.  C:U's alpha is preserved in both cases.
+--- keeps full control of `finalOutline` (white -> black on hover, or red as
+--- skin takes damage).
+local FILL_STEM_TO_LIMB = {
+    head = "head",
+    neck = "neck",
+    thorax = "thorax",
+    abdomen = "abdomen",
+    pelvis = "pelvis",
+    arm_r = "arm_R",
+    arm_l = "arm_L",
+    forearm_r = "forearm_R",
+    forearm_l = "forearm_L",
+    hand_r = "hand_R",
+    hand_l = "hand_L",
+    thigh_r = "thigh_R",
+    thigh_l = "thigh_L",
+    crus_r = "crus_R",
+    crus_l = "crus_L",
+    foot_r = "foot_R",
+    foot_l = "foot_L",
+}
+
 local function IsDollLimbMaterial(name)
     if type(name) ~= "string" then return false end
     local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
@@ -477,6 +498,14 @@ local function IsDollLimbMaterial(name)
         and lower:find("_fill", 1, true) ~= nil
 end
 WSZC.IsDollLimbMaterial = IsDollLimbMaterial
+
+local function DollLimbIdFromMaterial(name)
+    if type(name) ~= "string" then return nil end
+    local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
+    local stem = lower:match("wszc/unitmenu/limbs/([%w_]+)_fill$")
+    return stem and FILL_STEM_TO_LIMB[stem] or nil
+end
+WSZC.DollLimbIdFromMaterial = DollLimbIdFromMaterial
 
 local function MaterialName(mat)
     if not mat or not mat.GetName then return nil end
@@ -1165,7 +1194,7 @@ function WSZC.MigrateHumanHandDefaults()
 end
 WSZC.MigrateHumanHandDefaults()
 local cvDollTint = CreateClientConVar("zc_woundsystem_compat_unitmenu_tint", "1", true, false,
-    "1 = draw the slate limbs with a white tint so they do not render pure black")
+    "1 = tint *_fill.png from black (100% muscle) to solid red (0% muscle) without transparent blinking; 0 = flat black")
 
 WSZC.UnitmenuHandSrcW = 512
 WSZC.UnitmenuHandSrcH = 1260
@@ -1878,17 +1907,87 @@ function WSZC.InstallMaterialTracker()
     -- is removed by the Clip.DrawHeader / DrawExitGuide / DrawBackdrop hooks
     -- and the font filter instead; gameplay sprites always draw.
 
-    -- C:U multiplies the doll's middle sprite by `finalMiddle`, normally
-    -- pure black.  Our `_fill.png` is the standard black of the archive
-    -- layers, so it needs a white tint to stay visible.  Only the fills are
-    -- overridden; the `_edge.png` contours keep C:U's `finalOutline`, so the
-    -- white outline and its hover reaction (white -> black) are preserved.
-    -- C:U's alpha is preserved.
+    -- `_fill.png` sprites carry a neutral white `(255, 255, 255)` RGB mask so
+    -- GMod's multiplicative `surface.SetDrawColor` renders `(0, 0, 0)` black at
+    -- 100% muscle, smoothly transitions to red as muscle drops, and stays solid
+    -- `(255, 0, 0)` red at `< 10%` / `0%` muscle instead of letting C:U's
+    -- sinusoidal `flashAlpha` blink the limb transparent over the 3D world.
+    -- `_edge.png` contours keep C:U's `finalOutline` untouched.
+    local limbOrderCache = nil
+    local function LimbOrderForId(limbId)
+        if not limbId then return 0 end
+        if not limbOrderCache then
+            local limbs = FindCULimbs()
+            if type(limbs) == "table" then
+                limbOrderCache = {}
+                for _, entry in ipairs(limbs) do
+                    if type(entry) == "table" and type(entry.id) == "string" then
+                        limbOrderCache[entry.id] = tonumber(entry.order) or 0
+                    end
+                end
+            end
+        end
+        return (limbOrderCache and limbOrderCache[limbId]) or 0
+    end
+
+    local function Clamp01(v)
+        v = tonumber(v) or 0
+        if v < 0 then return 0 end
+        if v > 1 then return 1 end
+        return v
+    end
+
+    local function ClampByte(v)
+        v = math.floor((tonumber(v) or 0) + 0.5)
+        if v < 0 then return 0 end
+        if v > 255 then return 255 end
+        return v
+    end
+
+    local function DollLimbFillDrawColor(name, r, g, b, a)
+        if type(r) == "table" then
+            r, g, b, a = r.r, r.g, r.b, r.a
+        end
+        local limbId = DollLimbIdFromMaterial(name)
+        local cs = _G.WoundSystemClientState
+        local playerLimbs = type(cs) == "table" and cs.PlayerLimbs or nil
+        local state = (limbId and type(playerLimbs) == "table") and playerLimbs[limbId] or nil
+        local guiState = FindCUGUIState()
+
+        local limbAlpha
+        if type(guiState) == "table" and type(guiState.openTime) == "number" and type(CurTime) == "function" then
+            local openDelay = guiState.openTime + (LimbOrderForId(limbId) * 0.03)
+            limbAlpha = ClampByte(Clamp01((CurTime() - openDelay) * 8) * 255)
+        else
+            local numR, numG, numB, numA = tonumber(r) or 0, tonumber(g) or 0, tonumber(b) or 0, tonumber(a)
+            if numA == nil or (type(state) == "table" and (tonumber(state.muscle) or 100) < 10)
+                or (numR >= 200 and numG == 0 and numB == 0) then
+                limbAlpha = 255
+            else
+                limbAlpha = ClampByte(numA)
+            end
+        end
+
+        if not cvDollTint:GetBool() then
+            return 0, 0, 0, limbAlpha
+        end
+
+        if type(state) == "table" and state.muscle ~= nil then
+            local muscle = Clamp01((tonumber(state.muscle) or 100) * 0.01) * 100
+            local hover = Clamp01(guiState and guiState.HoverAnims and guiState.HoverAnims[limbId])
+            local red = ClampByte((1 - muscle * 0.01) * 255 * (1 - hover))
+            return red, 0, 0, limbAlpha
+        end
+
+        return ClampByte(r), ClampByte(g), ClampByte(b), limbAlpha
+    end
+    WSZC.DollLimbFillDrawColor = DollLimbFillDrawColor
+
     if type(surface.SetDrawColor) == "function" then
         origSetDrawColor = surface.SetDrawColor
         surface.SetDrawColor = function(r, g, b, a)
-            if cvDollTint:GetBool() and IsDollLimbMaterial(WSZC._DrawMaterialName) then
-                return origSetDrawColor(255, 255, 255, a or 255)
+            if IsDollLimbMaterial(WSZC._DrawMaterialName) then
+                return origSetDrawColor(DollLimbFillDrawColor(WSZC._DrawMaterialName, r, g, b, a))
             end
             return origSetDrawColor(r, g, b, a)
         end
