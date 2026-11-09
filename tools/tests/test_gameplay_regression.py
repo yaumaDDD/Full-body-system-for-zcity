@@ -1065,6 +1065,101 @@ return initialLimb, torsoStage, brainStage, beforeFatal and fatal
     check("R56 torso infection reaches the brain at 420 seconds", infection_timeline[2])
     check("R57 untreated covered shrapnel is fatal at 600 seconds, not before", infection_timeline[3])
 
+    infection_all_parts = lua.execute(r'''
+local ids = { "head", "neck", "thorax", "abdomen", "pelvis",
+    "arm_L", "forearm_L", "hand_L", "arm_R", "forearm_R", "hand_R",
+    "thigh_L", "crus_L", "foot_L", "thigh_R", "crus_R", "foot_R" }
+local errors = {}
+for _, id in ipairs(ids) do
+    local ply = MakePlayer()
+    for _, part in ipairs(ids) do
+        if not ply._limbs[part] then
+            ply._limbs[part] = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+                infection = 0, infectionSpeed = 0 }
+        end
+    end
+    local function fail(phase) errors[#errors + 1] = id .. ":" .. phase end
+    if not WSZC.AddShrapnel(ply, id, 1, "shotgun") then fail("spawn") end
+    WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+    if (ply._limbs[id].infection or 0) ~= 0 then fail("uncovered") end
+    local treated = WSZC.ApplyBandageToOrganism(
+        { ply = ply, limbId = id, limb = ply._limbs[id] },
+        { effects = { bandageSlowAmount = 15 } }, 1)
+    local entry = ply.organism.wszc_bandaged_shrapnel and ply.organism.wszc_bandaged_shrapnel[id]
+    if treated <= 0 or not entry or entry.infectionAge ~= 0
+        or ply._limbs[id].infection ~= 25 or not WSZC.IsShrapnelBandaged(ply, id) then
+        fail("bandage")
+    else
+        for _ = 1, 480 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
+        if entry.infectionAge ~= 240 or (ply._limbs[id].infection or 0) < 25
+            or (ply._limbs.thorax.infection or 0) < 25 then fail("torso") end
+        for _ = 1, 360 do WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5) end
+        if entry.infectionAge ~= 420 or (ply._limbs[id].infection or 0) < 25
+            or (ply._limbs.head.infection or 0) < 25 then fail("head") end
+        if not WSZC.RemoveBandageForShrapnel(ply, id) then fail("unwrap") end
+        ply._WSZCLimbsRef = ply._limbs
+        ply._limbs[id].shrapnel = 0
+        WSZC.SyncShrapnel(ply, ply.organism)
+        WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+        if (ply._limbs[id].infection or 0) < 25 or entry.infectionAge ~= 420.5 then
+            fail("extraction")
+        end
+        WSZC.ApplyBandageToOrganism(
+            { ply = ply, limbId = id, limb = ply._limbs[id] },
+            { effects = { bandageSlowAmount = 15 } }, 1)
+        if ply.organism.wszc_bandaged_shrapnel[id] ~= nil
+            or ply.organism.wszc_infection ~= nil or (ply._limbs[id].infection or 0) ~= 0
+            or (ply._limbs.thorax.infection or 0) ~= 0 or (ply._limbs.head.infection or 0) ~= 0 then
+            fail("aftercare")
+        end
+    end
+end
+return table.concat(errors, ", ")
+''')
+    check("covered shrapnel infection starts, spreads and fully heals on all 17 body parts" +
+          (": " + infection_all_parts if infection_all_parts else ""), not infection_all_parts)
+
+    core_infection = lua.execute(r'''
+local function patient()
+    local ply = MakePlayer()
+    ply._limbs.abdomen = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100, infection = 0 }
+    ply._alive, ply._kills = true, 0
+    ply.Alive = function(self) return self._alive end
+    ply.Kill = function(self) self._alive = false; self._kills = self._kills + 1 end
+    return ply
+end
+local terminal = true
+for _, id in ipairs({ "head", "thorax", "abdomen" }) do
+    local ply = patient()
+    WSZC.AddShrapnel(ply, id, 1, "shotgun")
+    WSZC.ApplyBandageToOrganism({ ply = ply, limbId = id, limb = ply._limbs[id] },
+        { effects = { bandageSlowAmount = 15 } }, 1)
+    local entry = ply.organism.wszc_bandaged_shrapnel[id]
+    entry.infectionAge = 599.5
+    WSZC.TickBandagedShrapnel(ply, ply.organism, 0.5)
+    terminal = terminal and entry.terminal and ply._kills == 1 and ply.organism.brain == 1
+        and ply._limbs.head.infection == 99 and ply._limbs[id].infection >= 25
+end
+local ply = patient()
+for _, id in ipairs({ "thorax", "head" }) do
+    WSZC.AddShrapnel(ply, id, 1, "shotgun")
+    WSZC.ApplyBandageToOrganism({ ply = ply, limbId = id, limb = ply._limbs[id] },
+        { effects = { bandageSlowAmount = 15 } }, 1)
+end
+local first = ply.organism.wszc_bandaged_shrapnel.thorax
+local second = ply.organism.wszc_bandaged_shrapnel.head
+first.infectionAge, second.infectionAge = 500, 1
+WSZC.TickBandagedShrapnel(ply, ply.organism, 0)
+local before = ply._limbs.head._wszcShrapnelInfectionOwner == first
+WSZC.ClearShrapnelInfection(ply, ply.organism, "thorax")
+WSZC.TickBandagedShrapnel(ply, ply.organism, 0)
+local takeover = ply._limbs.head._wszcShrapnelInfectionOwner == second
+    and ply._limbs.head.infection >= 25 and ply.organism.wszc_infection > 0
+return terminal, before and takeover
+''')
+    check("untreated head, thorax and abdomen infections reach the native fatal outcome", core_infection[0])
+    check("a remaining head infection takes over after an older source is cleared", core_infection[1])
+
     zero_aftercare = lua.execute(r'''
 local ply = MakePlayer()
 WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")

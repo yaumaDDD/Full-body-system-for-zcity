@@ -65,7 +65,7 @@ local cvBandagedInfection = CreateConVar("zc_woundsystem_compat_bandaged_shrapne
     "Bandaging over lodged shrapnel causes slowly spreading internal infection", 0, 1)
 local cvInfectionDeathDelay = CreateConVar("zc_woundsystem_compat_shrapnel_infection_death_delay", "600",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
-    "Seconds from bandaging an extremity over shrapnel to fatal brain infection without full aftercare", 60, 3600)
+    "Seconds from bandaging any body part over shrapnel to fatal brain infection without full aftercare", 60, 3600)
 local cvShadow = CreateConVar("zc_woundsystem_compat_shadow", "1",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Mirror ZCity injuries into the C:U injury HUD (BodyState / PlayerLimbs)", 0, 1)
@@ -932,13 +932,8 @@ function WSZC.IsShrapnelBandaged(ply, limbId)
         and AuthoritativeShrapnelCount(ply, org, limbId) > 0, entry
 end
 
-local INFECTION_EXTREMITY = {
-    arm_L = true, forearm_L = true, hand_L = true,
-    arm_R = true, forearm_R = true, hand_R = true,
-    thigh_L = true, crus_L = true, foot_L = true,
-    thigh_R = true, crus_R = true, foot_R = true,
-}
-
+-- LIMB_ORG is the shared set of actual body parts, including head, neck,
+-- thorax, abdomen and pelvis.  A covered fragment on any of them can infect.
 function WSZC.MarkBandagedShrapnel(ply, limbId, bones)
     local org = IsValid(ply) and ply.organism or nil
     if type(org) ~= "table" or AuthoritativeShrapnelCount(ply, org, limbId) <= 0 then return false end
@@ -948,7 +943,7 @@ function WSZC.MarkBandagedShrapnel(ply, limbId, bones)
     entry.bones = entry.bones or {}
     for bone in pairs(bones or {}) do entry.bones[bone] = true end
     entry.infection = math.Clamp(tonumber(entry.infection) or 0, 0, 100)
-    if INFECTION_EXTREMITY[limbId] and entry.infectionAge == nil then
+    if LIMB_ORG[limbId] and entry.infectionAge == nil then
         entry.infectionAge = 0
     end
     org.wszc_bandaged_shrapnel[limbId] = entry
@@ -2295,7 +2290,7 @@ function WSZC.ClearShrapnelInfection(ply, org, limbId)
 end
 
 --- Default timeline (ConVar scales the whole sequence):
----   0..240 s  infected arm/leg, external bleeding remains bandaged off;
+---   0..240 s  infected source body part, external bleeding remains bandaged off;
 ---   240 s     infection reaches the thorax;
 ---   420 s     infection reaches the brain;
 ---   600 s     fatal brain infection unless the complete aftercare cycle ended.
@@ -2315,9 +2310,9 @@ function WSZC.TickBandagedShrapnel(ply, org, dt)
         else
             local count = AuthoritativeShrapnelCount(ply, org, limbId)
             if entry.infectionAge == nil and entry.covered and count > 0
-                and INFECTION_EXTREMITY[limbId] then entry.infectionAge = 0 end
+                and LIMB_ORG[limbId] then entry.infectionAge = 0 end
 
-            if entry.infectionAge ~= nil and INFECTION_EXTREMITY[limbId] then
+            if entry.infectionAge ~= nil and LIMB_ORG[limbId] then
                 if enabled and not entry.terminal then
                     entry.infectionAge = math.max(tonumber(entry.infectionAge) or 0, 0) + dt
                 end
@@ -2327,36 +2322,53 @@ function WSZC.TickBandagedShrapnel(ply, org, dt)
 
                 local sourceAmount = age < torsoAt
                     and (25 + 64 * math.Clamp(age / math.max(torsoAt, 0.001), 0, 1)) or 89
+                if limbId == "head" then
+                    -- The source is already the brain destination. Preserve
+                    -- the source icon from the start and reach 99 at fatality.
+                    sourceAmount = 25 + 74 * math.Clamp(age / deathDelay, 0, 1)
+                end
                 changed = SetShrapnelInfectionVisual(ply, h, entry, limbId, limbId, sourceAmount)
                     or changed
 
                 if age >= torsoAt then
                     local torsoProgress = math.Clamp((age - torsoAt)
                         / math.max(brainAt - torsoAt, 0.001), 0, 1)
-                    changed = SetShrapnelInfectionVisual(ply, h, entry, limbId,
-                        "thorax", 25 + 64 * torsoProgress) or changed
+                    if limbId ~= "thorax" then
+                        changed = SetShrapnelInfectionVisual(ply, h, entry, limbId,
+                            "thorax", 25 + 64 * torsoProgress) or changed
+                    end
                     if entry.stage ~= "torso" and entry.stage ~= "brain" and entry.stage ~= "terminal" then
                         entry.stage = "torso"
-                        NotifyMedical(ply, "Infection has spread from the limb to the torso. Extract the fragment and re-bandage.")
+                        if limbId ~= "thorax" then
+                            NotifyMedical(ply, "Infection has spread to the torso. Extract the fragment and re-bandage.")
+                        end
                     end
                 else
-                    changed = SetShrapnelInfectionVisual(ply, h, entry, limbId, "thorax", nil)
-                        or changed
+                    if limbId ~= "thorax" then
+                        changed = SetShrapnelInfectionVisual(ply, h, entry, limbId, "thorax", nil)
+                            or changed
+                    end
                     entry.stage = "limb"
                 end
 
                 if age >= brainAt then
                     local brainProgress = math.Clamp((age - brainAt)
                         / math.max(deathDelay - brainAt, 0.001), 0, 1)
-                    changed = SetShrapnelInfectionVisual(ply, h, entry, limbId,
-                        "head", 25 + 74 * brainProgress) or changed
+                    if limbId ~= "head" then
+                        changed = SetShrapnelInfectionVisual(ply, h, entry, limbId,
+                            "head", 25 + 74 * brainProgress) or changed
+                    end
                     if entry.stage ~= "brain" and entry.stage ~= "terminal" then
                         entry.stage = "brain"
-                        NotifyMedical(ply, "Infection has reached the brain. Complete extraction and re-bandaging immediately.")
+                        if limbId ~= "head" then
+                            NotifyMedical(ply, "Infection has reached the brain. Complete extraction and re-bandaging immediately.")
+                        end
                     end
                 else
-                    changed = SetShrapnelInfectionVisual(ply, h, entry, limbId, "head", nil)
-                        or changed
+                    if limbId ~= "head" then
+                        changed = SetShrapnelInfectionVisual(ply, h, entry, limbId, "head", nil)
+                            or changed
+                    end
                 end
 
                 if age >= deathDelay and enabled then
