@@ -2290,8 +2290,8 @@ local function PatchActionButtonOffset()
 end
 WSZC.PatchActionButtonOffset = PatchActionButtonOffset
 
---- C:U's stock brokenneck moodle reads head.broken.  The native ZCity skull
---- fracture is now owned by the independent neck state, so re-register ONLY
+--- C:U's stock brokenneck moodle reads head.broken.  ZCity's cervical spine
+--- (spine3) is owned by the independent neck state, so re-register ONLY
 --- that public definition; all other moodles and their layout stay untouched.
 function WSZC.InstallNeckMoodle()
     local moodles = WoundSystem and WoundSystem.Moodles or nil

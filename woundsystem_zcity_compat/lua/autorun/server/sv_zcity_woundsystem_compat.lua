@@ -1265,6 +1265,26 @@ function WSZC.Setup()
     hook.Add("HG_OnWakeOtrub", "WSZC_Wake", function(ply)
         if not (WSZC.Ready and BridgeEnabled() and IsValid(ply) and ply:IsPlayer()) then return end
         local body = H.GetBody and H.GetBody(ply)
+        local org = ply.organism
+        if WSZC.OrganismAuthority and WSZC.OrganismAuthority() and type(org) == "table" then
+            local native = hg and hg.organism or {}
+            local spineBlocked = (tonumber(org.spine1) or 0) >= (tonumber(native.fake_spine1) or 1)
+                or (tonumber(org.spine2) or 0) >= (tonumber(native.fake_spine2) or 1)
+                or (tonumber(org.spine3) or 0) >= (tonumber(native.fake_spine3) or 0.5)
+            if spineBlocked then
+                -- Waking is not the same as being able to stand.  C:U's
+                -- restoration changes movetype/visibility and WB.RestoreRagdoll
+                -- forces FakeUp, bypassing the real ZCity spine restrictions.
+                if type(body) == "table" then
+                    body.unconscious = false
+                    body.fallingRagdoll, body.fallingRagdollWakeTime = nil, nil
+                    body.fallingRagdollReason = nil
+                    if IsValid(ply.FakeRagdoll) then body.unconsciousRagdoll = ply.FakeRagdoll end
+                    body.ragdollModeFailed = false
+                end
+                return
+            end
+        end
         if type(body) == "table" then
             if H.RestorePlayerFromUnconsciousRagdoll then
                 pcall(H.RestorePlayerFromUnconsciousRagdoll, ply, body, true, true)
@@ -1277,7 +1297,6 @@ function WSZC.Setup()
             body.ragdollModeFailed = false
         end
         if ply.SetNWEntity then ply:SetNWEntity("WoundSystemUnconsciousRagdoll", NULL) end
-        local org = ply.organism
         if type(org) == "table" then
             org.fake = false
             org.needfake = false

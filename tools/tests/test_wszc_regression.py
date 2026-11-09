@@ -420,8 +420,8 @@ check('S56 neck is a real client/server limb with tooltip and first-life sync',
       and 'hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip"' in layout_s
       and 'function WSZC.EnsureNeckState(ply)' in organism_s
       and 'hook.Add("PlayerSpawn", "WSZC_NeckFirstLifeSync"' in organism_s
-      and 'neck      = { dmg = "skull"' in organism_s
-      and 'head      = { dmg = nil,      amp = "headamputated", dis = nil },' in organism_s
+      and 'neck      = { dmg = "spine3"' in organism_s
+      and 'head      = { dmg = "skull",  amp = "headamputated", dis = nil },' in organism_s
       and 'neckartery = "neck"' in organism_s
       and 'if string.find(lower, "neck", 1, true) then return "neck" end' in organism_s)
 check('S56b pelvis is a real 17th client/server limb with bone-routed wounds',

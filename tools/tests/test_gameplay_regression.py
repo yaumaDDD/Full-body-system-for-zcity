@@ -21,6 +21,7 @@ def check(name, value):
 
 
 organism_s = ORGANISM.read_text(encoding="utf-8")
+shared_s = (CONN / "lua/autorun/sh_zcity_woundsystem_compat.lua").read_text(encoding="utf-8")
 server_main_s = SERVER_MAIN.read_text(encoding="utf-8")
 server_mg_s = SERVER_MG.read_text(encoding="utf-8")
 client_mg_s = CLIENT_MG.read_text(encoding="utf-8")
@@ -29,6 +30,8 @@ with ZipFile(ROOT / "zcity.zip") as zcity_zip:
     tourniquet_swep_s = zcity_zip.read("z_city/lua/weapons/weapon_tourniquet.lua").decode("utf-8-sig")
     bandage_swep_s = zcity_zip.read("z_city/lua/weapons/weapon_bandage_sh.lua").decode("utf-8-sig")
     woundbridge_s = zcity_zip.read("z_city/lua/homigrad/woundbridge/sv_woundbridge.lua").decode("utf-8-sig")
+    native_org_s = zcity_zip.read("z_city/lua/homigrad/organism/tier_1/sv_organism.lua").decode("utf-8-sig")
+    native_input_s = zcity_zip.read("z_city/lua/homigrad/organism/tier_1/sv_input.lua").decode("utf-8-sig")
 with ZipFile(ROOT / "zcity_full_pack.zip") as full_pack:
     limb_statuses_s = full_pack.read(
         "garrysmod/addons/casualties_unknown_health_system_beta/lua/woundsystem/shared/sh_limb_statuses.lua"
@@ -1633,7 +1636,7 @@ local firstLife = ply._limbs.neck ~= nil
     and h.Const.RagdollDamageBones[1].limb == "neck"
     and #h.Const.LimbToBones.head == 1
 
-ply.organism.skull = 1
+ply.organism.skull, ply.organism.spine3 = 1, 0.7
 ply.organism.wounds = {
     { 2, Vector(), Angle(), "ValveBiped.Bip01_Neck1", 0 },
     { 3, Vector(), Angle(), "ValveBiped.Bip01_Head1", 0 },
@@ -1644,30 +1647,29 @@ ply.organism.arterialwounds = {
 assert(WSZC.RestoreBones(ply))
 WSZC.SyncOrganismShadow(ply, ply.organism)
 local separated = ply._limbs.neck.broken == true and ply._limbs.head.broken == false
-    and ply._limbs.neck.muscle == 0 and ply._limbs.head.muscle == 100
-    and ply._limbs.neck.boneHealTimer == 100 and ply._limbs.head.boneHealTimer == 0
+    and math.abs(ply._limbs.neck.muscle - 30) < 0.001 and ply._limbs.head.muscle == 0
+    and ply._limbs.neck.boneHealTimer == 70 and ply._limbs.head.boneHealTimer == 0
 local bleed = WSZC.LimbBleedMap(ply, ply.organism)
 local routed = bleed.neck == 16 and bleed.head == 6
 
--- A head-only muscle heal must NOT heal the neck's native fracture field.
+-- Skull and cervical spine are independent; C:U muscle treatments cannot
+-- silently fix the cervical spine in place of ZCity's native regeneration.
 ply._limbs.head.muscle = 0
 local beforeHead = WSZC.SnapshotMedical(ply, "head")
-ply.organism.skull = 1
 ply._limbs.head.muscle = 100
 WSZC.ApplyMedicalDelta(ply, "head", beforeHead)
-local headTreatmentIndependent = ply.organism.skull == 1
-
+local headOnly = math.abs(ply.organism.skull) < 0.0001 and ply.organism.spine3 == 0.7
 ply._limbs.neck.muscle = 0
 local beforeNeck = WSZC.SnapshotMedical(ply, "neck")
 ply._limbs.neck.muscle = 100
 WSZC.ApplyMedicalDelta(ply, "neck", beforeNeck)
-local neckTreatmentWorks = math.abs(ply.organism.skull) < 0.0001
-return firstLife, separated, routed, headTreatmentIndependent and neckTreatmentWorks
+local spineProtected = ply.organism.spine3 == 0.7
+return firstLife, separated, routed, headOnly and spineProtected
 ''')
     check("R65 first-life InitPlayer creates and synchronizes one real neck state", neck_state[0])
-    check("R66 skull fracture/muscle render on neck only, never duplicated on head", neck_state[1])
+    check("R66 cervical fracture uses spine3; skull muscle damage stays on head", neck_state[1])
     check("R67 Neck1 and neckartery route separately from Head1 wounds", neck_state[2])
-    check("R68 neck treatment heals skull; head treatment cannot heal the neck", neck_state[3])
+    check("R68 head treatment addresses skull and never substitutes for spine treatment", neck_state[3])
 
     pelvis_state = lua.execute(r'''
 local ply = MakePlayer()
@@ -2290,6 +2292,148 @@ WSZC.NotifyRemotePatientUpdated, WSZC.CancelRemotePatientTreatment = previousNot
 return clean
 ''')
     check("R99 successful bridge without Clear still resets organism and survives sync", reset_regression)
+
+    # Execute the exact movement expressions from the shipped ZCity archive,
+    # then compare them to the actual connector shadow at the same thresholds.
+    movement_start = native_org_s.index('\torg.canmove = (org.spine2 < hg.organism.fake_spine2')
+    movement_end = native_org_s.index('\n\tif (org.blood < 2700)', movement_start)
+    movement_source = native_org_s[movement_start:movement_end]
+    lua.execute('function NativeZCitySpineTick(org)\n' + movement_source + '\nend')
+    spine = lua.execute(r'''
+local ply = MakePlayer()
+local org = ply.organism
+hg.organism = { fake_spine1 = 1, fake_spine2 = 1, fake_spine3 = 0.5 }
+org.spine1, org.spine2, org.stun, org.otrub = 0, 0, 0, false
+org.skull, org.spine3 = 1, 0
+org.needfake = false
+NativeZCitySpineTick(org)
+ply._WSZCShadowNext = 0; WSZC.SyncOrganismShadow(ply, org)
+local skullOnly = org.canmove and org.canmovehead and not org.needfake
+    and not ply._limbs.neck.broken and ply._limbs.head.muscle == 0
+org.spine3 = 0.5; org.needfake = false
+NativeZCitySpineTick(org)
+ply._WSZCShadowNext = 0; WSZC.SyncOrganismShadow(ply, org)
+local broken = not org.canmove and not org.canmovehead and org.needfake
+    and ply._limbs.neck.broken and not ply._limbs.head.broken
+    and not WSZC.CanBandageZCityFracture(ply, "neck")
+    and WSZC.CanBandageZCityFracture(ply, "head")
+ply._limbs.neck.splinted = true
+ply._limbs.neck.customStatuses = { SPLINTED = 100 }
+WSZC.TickSplints(ply, org, 1)
+local noFictionalCure = org.spine3 == 0.5
+ply._limbs.neck.splinted = false
+local bandaged = WSZC.StabilizeZCityFracture(ply, "head", ply, nil)
+    and math.abs(org.skull - 0.59) < 0.001 and org.spine3 == 0.5
+org.spine3 = 0.49; org.needfake = false
+NativeZCitySpineTick(org)
+ply._WSZCShadowNext = 0; WSZC.SyncOrganismShadow(ply, org)
+local healed = org.canmove and org.canmovehead and not org.needfake and not ply._limbs.neck.broken
+-- Honour servers changing the native fake_spine3 threshold.
+hg.organism.fake_spine3 = 0.7
+org.spine3 = 0.6; org.needfake = false
+NativeZCitySpineTick(org)
+ply._WSZCShadowNext = 0; WSZC.SyncOrganismShadow(ply, org)
+local custom = org.canmove and org.canmovehead and not ply._limbs.neck.broken
+return skullOnly, broken and bandaged and noFictionalCure, healed and custom
+''')
+    check("R100 skull alone never produces a neck fracture or fake", spine[0])
+    check("R101 actual ZCity spine3 threshold disables movement and shows neck fracture", spine[1])
+    check("R102 native recovery and custom spine3 thresholds restore movement and icon", spine[2])
+    check("S19 actual ZCity lethal neck snap remains native and is never synthesized from skull",
+          'function hg.BreakNeck(ent)' in native_input_s
+          and 'if ply:Alive() then ply:Kill() end' in native_input_s
+          and 'if neck_not_broken and org.spine3 >= 0.8 then' in native_input_s
+          and 'hg.BreakNeck(' not in organism_s and 'hg.BreakNeck(' not in server_main_s)
+
+    # Install the real bridge context and the real Org Think wrapper around a
+    # representative native early return and the archive's movement code.
+    context_start = shared_s.index('function WSZC.WithVanillaContext(fn, ...)')
+    context_end = shared_s.index('\nlocal attempts = 0', context_start)
+    lua.execute(r'''
+hg.WoundBridge = { IsBridged = function() return true end }
+WSZC.Supports = function() return true end
+WSZC.InVanillaContext = function() return (WSZC.VanillaContext or 0) > 0 end
+WSZC.OrganismAuthority = function() return true end
+WSZC.Warn = function() end
+''')
+    lua.execute(shared_s[context_start:context_end])
+    lua.execute('WSZC.PatchIsBridged()')
+    wrapper_start = organism_s.index('local function WrapHook(event, name, pre, post)')
+    wrapper_end = organism_s.index('local function CaptureRawDamage', wrapper_start)
+    lua.execute(r'''
+WrappedRuns = 0
+hook.Add("Org Think", "Main", function(owner, org, dt)
+    if hg.WoundBridge.IsBridged(owner) then return end
+    WrappedRuns = WrappedRuns + 1
+    NativeZCitySpineTick(org)
+end)
+''')
+    lua.execute('local wrappedByKey, wrappedFns = {}, {}; local function Authority() return WSZC.OrganismAuthority() end; local function Debug() end; local function Warn() end\n'
+                + organism_s[wrapper_start:wrapper_end]
+                + '\nWrapHook("Org Think", "Main", function(owner, org, dt) WSZC.TickFallSlowdown(owner, org, dt, true) end, function(owner, org, dt) WSZC.TickFallSlowdown(owner, org, dt, false) end)')
+    wrapped = lua.execute(r'''
+local ply = MakePlayer()
+local org = ply.organism
+hg.organism = { fake_spine1 = 1, fake_spine2 = 1, fake_spine3 = 0.5 }
+org.spine1, org.spine2, org.spine3, org.stun, org.otrub, org.needfake = 0, 0, 0.6, 0, false, false
+hook._t["Org Think"].Main(ply, org, 0.1)
+return WrappedRuns == 1 and not org.canmove and not org.canmovehead and org.needfake
+    and hg.WoundBridge.IsBridged(ply) and not WSZC.InVanillaContext()
+''')
+    check("R105 real Org Think wrapper lets native paralysis run despite bridge early return", wrapped)
+    fakeup_start = native_org_s.index('hook.Add("Should Fake Up", "organism"')
+    fakeup_end = native_org_s.index('\nlocal hg_unreliable_nets', fakeup_start)
+    lua.execute(native_org_s[fakeup_start:fakeup_end])
+    fakeup = lua.execute(r'''
+local ply = MakePlayer(); local org = ply.organism
+org.spine1, org.spine2, org.spine3 = 0, 0, 0.5
+org.otrub, org.fake, org.lleg, org.rleg, org.berserk, org.blood, org.consciousness = false, false, 0, 0, 0, 5000, 1
+local f = hook._t["Should Fake Up"].organism
+local blocked = f(ply) == false
+org.spine3 = 0.49
+return blocked and f(ply) == nil
+''')
+    check("R106 shipped ZCity Should Fake Up blocks standing until spine recovers", fakeup)
+
+    # Exercise the exact wake callback, which is registered by the legacy
+    # adapter, including the original normal-wake behaviour and authority-off.
+    wake_start = server_main_s.index('    hook.Add("HG_OnWakeOtrub", "WSZC_Wake"')
+    wake_end = server_main_s.index('    local function ClearRagdollState(ply)', wake_start)
+    lua.execute(r'''
+WSZC.Ready = true
+WSZC.OrganismAuthority = function() return WakeAuthority end
+WakeAuthority = true
+hg.organism = { fake_spine1 = 1, fake_spine2 = 1, fake_spine3 = 0.5 }
+hg.WoundBridge = { RestoreRagdoll = function() WakeRestores = WakeRestores + 1 end }
+WoundSystem.Health.RestorePlayerFromUnconsciousRagdoll = function() CUrises = CUrises + 1 end
+''')
+    lua.execute('local H = WoundSystem.Health; local WB = hg.WoundBridge; local function BridgeEnabled() return true end\n'
+                + server_main_s[wake_start:wake_end])
+    wake = lua.execute(r'''
+local hookFn = hook._t.HG_OnWakeOtrub.WSZC_Wake
+local ply = MakePlayer()
+ply.FakeRagdoll = { name = "native_fake" }
+ply.organism.spine1, ply.organism.spine2, ply.organism.spine3 = 0, 0, 0.5
+ply.organism.fake, ply.organism.needfake = true, true
+ply._body.unconscious, ply._body.unconsciousRagdoll = true, ply.FakeRagdoll
+WakeRestores, CUrises = 0, 0
+hookFn(ply)
+local remains = WakeRestores == 0 and CUrises == 0 and ply.organism.fake
+    and ply.organism.needfake and ply._body.unconscious == false
+    and ply._body.unconsciousRagdoll == ply.FakeRagdoll
+ply.organism.spine3 = 0.49
+hookFn(ply)
+local normal = WakeRestores == 1 and CUrises == 1 and not ply.organism.fake
+    and not ply.organism.needfake
+WakeAuthority = false
+ply.organism.spine3 = 1; ply.organism.fake = true
+hookFn(ply)
+local legacy = WakeRestores == 2 and CUrises == 2 and not ply.organism.fake
+WakeAuthority = true
+return remains, normal and legacy
+''')
+    check("R103 waking with cervical injury never forces standing or clears fake state", wake[0])
+    check("R104 normal recovery and non-authority wake retain previous behavior", wake[1])
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

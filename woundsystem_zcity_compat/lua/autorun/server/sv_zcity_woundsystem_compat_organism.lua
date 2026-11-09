@@ -155,11 +155,10 @@ end
 -- `org.larm` etc. are damage fractions (0 = healthy, 1 = destroyed), which is
 -- exactly the inverse of the strength value WB.Sync() used to write.
 local LIMB_ORG = {
-    -- C:U calls head.broken "Broken neck".  Give that fracture its own limb;
-    -- head keeps head-bone wounds/eyes, while neck owns org.skull treatment,
-    -- muscle shadow and boneHealTimer.  The two are not aliases.
-    head      = { dmg = nil,      amp = "headamputated", dis = nil },
-    neck      = { dmg = "skull",  amp = "headamputated", dis = nil },
+    -- ZCity's skull is a head injury, not the cervical spine.  Its actual
+    -- neck mobility / fake threshold reads spine3, independently of skull.
+    head      = { dmg = "skull",  amp = "headamputated", dis = nil },
+    neck      = { dmg = "spine3", amp = "headamputated", dis = nil },
     thorax    = { dmg = "chest",  amp = nil,              dis = nil },
     -- ZCity has ONE lower-torso scalar (org.pelvis).  Abdomen and pelvis have
     -- independent C:U states/actions, while real wounds are routed by bone.
@@ -474,7 +473,7 @@ end
 -- dislocation icons down the whole leg (Screenshot_7.png).  Now:
 --   fracture    -> ONLY the MIDDLE limb:  forearm_L/R, crus_L/R
 --   dislocation -> ONLY ONE limb ABOVE:   arm_L/R, thigh_L/R
--- neck (C:U's head/skull fracture) and thorax (brokenribs) are single points.
+-- neck (ZCity spine3) and thorax (brokenribs) are single points.
 local BONE_ANCHOR = {
     fracture    = { forearm_L = true, forearm_R = true,
                     crus_L = true,    crus_R = true },
@@ -483,7 +482,7 @@ local BONE_ANCHOR = {
 }
 
 --- True when this C:U limb is the ONE point that owns a bone state.
---- Neck/thorax are their own single points (skull fracture, ribs); every other
+--- Neck/thorax are their own single points (cervical spine, ribs); every other
 --- limb must be in the anchor set or it is deliberately left healthy-looking.
 local function BoneAnchor(limbId, kind)
     if limbId == "neck" or limbId == "thorax" then return true end
@@ -2550,7 +2549,7 @@ function WSZC.AddShrapnel(ply, limbId, count, reason)
         if cvRegen and cvRegen:GetBool() then
             org.wszc_shrapnel_floor = org.wszc_shrapnel_floor or {}
             local map = LIMB_ORG[limbId]
-            if map and map.dmg then
+            if map and map.dmg and limbId ~= "neck" then
                 org.wszc_shrapnel_floor[limbId] = tonumber(org[map.dmg]) or 0
             end
         end
@@ -2705,15 +2704,19 @@ local function Fractured(org, limbId, map)
     -- one org.larm >= 0.5 would mark arm, forearm AND hand at once.
     if not BoneAnchor(limbId, "fracture") then return false end
     if limbId == "thorax" and (tonumber(org.brokenribs) or 0) > 0 then return true end
+    if limbId == "neck" then
+        local threshold = hg and hg.organism and tonumber(hg.organism.fake_spine3) or 0.5
+        return (tonumber(org.spine3) or 0) >= threshold
+    end
     return (tonumber(org[map and map.dmg]) or 0) >= FRACTURE_DAMAGE
 end
 WSZC.Fractured = Fractured -- exported for headless tests
 
 local FRACTURE_ANCHOR_ORDER = {
-    "neck", "thorax", "crus_L", "crus_R", "forearm_R", "forearm_L",
+    "head", "thorax", "crus_L", "crus_R", "forearm_R", "forearm_L",
 }
 local LIMB_TO_FRACTURE_ANCHOR = {
-    head = "neck", neck = "neck",
+    head = "head", neck = "neck",
     thorax = "thorax",
     arm_L = "forearm_L", forearm_L = "forearm_L", hand_L = "forearm_L",
     arm_R = "forearm_R", forearm_R = "forearm_R", hand_R = "forearm_R",
@@ -2728,13 +2731,15 @@ end
 
 function WSZC.IsZCityFractureBandaged(ply, limbId)
     limbId = NormalizeLimb(limbId)
-    if not (IsValid(ply) and limbId and BoneAnchor(limbId, "fracture")) then return false end
+    if not (IsValid(ply) and limbId) then return false end
     local org = ply.organism
     if type(org) ~= "table" then return false end
-    if limbId == "neck" then
-        return org.bandagedskull == true and (tonumber(org.skull) or 0) >= FRACTURE_DAMAGE
-            and (tonumber(org.skull) or 0) < 0.999
+    if limbId == "head" then
+        return org.bandagedskull == true and (tonumber(org.skull) or 0) > 0
     end
+    -- ZCity has no bandage/splint treatment for spine3.  Do not turn a skull
+    -- dressing into a fictional cervical-spine stabilization.
+    if limbId == "neck" or not BoneAnchor(limbId, "fracture") then return false end
     local map = LIMB_ORG[limbId]
     if not (map and map.dmg) then return false end
     local dmg = tonumber(org[map.dmg]) or 0
@@ -2758,14 +2763,13 @@ end
 
 function WSZC.CanBandageZCityFracture(ply, limbId)
     limbId = NormalizeLimb(limbId)
-    if not (IsValid(ply) and limbId and BoneAnchor(limbId, "fracture")) then return false end
+    if not (IsValid(ply) and limbId) then return false end
     local org = ply.organism
     if type(org) ~= "table" then return false end
-    if limbId == "neck" then
-        local skull = tonumber(org.skull) or 0
-        if skull >= 0.999 then return true end
-        return skull >= FRACTURE_DAMAGE and org.bandagedskull ~= true
+    if limbId == "head" then
+        return (tonumber(org.skull) or 0) >= 0.6
     end
+    if limbId == "neck" or not BoneAnchor(limbId, "fracture") then return false end
     local map = LIMB_ORG[limbId]
     if not (map and map.dmg) then return false end
     if map.amp and org[map.amp] == true then return false end
@@ -2825,7 +2829,7 @@ function WSZC.StabilizeZCityFracture(ply, limbId, medic, swep)
     limbId = NormalizeLimb(limbId)
     if not WSZC.CanBandageZCityFracture(ply, limbId) then return false end
     local org = ply.organism
-    if limbId == "neck" then
+    if limbId == "head" then
         local skull = tonumber(org.skull) or 0
         org.skull = skull >= 0.6 and 0.59 or math.max(skull - 0.05, 0)
         org.bandagedskull = true
@@ -3057,7 +3061,7 @@ function WSZC.TickSplints(ply, org, dt)
 
             if state.splinted == true and not state.dismembered then
                 active[#active + 1] = limbId
-                if map.dmg and BoneAnchor(limbId, "fracture") and state.broken == true then
+                if limbId ~= "neck" and map.dmg and BoneAnchor(limbId, "fracture") and state.broken == true then
                     local damage = math.Clamp(tonumber(org[map.dmg]) or 0, 0, 1)
                     local amputated = map.amp and org[map.amp] == true or false
                     if damage > 0 and not amputated then
@@ -3831,8 +3835,7 @@ local function PushShadow(ply, org)
                     ply._WSZCExpectedDislocation[limbId] = out
                 end
             elseif map then
-                -- Head is now wound/eye presentation only.  In particular a
-                -- legacy head.broken must not duplicate the neck fracture.
+                -- Unmapped anatomy has no authoritative fracture source.
                 limbSet("broken", false)
                 limbSet("boneHealTimer", 0)
                 limbSet("dislocated", false)
@@ -3946,7 +3949,7 @@ function WSZC.ApplyMedicalDelta(ply, limbId, before)
     end
 
     local map = LIMB_ORG[limbId]
-    if map and map.dmg then
+    if map and map.dmg and limbId ~= "neck" then
         add(map.dmg, -(after.limbMuscle - before.limbMuscle) / 100, 0, 1)
         -- Do NOT mirror C:U limbBoneHealTimer deltas onto org.<limb>: C:U
         -- bandages carry boneHealTimer = -20 per wrap, which erased ZCity
@@ -5967,6 +5970,7 @@ WSZC.RestoreShrapnelShadow = RestoreShrapnelShadow
 local function ClearMovementPenalties(org)
     if type(org) ~= "table" then return end
     if org.canmove == false then org.canmove = true end
+    if org.canmovehead == false then org.canmovehead = true end
     if type(org.stun) == "number" and org.stun > 0 then org.stun = 0 end
     if type(org.pain) == "number" and org.pain > 0 then org.pain = 0 end
     if type(org.legs) == "table" then
@@ -6544,7 +6548,7 @@ function WSZC.InstallOrganismMode()
             for limbId, floor in pairs(org.wszc_shrapnel_floor) do
                 local map = LIMB_ORG[limbId]
                 local n = org.wszc_shrapnel and org.wszc_shrapnel[limbId] or 0
-                if map and map.dmg and n > 0 and (tonumber(org[map.dmg]) or 0) < floor then
+                if limbId ~= "neck" and map and map.dmg and n > 0 and (tonumber(org[map.dmg]) or 0) < floor then
                     org[map.dmg] = floor
                 elseif n <= 0 then
                     org.wszc_shrapnel_floor[limbId] = nil
