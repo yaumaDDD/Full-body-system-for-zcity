@@ -67,7 +67,7 @@ local matHandIdle = Material(path .. "handGraspIdle1.png")
 local matHandClick = Material(path .. "handGraspClick.png")
 local HandPhysics = OptionalInclude("woundsystem/client/minigames/sh_handphysics.lua")
 if not istable(HandPhysics) then
-    ErrorNoHalt("[WoundSystem] Bandage minigame could not load sh_handphysics.lua; using emergency fallback.\n")
+    if WSZC and WSZC.Warn then WSZC.Warn("Bandage minigame could not load sh_handphysics.lua; using emergency fallback.") end
     HandPhysics = {
         Init = function(mg)
             mg.handScreenX = mg.handScreenX or (ScrW() * 0.5)

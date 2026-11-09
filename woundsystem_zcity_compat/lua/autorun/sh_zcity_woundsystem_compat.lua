@@ -13,16 +13,116 @@ WSZC = WSZC or {}
 if WSZC._SharedLoaded then return end
 WSZC._SharedLoaded = true
 
+-- Connector diagnostics are private and opt-in per administrator.  Keep a
+-- bounded history so early loader failures are available after enabling debug.
+local TAG = "[ZCity/CU compat] "
+WSZC.DebugHistory = WSZC.DebugHistory or {}
+WSZC.DebugSubscribers = WSZC.DebugSubscribers or setmetatable({}, { __mode = "k" })
+local DEBUG_LIMIT = 150
+local DEBUG_NET = "WSZC_DebugControl"
+
+local function IsDebugAdmin(ply)
+    return IsValid and IsValid(ply) and ply.IsAdmin and ply:IsAdmin() == true
+end
+
+function WSZC.DebugAllowed(ply)
+    if SERVER then
+        if IsValid and IsValid(ply) then return IsDebugAdmin(ply) and WSZC.DebugSubscribers[ply] == true end
+        return WSZC.DebugConsole == true
+    end
+    local localPly = LocalPlayer and LocalPlayer() or nil
+    return WSZC.DebugClient == true and IsDebugAdmin(localPly)
+end
+
+function WSZC.DebugDisplay(ply, line)
+    if not WSZC.DebugAllowed(ply) then return end
+    if SERVER and IsValid and IsValid(ply) then
+        if ply.PrintMessage then ply:PrintMessage(HUD_PRINTCONSOLE or 4, tostring(line) .. "\n") end
+    else
+        print(tostring(line))
+    end
+end
+
+function WSZC.DebugRecord(msg)
+    local line = TAG .. tostring(msg)
+    local history = WSZC.DebugHistory
+    history[#history + 1] = line
+    if #history > DEBUG_LIMIT then table.remove(history, 1) end
+    if SERVER then
+        if WSZC.DebugConsole then WSZC.DebugDisplay(nil, line) end
+        for ply in pairs(WSZC.DebugSubscribers) do
+            if IsDebugAdmin(ply) then WSZC.DebugDisplay(ply, line)
+            else WSZC.DebugSubscribers[ply] = nil end
+        end
+    elseif WSZC.DebugAllowed() then
+        WSZC.DebugDisplay(nil, line)
+    end
+end
+
+function WSZC.Debug(fmt, ...)
+    local ok, msg = pcall(string.format, tostring(fmt), ...)
+    WSZC.DebugRecord(ok and msg or tostring(fmt))
+end
+function WSZC.Log(msg) WSZC.DebugRecord(msg) end
+function WSZC.Warn(msg) WSZC.DebugRecord("WARNING: " .. tostring(msg)) end
+
+if SERVER and util and util.AddNetworkString then util.AddNetworkString(DEBUG_NET) end
+if CLIENT and net and net.Receive then
+    net.Receive(DEBUG_NET, function()
+        local enabled = net.ReadBool()
+        local ply = LocalPlayer and LocalPlayer() or nil
+        WSZC.DebugClient = enabled == true and IsDebugAdmin(ply) or false
+        if WSZC.DebugClient then
+            WSZC.DebugDisplay(nil, TAG .. "client debug enabled")
+            for _, line in ipairs(WSZC.DebugHistory) do WSZC.DebugDisplay(nil, line) end
+        end
+    end)
+end
+
+if SERVER and concommand and concommand.Add then
+    -- Preserve an existing Lua `debug` command for every other subcommand.
+    local commands = concommand.GetTable and concommand.GetTable() or nil
+    local previous = commands and commands.debug or nil
+    previous = type(previous) == "table" and (previous[1] or previous.callback) or previous
+    concommand.Add("debug", function(ply, cmd, args, argstr)
+        if not (args and string.lower(tostring(args[1] or "")) == "wscz") then
+            if type(previous) == "function" then return previous(ply, cmd, args, argstr) end
+            return
+        end
+        local valid = IsValid and IsValid(ply)
+        if valid and not IsDebugAdmin(ply) then return end
+        if valid then
+            local enabled = not WSZC.DebugSubscribers[ply]
+            WSZC.DebugSubscribers[ply] = enabled or nil
+            if net and net.Start and net.WriteBool and net.Send then
+                net.Start(DEBUG_NET); net.WriteBool(enabled); net.Send(ply)
+            end
+            if enabled then
+                WSZC.DebugDisplay(ply, TAG .. "debug enabled; repeat debug wscz to disable")
+                for _, line in ipairs(WSZC.DebugHistory) do WSZC.DebugDisplay(ply, line) end
+            elseif ply.PrintMessage then
+                ply:PrintMessage(HUD_PRINTCONSOLE or 4, TAG .. "debug disabled\n")
+            end
+        else
+            WSZC.DebugConsole = not WSZC.DebugConsole
+            if WSZC.DebugConsole then
+                WSZC.DebugDisplay(nil, TAG .. "debug enabled; repeat debug wscz to disable")
+                for _, line in ipairs(WSZC.DebugHistory) do WSZC.DebugDisplay(nil, line) end
+            else
+                print(TAG .. "debug disabled")
+            end
+        end
+    end)
+end
+
 -- Load missing dependencies from the isolated embedded runtime.  External
 -- Workshop/GitHub C:U and WoundBridge installations keep priority.  A loader
 -- error is reported without aborting the connector's adaptive status/probe.
 if SERVER and AddCSLuaFile then AddCSLuaFile("wszc_vendor/bootstrap.lua") end
 if include then
     local ok, err = pcall(include, "wszc_vendor/bootstrap.lua")
-    if not ok then print("[ZCity/CU compat] embedded bootstrap failed: " .. tostring(err)) end
+    if not ok then WSZC.Warn("embedded bootstrap failed: " .. tostring(err)) end
 end
-
-local TAG = "[ZCity/CU compat] "
 
 ---------------------------------------------------------------------------
 -- Adaptive compatibility / capability detection
@@ -308,7 +408,7 @@ function WSZC.MarkFeatureFailed(feature, reason)
     if Compatibility.notes[noteKey] then return end
     Compatibility.notes[noteKey] = true
     local msg = "feature '" .. tostring(feature) .. "' disabled: " .. reason
-    if WSZC.Warn then WSZC.Warn(msg) else print(TAG .. msg) end
+    WSZC.Warn(msg)
 end
 
 function WSZC.ClearCompatibilityFailures()
@@ -385,13 +485,9 @@ function WSZC.CompatibilityStatusLines()
 end
 
 function WSZC.PrintCompatibilityStatus(ply)
-    local lines = WSZC.CompatibilityStatusLines()
-    for _, line in ipairs(lines) do
-        if SERVER and IsValid and IsValid(ply) and ply.PrintMessage then
-            ply:PrintMessage(HUD_PRINTCONSOLE or 4, line .. "\n")
-        else
-            print(line)
-        end
+    if not WSZC.DebugAllowed(ply) then return end
+    for _, line in ipairs(WSZC.CompatibilityStatusLines()) do
+        WSZC.DebugDisplay(ply, line)
     end
 end
 
@@ -424,7 +520,7 @@ function WSZC.OptionalInclude(path)
     if ok then return result, true end
     if not Compatibility.notes["include:" .. path] then
         Compatibility.notes["include:" .. path] = true
-        print(TAG .. "optional module disabled: " .. tostring(path) .. " (" .. tostring(result) .. ")")
+        WSZC.Warn("optional module disabled: " .. tostring(path) .. " (" .. tostring(result) .. ")")
     end
     return nil, false
 end
@@ -434,10 +530,10 @@ if concommand and concommand.Add then
         WSZC.PrintCompatibilityStatus(ply)
     end)
     concommand.Add("wszc_compat_reprobe", function(ply)
-        if SERVER and IsValid and IsValid(ply) and ply.IsAdmin and not ply:IsAdmin() then return end
+        if not WSZC.DebugAllowed(ply) then return end
         if type(WSZC.EnsureEmbeddedRuntime) == "function" then
             local ok, err = pcall(WSZC.EnsureEmbeddedRuntime, true)
-            if not ok then print(TAG .. "embedded runtime reprobe failed: " .. tostring(err)) end
+            if not ok then WSZC.Warn("embedded runtime reprobe failed: " .. tostring(err)) end
         end
         WSZC.ClearCompatibilityFailures()
         WSZC.SetupFailed = nil
@@ -453,6 +549,7 @@ if concommand and concommand.Add then
     -- intercepted by that forwarding rule.
     if CLIENT then
         concommand.Add("wszc_compat_client_status", function()
+            if not WSZC.DebugAllowed() then return end
             WSZC.PrintCompatibilityStatus()
             if type(WSZC.PrintMinigameClientStatus) == "function" then
                 WSZC.PrintMinigameClientStatus()

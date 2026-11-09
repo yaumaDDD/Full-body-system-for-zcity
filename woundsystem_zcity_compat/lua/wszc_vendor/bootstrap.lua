@@ -15,7 +15,9 @@ local BRIDGE_EXTERNAL = "homigrad/woundbridge/sh_woundbridge.lua"
 local BRIDGE_SHARED = "wszc_vendor/zcity/woundbridge/sh_woundbridge.lua"
 local BRIDGE_SERVER = "wszc_vendor/zcity/woundbridge/sv_woundbridge.lua"
 local BRIDGE_CLIENT = "wszc_vendor/zcity/woundbridge/cl_woundbridge.lua"
-local PREFIX = "[ZCity/CU compat] "
+local function Report(msg)
+    if WSZC.Log then WSZC.Log(msg) end
+end
 
 local function Exists(path)
     return type(file) == "table" and type(file.Exists) == "function"
@@ -79,7 +81,7 @@ local function LoadCU()
         if ok and SERVER and Exists(CU_WEATHER) then
             local weatherOK, weatherErr = pcall(include, CU_WEATHER)
             if not weatherOK then
-                print(PREFIX .. "embedded C:U weather compatibility disabled: " .. tostring(weatherErr))
+                Report("embedded C:U weather compatibility disabled: " .. tostring(weatherErr))
             end
         end
     else
@@ -88,9 +90,9 @@ local function LoadCU()
     WSZC._EmbeddedCULoadError = not ok and tostring(err) or nil
     WSZC._EmbeddedCULoaded = HasCU()
     if not ok then
-        print(PREFIX .. "embedded C:U loader failed: " .. tostring(err))
+        Report("embedded C:U loader failed: " .. tostring(err))
     elseif WSZC._EmbeddedCULoaded then
-        print(PREFIX .. "embedded C:U runtime active")
+        Report("embedded C:U runtime active")
     end
     return WSZC._EmbeddedCULoaded
 end
@@ -118,9 +120,9 @@ local function LoadBridge()
         and type(hg.WoundBridge.IsEnabled) == "function"
         and type(hg.WoundBridge.ApplyDamage) == "function"
     if not ok then
-        print(PREFIX .. "embedded ZCity WoundBridge loader failed: " .. tostring(err))
+        Report("embedded ZCity WoundBridge loader failed: " .. tostring(err))
     elseif WSZC._EmbeddedBridgeLoaded then
-        print(PREFIX .. "embedded ZCity WoundBridge active")
+        Report("embedded ZCity WoundBridge active")
     end
     return WSZC._EmbeddedBridgeLoaded
 end

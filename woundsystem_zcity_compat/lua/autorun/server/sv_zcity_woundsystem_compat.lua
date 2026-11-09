@@ -29,26 +29,10 @@ if not WSZC.PatchIsEnabled then
     include("autorun/sh_zcity_woundsystem_compat.lua")
 end
 
-local TAG = "[ZCity/CU compat] "
 -- Shared with sv_zcity_woundsystem_compat_organism.lua.  Weak keys because
 -- CTakeDamageInfo objects are transient and must not be retained.
 WSZC.RawDamage = WSZC.RawDamage or setmetatable({}, { __mode = "k" })
-local cvDebug = CreateConVar("zc_woundsystem_compat_debug", "0", { FCVAR_ARCHIVE, FCVAR_NOTIFY }, "Print diagnostics for the ZCity <-> WoundSystem compatibility addon")
 local cvResourceDownloads = CreateConVar("zc_woundsystem_compat_resource_downloads", "1", { FCVAR_ARCHIVE, FCVAR_NOTIFY }, "Register the connector's self-contained UI materials, C:U fonts and shaders for client download (map change/restart required)")
-
-function WSZC.Debug(fmt, ...)
-    if not (cvDebug and cvDebug:GetBool()) then return end
-    local ok, msg = pcall(string.format, fmt, ...)
-    print(TAG .. (ok and msg or tostring(fmt)))
-end
-
-function WSZC.Log(msg)
-    print(TAG .. tostring(msg))
-end
-
-function WSZC.Warn(msg)
-    ErrorNoHalt(TAG .. tostring(msg) .. "\n")
-end
 
 ---------------------------------------------------------------------------
 -- Self-contained UI content / dedicated-server downloads

@@ -620,7 +620,8 @@ function WSZC.MinigameClientStatusLines()
 end
 
 function WSZC.PrintMinigameClientStatus()
-    for _, line in ipairs(WSZC.MinigameClientStatusLines()) do print(line) end
+    if not (WSZC.DebugAllowed and WSZC.DebugAllowed()) then return end
+    for _, line in ipairs(WSZC.MinigameClientStatusLines()) do WSZC.DebugDisplay(nil, line) end
 end
 
 local function ClientReady()
@@ -645,8 +646,8 @@ local function Activate()
     local okBandage, errBandage = pcall(include, "autorun/client/wszc_cl_bandage.lua")
     local okSyringe, errSyringe = pcall(include, "autorun/client/wszc_cl_syringe.lua")
     if not okBandage or not okSyringe then
-        ErrorNoHalt("[ZCity/CU compat] minigame client load failed: "
-            .. tostring(errBandage) .. " / " .. tostring(errSyringe) .. "\n")
+        if WSZC.Warn then WSZC.Warn("minigame client load failed: "
+            .. tostring(errBandage) .. " / " .. tostring(errSyringe)) end
         if WSZC.MinigameClientAttempts < 80 then timer.Simple(0.25, Activate) end
         return
     end

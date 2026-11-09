@@ -251,7 +251,7 @@ function WSZC.InstallMinigameTextFilter()
                 local ok, a, b = pcall(origBackdrop, data)
                 WSZC._MinigameBackdropDrawing = false
                 if not ok then
-                    ErrorNoHalt("[ZCity/CU compat] minigame backdrop failed: " .. tostring(a) .. "\n")
+                    if WSZC.Warn then WSZC.Warn("minigame backdrop failed: " .. tostring(a)) end
                     return
                 end
                 return a, b

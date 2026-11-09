@@ -306,7 +306,7 @@ local function CallNativeOpen()
     local ok, err = pcall(originalOpen)
     Remote.internalOpen = false
     if not ok then
-        if ErrorNoHalt then ErrorNoHalt("[WSZC remote] native open failed: " .. tostring(err) .. "\n") end
+        if WSZC.Warn then WSZC.Warn("[remote-medical] native open failed: " .. tostring(err)) end
         FinishRemote("panel_error")
     end
 end

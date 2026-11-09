@@ -87,21 +87,14 @@ local cvPreserveReset = CreateConVar("zc_woundsystem_compat_preserve_reset_struc
 local cvDislocationStart = CreateConVar("zc_woundsystem_compat_dislocation_start", "35",
     { FCVAR_ARCHIVE, FCVAR_NOTIFY },
     "Starting bone displacement (0..100) for the C:U manual reduction minigame; lower = fewer hits and a bone that stays on screen", 10, 100)
-local cvDebug = CreateConVar("zc_woundsystem_compat_organism_debug", "0",
-    { FCVAR_ARCHIVE, FCVAR_NOTIFY },
-    "Print organism-authority diagnostics", 0, 1)
-
-local TAG = "[ZCity/CU compat] "
 local Unpack = table.unpack or unpack -- GMod Lua 5.1 / newer regression runtimes
 
 local function Debug(fmt, ...)
-    if not (cvDebug and cvDebug:GetBool()) then return end
-    local ok, msg = pcall(string.format, fmt, ...)
-    print(TAG .. (ok and msg or tostring(fmt)))
+    if WSZC.Debug then WSZC.Debug(fmt, ...) end
 end
 
 local function Warn(msg)
-    if WSZC.Warn then WSZC.Warn(msg) else ErrorNoHalt(TAG .. tostring(msg) .. "\n") end
+    if WSZC.Warn then WSZC.Warn(msg) end
 end
 
 local function ConVarFloat(cv, fallback)
@@ -6685,7 +6678,7 @@ function WSZC.InstallOrganismMode()
     -- when it is currently off.
     if Authority() then
         local msg = "organism-authoritative mode active (ply.organism owns health; C:U = HUD, minigames, shrapnel)"
-        if WSZC.Log then WSZC.Log(msg) else print(TAG .. msg) end
+        if WSZC.Log then WSZC.Log(msg) end
     end
     return true
 end

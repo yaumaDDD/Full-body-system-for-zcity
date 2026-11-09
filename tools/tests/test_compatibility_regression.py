@@ -836,6 +836,10 @@ print = function(...)
     for i = 1, select("#", ...) do parts[#parts + 1] = tostring(select(i, ...)) end
     logs[#logs + 1] = table.concat(parts, " ")
 end
+-- Server-authorized debug is private to the local administrator.
+local admin = { IsAdmin = function() return true end }
+LocalPlayer = function() return admin end
+WSZC.DebugClient = true
 COMMANDS.wszc_compat_client_status()
 local text = table.concat(logs, "\n")
 return type(COMMANDS.wszc_compat_client_status) == "function"
