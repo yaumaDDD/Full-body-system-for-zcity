@@ -917,6 +917,24 @@ return authority and splint, bridge
     check("R30 authority receiver handles TOURNIQUET but replays native SPLINTED", removal_receiver[0])
     check("R31 bridge mode still delegates tourniquet removal to native C:U", removal_receiver[1])
 
+    lower_removal = lua.execute(r'''
+local original = net.Receivers
+local calls = 0
+net.Receivers = { woundsystem_removelimbstatus = function() calls = calls + 1 end }
+assert(WSZC.InstallTourniquetRemovalBridge())
+local wrapper = net.Receivers.woundsystem_removelimbstatus
+assert(wrapper == WSZC._TourniquetRemovalWrapper)
+local patient = TourniquetPatientFactory()
+Now = 3200
+WSZC.ApplyTourniquetToOrganism({ ply = patient, limbId = "thigh_R" })
+local queue = { "thigh_R", "TOURNIQUET" }
+net.ReadString = function() return table.remove(queue, 1) end
+local removed = wrapper(0, patient)
+net.Receivers = original
+return removed and patient.given == 1 and calls == 0
+''')
+    check("R45 lowercase GMod receiver removes the patient's tourniquet", lower_removal)
+
     remote_return = lua.execute(r'''
 Now = 3500
 local patient = TourniquetPatientFactory()

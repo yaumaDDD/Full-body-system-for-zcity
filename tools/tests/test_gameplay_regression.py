@@ -659,6 +659,26 @@ local unwrapGate = installed and closed == 1 and unwrapStarted == 1
     and ply._limbs.hand_R.shrapnel == 3
     and WSZC.IsShrapnelBandaged(ply, "hand_R")
     and entry.infectionAge == infectionBefore and limb.isBandaged ~= false
+-- In real GMod net.Receive stores lowercase keys. A remote covered click
+-- must open the operator's session for the patient, and retries must not stack.
+local medic = MakePlayer()
+local capturedOperator, capturedPatient
+WSZC.RemoteNativeOperator = function(patient) if patient == ply then return medic end end
+WSZC.StartShrapnelUnwrap = function(operator, limbId, target)
+    capturedOperator, capturedPatient = operator, target
+    return limbId == "hand_R"
+end
+net.Receivers = { woundsystem_shrapnelstart = function() end }
+net.Receive = function(name, fn) net.Receivers[string.lower(name)] = fn end
+local installedLower = WSZC.InstallShrapnelBandageGuard()
+local guarded = net.Receivers.woundsystem_shrapnelstart
+local retry = WSZC.InstallShrapnelBandageGuard()
+net.Receivers.woundsystem_shrapnelstart(0, ply)
+local remoteGuard = installedLower and retry and guarded == net.Receivers.woundsystem_shrapnelstart
+    and capturedOperator == medic and capturedPatient == ply and WSZC.IsShrapnelBandaged(ply, "hand_R")
+WSZC.RemoteNativeOperator = nil
+net.Receivers.WoundSystem_ShrapnelStart = net.Receivers.woundsystem_shrapnelstart
+
 -- This is the callback used by the server after a 360-degree reverse input.
 local completionUnwrapped = WSZC.RemoveBandageForShrapnel(ply, "hand_R")
     and not WSZC.IsShrapnelBandaged(ply, "hand_R")
@@ -733,7 +753,7 @@ local preDressedCovered = WSZC.IsShrapnelBandaged(preDressed, "hand_R")
     and preDressed._limbs.hand_R.infection >= 25
     and preDressed._limbs.hand_R.disinfectTime == 0
 return bandageAllowed, noRegrow, infected, unwrapGate, secondClickNative,
-    extractionPersists, rebandageCures, preDressedCovered, partialCovered
+    extractionPersists, rebandageCures, preDressedCovered, partialCovered, remoteGuard
 ''')
     check("R14 a complete bandage stops external bleeding with shrapnel still lodged", complications[0])
     check("R53 covered shrapnel never regrows or recreates its external wound", complications[1])
@@ -744,6 +764,7 @@ return bandageAllowed, noRegrow, infected, unwrapGate, secondClickNative,
     check("R54 only full re-bandaging clears extraction aftercare and infection", complications[6])
     check("R22 a pellet into an already dressed limb is covered without external bleed", complications[7])
     check("R59 partial extraction can be re-bandaged without curing remaining infection", complications[8])
+    check("R96 lowercase native shrapnel guard is idempotent and opens remote unwrap for medic", complications[9])
 
     timed_bandage = lua.execute(r'''
 -- Real GAUZE: a 100-durability roll, 12 complete turns, one partial effect per
@@ -1771,6 +1792,19 @@ return present, abdomenOnly and mechanicsUntouched, cleared, networked
     check("R74 internal marker is abdomen-only and preserves disinfection/infection/custom statuses", internal_bleeding_shadow[1])
     check("R75 stopping internal bleeding clears the marker and native status", internal_bleeding_shadow[2])
     check("R76 native WriteNet/ReadNet round-trip carries the abdomen marker to the client", internal_bleeding_shadow[3])
+    external_only = lua.execute(r'''
+local ply = MakePlayer()
+ply.organism.internalBleed = 0
+ply.organism.bleed = 12
+ply._body.internalBleeding = 9 -- stale native shadow from an earlier event
+ply._limbs.abdomen = { bleed = 0, pain = 0, muscle = 100, skin = 100,
+    customStatuses = { [WSZC.INTERNAL_BLEEDING_STATUS_ID] = 9 } }
+WSZC.SyncOrganismShadow(ply, ply.organism)
+return ply._body.internalBleeding == 0
+    and ply._limbs.abdomen.customStatuses[WSZC.INTERNAL_BLEEDING_STATUS_ID] == nil
+    and ply.organism.bleed == 12 and ply.organism.internalBleed == 0
+''')
+    check("R97 external bleeding clears stale internal-bleed presentation without changing organism", external_only)
 
     arterial_bleeding_shadow = lua.execute(r'''
 assert(WSZC.InstallArterialBleedingStatus())
@@ -2081,11 +2115,23 @@ net.Receivers.WoundSystem_DislocationInput = function() end
 WSZC.InstallNativeDislocationBridge()
 net.Receivers.WoundSystem_DislocationInput(0, missed)
 local missKept = missed.organism.rarmdislocation == true
+local lower = MakePlayer()
+lower._limbs.arm_R = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    dislocated = true, dislocationTimer = 20 }
+lower.organism.rarmdislocation = true
+net.Receivers = { woundsystem_dislocationinput = function()
+    lower._limbs.arm_R.dislocated = false
+    lower._limbs.arm_R.dislocationTimer = 0
+end }
+local installedLower = WSZC.InstallNativeDislocationBridge()
+net.Receivers.woundsystem_dislocationinput(0, lower)
+local lowerCommitted = installedLower and lower.organism.rarmdislocation == false
 net = oldNet
-return committed, missKept
+return committed, missKept, lowerCommitted
 ''')
     check("R82 accepted native dislocation success commits to ZCity immediately", native_reduction[0])
     check("R83 unsuccessful native dislocation input cannot clear the ZCity injury", native_reduction[1])
+    check("R98 lowercase GMod native dislocation input commits to organism", native_reduction[2])
 
     visual_fn_start = shared_s.index('function WSZC.DislocationVisualAligned')
     visual_fn_end = shared_s.index('\nend\n', visual_fn_start) + 5

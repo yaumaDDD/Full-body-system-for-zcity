@@ -728,16 +728,23 @@ end
 --- Covered shrapnel cannot be exposed by a click.  Start the SAME client
 --- bandage minigame in reverse mode, with a virtual roll that costs no item.
 --- ProcessBandageInput() is the only path that may remove this dressing.
-function WSZC.StartShrapnelUnwrap(ply, limbId)
+function WSZC.StartShrapnelUnwrap(ply, limbId, target)
+    target = target or ply
     if not (WSZC.Ready and OwnMinigamesEnabled() and HealthEnabled()) then return false end
     if not (IsValid(ply) and ply:IsPlayer() and ply:Alive()) then return false end
-    if PlayerIncapacitated(ply) or not Bridged(ply) then return false end
-    if not (WSZC.IsShrapnelBandaged and WSZC.IsShrapnelBandaged(ply, limbId)) then return false end
+    if PlayerIncapacitated(ply) or not Bridged(target) then return false end
+    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then return false end
+    if target ~= ply then
+        local inspection = WSZC.RemoteMedicalSessions and WSZC.RemoteMedicalSessions[ply]
+        if not (inspection and inspection.target == target and WSZC.RemoteMedicalValidPair
+            and WSZC.RemoteMedicalValidPair(ply, target)) then return false end
+    end
+    if not (WSZC.IsShrapnelBandaged and WSZC.IsShrapnelBandaged(target, limbId)) then return false end
 
     local existing = WSZC.MinigameSessions[ply]
     if existing then
         return existing.kind == "bandage" and existing.mode == "unwrap"
-            and existing.limbId == limbId
+            and existing.limbId == limbId and existing.target == target
     end
     if HasMinigame(ply) then return false end
 
@@ -753,7 +760,7 @@ function WSZC.StartShrapnelUnwrap(ply, limbId)
     local session = {
         id = id, kind = "bandage", mode = "unwrap",
         itemId = "WSZC_UNWRAP", limbId = limbId, slotIdx = MINIGAME_SLOT,
-        owner = ply, target = ply,
+        owner = ply, target = target, remote = target ~= ply,
         maxDur = 360, amount = 360, startAmount = 360, deferredUsed = 0,
         initialBleed = 360, lastBleed = 360, lastBleedProgress = 0,
         unwrapRequired = 360, unwrapProgress = 0,

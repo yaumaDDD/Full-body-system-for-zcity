@@ -525,7 +525,8 @@ check('S55 native minigames and AED timers revalidate the remote pair',
       and 'OperatorBusy(operator)' in remote_server_s)
 check('S56 bandage/syringe reuse external sessions; one applied dose equals one consume',
       'h.StartExternalMinigame' in remote_server_s
-      and 'h.ApplyItemToBody, target, itemId, limbId, cost' in remote_server_s
+      and 'pcall(apply, target, itemId, limbId, cost)' in remote_server_s
+      and 'WSZC.ApplyItemToBodyImpl or h.ApplyItemToBody' in remote_server_s
       and 'ConsumeSlot(operator, idx, itemId, cost, true)' in remote_server_s
       and 'ConsumeSlot(operator, idx, itemId, cost)' in remote_server_s
       and 'if durability <= 0 then return false end' in remote_server_s

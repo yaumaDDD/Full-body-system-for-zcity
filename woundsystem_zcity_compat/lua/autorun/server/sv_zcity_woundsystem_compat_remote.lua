@@ -141,10 +141,21 @@ local activeNet
 local currentNetMessage
 local originalStart, originalSend
 local nativeReceiverOriginals, nativeReceiverGuards = {}, {}
+-- Garry's Mod stores net.Receive handlers under lowercase keys.
+local function ReceiverKey(name)
+    if not net.Receivers then return string.lower(name) end
+    local lower = string.lower(name)
+    return net.Receivers[lower] ~= nil and lower or name
+end
+WSZC.RemoteNativeReceiverGuards = nativeReceiverGuards
+function WSZC.RemoteNativeOperator(target)
+    return activeNet and activeNet.target == target and activeNet.operator or nil
+end
 local function InstallNativeReceiverGuards()
     if not net.Receivers then return end
     for action, kind in pairs(NATIVE_KIND) do
-        local current = net.Receivers[action]
+        local key = ReceiverKey(action)
+        local current = net.Receivers[key]
         if type(current) == "function" and current ~= nativeReceiverGuards[action] then
             nativeReceiverOriginals[action] = current
             nativeReceiverGuards[action] = function(len, ply)
@@ -156,7 +167,7 @@ local function InstallNativeReceiverGuards()
                 end
                 return nativeReceiverOriginals[action](len, ply)
             end
-            net.Receivers[action] = nativeReceiverGuards[action]
+            net.Receivers[key] = nativeReceiverGuards[action]
         end
     end
 end
@@ -304,7 +315,7 @@ local function WithNativeContext(operator, target, slotIdx, callback, wrapAedTim
 end
 
 local function InvokeNative(operator, target, action, payload, slotIdx, callback)
-    local receiver = net.Receivers and net.Receivers[action]
+    local receiver = net.Receivers and net.Receivers[ReceiverKey(action)]
     if type(receiver) ~= "function" and not callback then return false end
     return WithNativeContext(operator, target, slotIdx, function()
         if callback then return callback() end
@@ -330,6 +341,16 @@ local function ConsumeSlot(operator, slotIdx, expectedItem, cost, dryRun)
     if remove and slot.durability <= 0.001 then inventory[slotIdx] = EmptySlot() end
     if h.SyncInventoryToClient then pcall(h.SyncInventoryToClient, operator) end
     return true
+end
+
+-- Remote sessions use the connector protocol, even when an external C:U
+-- exposes its own self-only API. Stop the same implementation we started.
+local function StopRemoteExternal(operator, reason)
+    if WSZC.MinigameSessions and WSZC.MinigameSessions[operator] and WSZC.StopMinigame then
+        return WSZC.StopMinigame(operator, reason)
+    end
+    local h = H()
+    if h and h.StopExternalMinigame then return h.StopExternalMinigame(operator, reason) end
 end
 
 local function StartExternal(operator, target, kind, payload)
@@ -358,12 +379,20 @@ local function StartExternal(operator, target, kind, payload)
         local _spec, _idx, _maxDur = spec, idx, maxDur
         local _live, _oneDose, _target = live, oneDose, target
         if not ConsumeSlot(operator, idx, itemId, cost, true) then
-            if h.StopExternalMinigame then h.StopExternalMinigame(operator, "item_changed") end
+            StopRemoteExternal(operator, "item_changed")
             return
         end
-        local ok, applied = pcall(h.ApplyItemToBody, target, itemId, limbId, cost)
+        -- The connector implementation mirrors the treatment into organism;
+        -- an external native API can otherwise mutate only the C:U shadow.
+        local apply = WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+            and WSZC.ApplyItemToBodyImpl or h.ApplyItemToBody
+        if type(apply) ~= "function" then
+            StopRemoteExternal(operator, "apply_unavailable")
+            return
+        end
+        local ok, applied = pcall(apply, target, itemId, limbId, cost)
         if not ok or applied == false then
-            if h.StopExternalMinigame then h.StopExternalMinigame(operator, "apply_failed") end
+            StopRemoteExternal(operator, "apply_failed")
             return
         end
         -- The dry run above and this consume are synchronous: no free dose and
@@ -376,8 +405,9 @@ local function StartExternal(operator, target, kind, payload)
         -- Every live step above is already applied and consumed.  There is no
         -- deferred second dose on close.
     end
-    if not h.StartExternalMinigame then return false end
-    local started = h.StartExternalMinigame(operator, {
+    local start = WSZC.StartExternalMinigameImpl or h.StartExternalMinigame
+    if type(start) ~= "function" then return false end
+    local started = start(operator, {
         kind = kind, itemId = itemId, limbId = limbId, amount = amount,
         target = target, spec = spec, idx = idx, maxDur = maxDur,
         live = live, oneDose = oneDose,
@@ -427,7 +457,7 @@ CloseNativeMeta = function(target, kind, reason)
     if not IsValid(target) then return end
     reason = reason or "remote_closed"
     local closeName = "WoundSystem_" .. (kind == "Aed" and "AED" or kind) .. "Close"
-    local receiver = net.Receivers and net.Receivers[closeName]
+    local receiver = net.Receivers and net.Receivers[ReceiverKey(closeName)]
     local closeSource = nativeReceiverOriginals[closeName] or receiver
     local close = closeSource and WSZC.Upvalue and WSZC.Upvalue(closeSource, "Close" .. kind .. "Session")
     if not close and WSZC.FindUpvalue then close = WSZC.FindUpvalue("Close" .. kind .. "Session") end
@@ -469,8 +499,7 @@ CloseRemote = function(operator, reason)
         local meta = MetaFor(target, kind)
         if meta and meta.operator == operator then CloseNativeMeta(target, kind, reason) end
     end
-    local h = H()
-    if h and h.StopExternalMinigame then pcall(h.StopExternalMinigame, operator, reason or "remote_closed") end
+    pcall(StopRemoteExternal, operator, reason or "remote_closed")
     if IsValid(operator) then
         net.Start("WSZC_RemoteMedicalClose")
             net.WriteEntity(target)
@@ -549,8 +578,7 @@ net.Receive("WSZC_RemoteMedicalAction", function(_, operator)
         StartExternal(operator, target, action == "WoundSystem_BandageStart" and "bandage" or "syringe", payload)
         return
     elseif action == "WoundSystem_BandageClose" or action == "WoundSystem_SyringeClose" then
-        local h = H()
-        if h.StopExternalMinigame then h.StopExternalMinigame(operator, payload[2] or "client_close") end
+        StopRemoteExternal(operator, payload[2] or "client_close")
         return
     elseif action == "WoundSystem_BandageInput" or action == "WoundSystem_SyringeInput" then
         return -- live sessions use WSZC_* input after StartExternal answers

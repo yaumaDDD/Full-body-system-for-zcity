@@ -583,6 +583,83 @@ if MODE == "server" then
         patient.organism = nil
         WSZC.SyncPatientShadowNow = nil
     end)
+    Test("M19 remote unwrap belongs to medic and only removes the patient's dressing", function()
+        Reset()
+        WSZC.BridgeEnabled = function() return true end
+        WSZC.Bridged = function() return true end
+        WSZC.OrganismAuthority = function() return true end
+        local covered = true
+        WSZC.IsShrapnelBandaged = function(p, limb) return p == patient and limb == "thorax" and covered end
+        WSZC.RemoveBandageForShrapnel = function(p, limb)
+            Assert(p == patient and limb == "thorax")
+            covered = false
+            return true
+        end
+        H.GetLimbState = function(p, limb) return limbs[p] and limbs[p][limb] end
+        Assert(not WSZC.StartShrapnelUnwrap(op, "thorax", patient), "inspection required")
+        Open(patient)
+        patient.organism = { otrub = true, consciousness = 0 }
+        Assert(WSZC.StartShrapnelUnwrap(op, "thorax", patient))
+        local session = WSZC.MinigameSessions[op]
+        Assert(session and session.target == patient and session.remote and not WSZC.MinigameSessions[patient])
+        Equal(LastSend().recipient, op)
+        incoming, incomingIndex = { session.id, 180, 1 }, 0
+        net.Receivers.WSZC_BandageInput(0, op)
+        Assert(covered)
+        incoming, incomingIndex = { session.id, 180, 2 }, 0
+        net.Receivers.WSZC_BandageInput(0, op)
+        Assert(not covered and not WSZC.MinigameSessions[op])
+        patient.organism = nil
+    end)
+
+    Test("M21 remote minigame uses connector protocol and authoritative treatment with native API installed", function()
+        Reset(); Open(patient)
+        limbs[patient].arm_R = { bleed = 6, pain = 0, shrapnel = 0 }
+        local nativeStart, nativeApply, nativeStop = H.StartExternalMinigame, H.ApplyItemToBody, H.StopExternalMinigame
+        local ownApply = WSZC.ApplyItemToBodyImpl
+        H.StartExternalMinigame = function() error("self-only native session was used") end
+        H.ApplyItemToBody = function() error("native shadow-only treatment was used") end
+        H.StopExternalMinigame = function() error("wrong stop implementation") end
+        local appliedTo
+        WSZC.ApplyItemToBodyImpl = function(p, _, limb, cost)
+            appliedTo = { p = p, limb = limb, cost = cost }
+            return true
+        end
+        Action(patient, "WoundSystem_BandageStart", { "arm_R", 3 })
+        local session = WSZC.MinigameSessions[op]
+        Assert(session and session.target == patient and session.remote)
+        incoming, incomingIndex = { session.id, 360, 1 }, 0
+        net.Receivers.WSZC_BandageInput(0, op)
+        Assert(appliedTo and appliedTo.p == patient and appliedTo.limb == "arm_R")
+        Equal(inventories[op][3].durability, 18)
+        WSZC.CloseRemoteMedical(op, "test")
+        Assert(not WSZC.MinigameSessions[op])
+        H.StartExternalMinigame, H.ApplyItemToBody, H.StopExternalMinigame = nativeStart, nativeApply, nativeStop
+        WSZC.ApplyItemToBodyImpl = ownApply
+    end)
+
+    Test("M20 real lowercase net.Receive keys route and guard remote medical actions", function()
+        Reset()
+        local saved = net.Receivers
+        local lower = {}
+        for key, fn in pairs(saved) do lower[string.lower(key)] = fn end
+        net.Receivers = lower
+        incoming, incomingIndex = { patient }, 0
+        lower.wszc_remotemedicalopen(0, op)
+        incoming, incomingIndex = { patient, "WoundSystem_UseMedicalItem", 3, 1, "MORPHINE", "thorax" }, 0
+        lower.wszc_remotemedicalaction(0, op)
+        Equal(#applied, 1)
+        Equal(applied[1].p, patient)
+        incoming, incomingIndex = { patient, "WoundSystem_ShrapnelStart", 2, "thorax", 0 }, 0
+        lower.wszc_remotemedicalaction(0, op)
+        Assert(WSZC.CUSessions.Shrapnel[patient])
+        local before = #inputs
+        incoming, incomingIndex = { 1, 0, 0, 0, false, false, false, 0, 0, 0 }, 0
+        lower.woundsystem_shrapnelinput(0, patient)
+        Equal(#inputs, before, "patient must not control medic's session")
+        WSZC.CloseRemoteMedical(op, "test")
+        net.Receivers = saved
+    end)
 else
     CLIENT, SERVER = true, false
     local now = 100
@@ -926,6 +1003,25 @@ else
         patient.GetPlayerName = nil
         WoundSystem.OpenHealthHUD = origOpen
     end)
+    Test("C17 lowercase cardio and limb handlers cannot contaminate patient snapshot", function()
+        Reset()
+        local receivers = net.Receivers
+        local oldLimb, oldCardio = receivers.WoundSystem_UpdateLimb, receivers.WoundSystem_UpdateCardio
+        receivers.WoundSystem_UpdateLimb, receivers.WoundSystem_UpdateCardio = nil, nil
+        receivers.woundsystem_updatelimb = function() WoundSystemClientState.PlayerLimbs.thorax.pain = 999 end
+        receivers.woundsystem_updatecardio = function() WoundSystemClientState.Cardio.internalBleeding = 99 end
+        Begin()
+        receivers.woundsystem_updatelimb()
+        receivers.woundsystem_updatecardio()
+        Equal(WoundSystemClientState.PlayerLimbs.thorax.pain, 88)
+        Assert(WoundSystemClientState.Cardio.internalBleeding ~= 99)
+        WSZC.RemoteMedical.Finish("done")
+        receivers.woundsystem_updatecardio()
+        Equal(WoundSystemClientState.Cardio.internalBleeding, 99)
+        receivers.woundsystem_updatelimb, receivers.woundsystem_updatecardio = nil, nil
+        receivers.WoundSystem_UpdateLimb, receivers.WoundSystem_UpdateCardio = oldLimb, oldCardio
+    end)
+
 end
 
 return tests

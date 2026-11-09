@@ -1793,7 +1793,8 @@ end
 function WSZC.InstallTourniquetRemovalBridge()
     if type(net) ~= "table" or type(net.Receivers) ~= "table" then return false end
     local name = "WoundSystem_RemoveLimbStatus"
-    local current = net.Receivers[name]
+    local key = net.Receivers[string.lower(name)] and string.lower(name) or name
+    local current = net.Receivers[key]
     if current == WSZC._TourniquetRemovalWrapper then return current ~= nil end
     local original = current
     local function wrapped(len, ply)
@@ -1814,7 +1815,7 @@ function WSZC.InstallTourniquetRemovalBridge()
     end
     WSZC._OriginalRemoveLimbStatus = original
     WSZC._TourniquetRemovalWrapper = wrapped
-    net.Receivers[name] = wrapped
+    net.Receivers[key] = wrapped
     return true
 end
 
@@ -2388,7 +2389,10 @@ function WSZC.InstallShrapnelBandageGuard()
     local original = receivers["WoundSystem_ShrapnelStart"]
         or receivers["woundsystem_shrapnelstart"]
     if type(original) ~= "function" then return false end
-    if WSZC._ShrapnelBandageGuardOriginal == original then return true end
+    if original == WSZC._ShrapnelBandageGuard
+        or (WSZC.RemoteNativeReceiverGuards
+            and original == WSZC.RemoteNativeReceiverGuards.WoundSystem_ShrapnelStart
+            and WSZC._ShrapnelBandageGuard) then return true end
 
     local sessions = WSZC.CUSessions or WSZC.FindUpvalue("Sessions")
     local sendOpen = WSZC.FindUpvalue("SendShrapnelOpen")
@@ -2417,10 +2421,11 @@ function WSZC.InstallShrapnelBandageGuard()
             -- open OUR reverse-bandage session.  No state changes happen here:
             -- only 360 accepted reverse degrees may call RemoveBandage...().
             if sessions.Shrapnel[ply] then closeSession(ply, "unwrap_started") end
+            local operator = WSZC.RemoteNativeOperator and WSZC.RemoteNativeOperator(ply) or ply
             local started = WSZC.StartShrapnelUnwrap
-                and WSZC.StartShrapnelUnwrap(ply, limbId)
+                and WSZC.StartShrapnelUnwrap(operator, limbId, ply)
             if not started then
-                NotifyMedical(ply, "The reverse-bandage minigame is required before extraction.")
+                NotifyMedical(operator, "The reverse-bandage minigame is required before extraction.")
             end
             return -- no click unwrap, extraction session or tweezers cost
         end
@@ -2449,6 +2454,7 @@ function WSZC.InstallShrapnelBandageGuard()
 
     WSZC._OriginalShrapnelStart = original
     WSZC._ShrapnelBandageGuardOriginal = original
+    WSZC._ShrapnelBandageGuard = GuardedShrapnelStart
     net.Receive("WoundSystem_ShrapnelStart", GuardedShrapnelStart)
     return true
 end
@@ -6353,7 +6359,8 @@ end
 local nativeDislocationWrapper
 function WSZC.InstallNativeDislocationBridge()
     if type(net) ~= "table" or type(net.Receivers) ~= "table" then return false end
-    local current = net.Receivers.WoundSystem_DislocationInput
+    local key = net.Receivers.woundsystem_dislocationinput and "woundsystem_dislocationinput" or "WoundSystem_DislocationInput"
+    local current = net.Receivers[key]
     if type(current) ~= "function" then return false end
     if current == nativeDislocationWrapper then return true end
 
@@ -6382,7 +6389,7 @@ function WSZC.InstallNativeDislocationBridge()
         end
         return a, b, c, d
     end
-    net.Receivers.WoundSystem_DislocationInput = nativeDislocationWrapper
+    net.Receivers[key] = nativeDislocationWrapper
     return true
 end
 

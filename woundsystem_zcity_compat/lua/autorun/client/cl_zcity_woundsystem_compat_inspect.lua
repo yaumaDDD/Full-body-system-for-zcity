@@ -669,46 +669,9 @@ hook.Add("PostDrawHUD", "WSZC_WoundViewTreatHUD", function()
 
     local prevFiltered = WSZC.CUHudFiltered
     WSZC.CUHudFiltered = false
+    local target = CurrentWoundViewPatient()
 
-    local target, isRemote = CurrentWoundViewPatient()
-    local remote = WSZC.RemoteMedical
-    if isRemote and IsValid(target) then
-        local rpName = nil
-        if type(target.GetPlayerName) == "function" then
-            local ok, candidate = pcall(target.GetPlayerName, target)
-            if ok and type(candidate) == "string" and candidate ~= "" then rpName = candidate end
-        end
-        local pName = rpName or (remote and remote.patientName ~= "" and remote.patientName)
-            or (target.Nick and target:Nick()) or "Игрок"
-        local unc = remote and remote.patientUnconscious == true
-        local header = "ПАЦИЕНТ: " .. tostring(pName)
-            .. (unc and "  [БЕЗ СОЗНАНИЯ]" or "  [В СОЗНАНИИ]")
-            .. "   •   [T] ЗАКРЫТЬ"
-        local bw = math.max(math.floor(440 * scale), 320)
-        local bh = math.max(math.floor(32 * scale), 24)
-        local bx = math.floor((scrW - bw) * 0.5)
-        local by = math.max(math.floor(18 * scale), 12)
-        if surface and surface.SetDrawColor and surface.DrawRect then
-            surface.SetDrawColor(10, 22, 16, 222)
-            surface.DrawRect(bx, by, bw, bh)
-            local borderCol = unc and ColVal(255, 176, 76, 220) or ColVal(72, 226, 140, 220)
-            surface.SetDrawColor(borderCol.r, borderCol.g, borderCol.b, borderCol.a)
-            if surface.DrawOutlinedRect then surface.DrawOutlinedRect(bx, by, bw, bh, 1) end
-        end
-        if draw and draw.SimpleText then
-            draw.SimpleText(
-                header,
-                ScaledFont("CrunchyTechFont", scale),
-                math.floor(scrW * 0.5),
-                math.floor(by + bh * 0.5),
-                unc and ColVal(255, 204, 110, 255) or ColVal(110, 245, 162, 255),
-                TEXT_ALIGN_CENTER or 1,
-                TEXT_ALIGN_CENTER or 1
-            )
-        end
-    end
-
-    -- 3) Bottom ZCity medicine strip (applies carried SWEPs to selected limb or auto-best limb)
+    -- Bottom ZCity medicine strip (applies carried SWEPs to selected limb or auto-best limb)
     local entries = CollectMedicineBarEntries(ply)
     local mx, my = -1, -1
     if gui and gui.MousePos then mx, my = gui.MousePos() end

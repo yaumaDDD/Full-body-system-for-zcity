@@ -248,7 +248,8 @@ end
 local selfUpdateOriginals = {}
 local function InstallSelfUpdateGuards()
     for _, name in ipairs({ "WoundSystem_UpdateLimb", "WoundSystem_UpdateCardio" }) do
-        local current = net.Receivers and net.Receivers[name]
+        local key = net.Receivers and net.Receivers[string.lower(name)] and string.lower(name) or name
+        local current = net.Receivers and net.Receivers[key]
         if type(current) == "function" and current ~= Remote["guard_" .. name] then
             selfUpdateOriginals[name] = current
             local guard = function(len, ...)
@@ -256,7 +257,7 @@ local function InstallSelfUpdateGuards()
                 return selfUpdateOriginals[name](len, ...)
             end
             Remote["guard_" .. name] = guard
-            net.Receivers[name] = guard
+            net.Receivers[key] = guard
         end
     end
 end
