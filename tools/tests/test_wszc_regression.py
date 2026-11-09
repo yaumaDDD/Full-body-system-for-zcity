@@ -414,10 +414,11 @@ check('S50 clean-reference pixel tracing + measured legacy fallback are present'
       and 'SEEDS = {' in fit_s
       and 'include_head=False' in fit_s
       and 'DOLL_RGB = (0, 0, 0)' in generator_s)
-check('S56 neck is a real client/server limb with tooltip and first-life sync',
+check('S56 neck is a real client/server limb without hover card, with first-life sync',
       'local function EnsureNeckLimb(limbs)' in layout_s
-      and 'function WSZC.UnitmenuTooltipLines(id, state)' in layout_s
-      and 'hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip"' in layout_s
+      and 'function WSZC.UnitmenuTooltipLines(id, state)' not in layout_s
+      and 'hook.Remove("PostDrawHUD", "WSZC_UnitmenuLimbTooltip")' in layout_s
+      and 'hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip"' not in layout_s
       and 'function WSZC.EnsureNeckState(ply)' in organism_s
       and 'hook.Add("PlayerSpawn", "WSZC_NeckFirstLifeSync"' in organism_s
       and 'neck      = { dmg = "spine3"' in organism_s
@@ -427,7 +428,7 @@ check('S56 neck is a real client/server limb with tooltip and first-life sync',
 check('S56b pelvis is a real 17th client/server limb with bone-routed wounds',
       'local function EnsurePelvisLimb(limbs)' in layout_s
       and 'local function EnsurePelvisClientState()' in layout_s
-      and 'pelvis = "Pelvis"' in layout_s
+      and 'pelvis.id = "pelvis"' in layout_s
       and 'function WSZC.EnsurePelvisState(ply)' in organism_s
       and 'const.ParentLimb.pelvis = "abdomen"' in organism_s
       and 'const.NonDismemberableCoreLimbs.pelvis = true' in organism_s
@@ -913,7 +914,8 @@ def validate_zips():
     assert 'function WSZC.WoundViewEmptyClick' in shipped_layout
     assert 'local function EnsureNeckLimb' in shipped_layout
     assert 'local function EnsurePelvisLimb' in shipped_layout
-    assert 'function WSZC.UnitmenuTooltipLines' in shipped_layout
+    assert 'function WSZC.UnitmenuTooltipLines' not in shipped_layout
+    assert 'hook.Remove("PostDrawHUD", "WSZC_UnitmenuLimbTooltip")' in shipped_layout
     assert 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/neck_fill.png' in compat
     assert 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/pelvis_fill.png' in compat
     assert 'wszc/unitmenu/limbs/neck_edge.png' in mirror
@@ -1060,6 +1062,7 @@ WoundSystemDislocationMinigame, WoundSystemShrapnelMinigame = { active = false }
 WSZC = { WSZCMinigameActive = function() return false end }
 ''')
     lua.execute((CLIENT / 'wszc_unitmenu_geometry.lua').read_text(encoding='utf-8'))
+    lua.execute('hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip", function() error("old card was not removed") end)')
     lua.execute(layout_s)
     lua.execute(minigames_s)
     visual_fn_start = shared_s.index('function WSZC.DislocationVisualAligned')
@@ -1707,7 +1710,7 @@ end)()
 end)()
 ''')
 
-    rt('R39 Neck hitbox and PostDrawHUD tooltip match the screenshot text', '''
+    rt('R39 neck hitbox remains selectable and old hover card is removed', '''
 (function()
     local neck
     for _, limb in ipairs(_WSZCTestLimbs) do if limb.id == "neck" then neck = limb end end
@@ -1716,24 +1719,13 @@ end)()
     mouseX = ScrW() / 2 + neck.ox * dollScale
     mouseY = ScrH() / 2 + 20 * scale + neck.oy * dollScale
     local hit = WSZC.UnitmenuHover(mouseX, mouseY)
-    local title, skin, muscle = WSZC.UnitmenuTooltipLines("neck", { skin = 100, muscle = 100 })
-    WoundSystemHealthHUDOpen = true
-    textCalls = {}
-    hook._t["PostDrawHUD"]["WSZC_UnitmenuLimbTooltip"]()
-    WoundSystemHealthHUDOpen = false
-    local drawn = { title = false, skin = false, muscle = false }
-    for _, call in ipairs(textCalls) do
-        if call.t == "Neck" then drawn.title = true end
-        if call.t == "Skin: 100%" then drawn.skin = true end
-        if call.t == "Muscle: 100%" then drawn.muscle = true end
-    end
-    return hit and hit.id == "neck" and title == "Neck"
-       and skin == "Skin: 100%" and muscle == "Muscle: 100%"
-       and drawn.title and drawn.skin and drawn.muscle
+    return hit and hit.id == "neck"
+        and (not hook._t.PostDrawHUD or not hook._t.PostDrawHUD.WSZC_UnitmenuLimbTooltip)
+        and WSZC.UnitmenuTooltipLines == nil
 end)()
 ''')
 
-    rt('R41 Pelvis has its own hitbox, tooltip and native action state', '''
+    rt('R41 pelvis retains its hitbox and native state without a hover card', '''
 (function()
     local pelvis
     for _, limb in ipairs(_WSZCTestLimbs) do if limb.id == "pelvis" then pelvis = limb end end
@@ -1742,21 +1734,9 @@ end)()
     mouseX = ScrW() / 2 + pelvis.ox * dollScale
     mouseY = ScrH() / 2 + 20 * scale + pelvis.oy * dollScale
     local hit = WSZC.UnitmenuHover(mouseX, mouseY)
-    local title, skin, muscle = WSZC.UnitmenuTooltipLines("pelvis", { skin = 100, muscle = 100 })
-    WoundSystemHealthHUDOpen = true
-    textCalls = {}
-    hook._t["PostDrawHUD"]["WSZC_UnitmenuLimbTooltip"]()
-    WoundSystemHealthHUDOpen = false
-    local drawn = { title = false, skin = false, muscle = false }
-    for _, call in ipairs(textCalls) do
-        if call.t == "Pelvis" then drawn.title = true end
-        if call.t == "Skin: 100%" then drawn.skin = true end
-        if call.t == "Muscle: 100%" then drawn.muscle = true end
-    end
     local state = WoundSystemClientState.PlayerLimbs.pelvis
-    return hit and hit.id == "pelvis" and hit.state == state and title == "Pelvis"
-       and skin == "Skin: 100%" and muscle == "Muscle: 100%"
-       and drawn.title and drawn.skin and drawn.muscle
+    return hit and hit.id == "pelvis" and hit.state == state
+        and (not hook._t.PostDrawHUD or not hook._t.PostDrawHUD.WSZC_UnitmenuLimbTooltip)
 end)()
 ''')
 

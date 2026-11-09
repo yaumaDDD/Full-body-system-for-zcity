@@ -11,6 +11,9 @@
 
 if not CLIENT then return end
 
+-- Remove the old limb health hover card, including after a Lua hot reload.
+hook.Remove("PostDrawHUD", "WSZC_UnitmenuLimbTooltip")
+
 WSZC = WSZC or {}
 if WSZC._ClientLayoutLoaded then return end
 WSZC._ClientLayoutLoaded = true
@@ -1743,20 +1746,6 @@ function WSZC.RestoreUnitmenuDoll()
     return true
 end
 
----------------------------------------------------------------------------
--- Source-screenshot limb tooltip (the stock C:U doll has no such hover card).
----------------------------------------------------------------------------
-local UNITMENU_LIMB_NAMES = {
-    head = "Head", neck = "Neck", thorax = "Thorax", abdomen = "Abdomen",
-    pelvis = "Pelvis",
-    arm_R = "Right upper arm", arm_L = "Left upper arm",
-    forearm_R = "Right forearm", forearm_L = "Left forearm",
-    hand_R = "Right hand", hand_L = "Left hand",
-    thigh_R = "Right thigh", thigh_L = "Left thigh",
-    crus_R = "Right shin", crus_L = "Left shin",
-    foot_R = "Right foot", foot_L = "Left foot",
-}
-
 UnitmenuUIScale = function()
     local value = 1
     local cv = GetConVar and GetConVar("woundsys_ui_scale") or nil
@@ -1767,8 +1756,7 @@ UnitmenuUIScale = function()
 end
 
 --- Reproduce C:U's own rectangle hit test, including its order (a later limb
---- wins an overlap) and pain shake.  The tooltip therefore names the SAME part
---- that a click/action point selects, rather than maintaining a second layout.
+--- wins an overlap) and pain shake, matching the part selected by C:U.
 function WSZC.UnitmenuHover(mx, my)
     if type(mx) ~= "number" or type(my) ~= "number" then return nil end
     local limbs = FindCULimbs()
@@ -1805,55 +1793,6 @@ function WSZC.UnitmenuHover(mx, my)
     end
     return hovered
 end
-
-function WSZC.UnitmenuTooltipLines(id, state)
-    local title = UNITMENU_LIMB_NAMES[id] or tostring(id or "Limb")
-    local skin = math.Clamp(math.Round(tonumber(state and state.skin) or 0), 0, 100)
-    local muscle = math.Clamp(math.Round(tonumber(state and state.muscle) or 0), 0, 100)
-    return title, string.format("Skin: %d%%", skin), string.format("Muscle: %d%%", muscle)
-end
-
-hook.Add("PostDrawHUD", "WSZC_UnitmenuLimbTooltip", function()
-    if WoundSystemHealthHUDOpen ~= true or not cvUnitmenuDoll:GetBool() then return end
-    if WSZC.WSZCMinigameActive() or WSZC.NativeMinigameActive() then return end
-    local ply = LocalPlayer()
-    if IsValid(ply) and ply.Alive and not ply:Alive() then return end
-
-    local mx, my = gui.MousePos()
-    local hovered = WSZC.UnitmenuHover(mx, my)
-    if not hovered then return end
-    local title, skinLine, muscleLine = WSZC.UnitmenuTooltipLines(hovered.id, hovered.state)
-
-    local scale = ScrH() / 1080
-    local font = "ZB_ProotOSMedium"
-    surface.SetFont(font)
-    local titleW = surface.GetTextSize(title)
-    local skinW = surface.GetTextSize(skinLine)
-    local muscleW = surface.GetTextSize(muscleLine)
-    local padX, padTop = 18 * scale, 18 * scale
-    local lineStep = 34 * scale
-    local w = math.max(160 * scale, math.max(titleW, skinW, muscleW) + 2 * padX)
-    local h = 126 * scale
-    local x, y = mx + 28 * scale, my + 20 * scale
-    if x + w > ScrW() - 8 * scale then x = mx - w - 28 * scale end
-    if y + h > ScrH() - 8 * scale then y = ScrH() - h - 8 * scale end
-    x, y = math.max(8 * scale, x), math.max(8 * scale, y)
-
-    -- PostDrawHUD is outside WoundView.  Do not let its hidden-scanner filter
-    -- eat a perfectly valid tooltip when hovering the left arm/hand.
-    local filtered = WSZC.CUHudFiltered
-    WSZC.CUHudFiltered = false
-    surface.SetDrawColor(0, 0, 0, 200 * (hovered.alpha or 1))
-    surface.DrawRect(x, y, w, h)
-    local textColor = Color(255, 255, 255, 255 * (hovered.alpha or 1))
-    draw.SimpleText(title, font, x + padX, y + padTop, textColor,
-        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-    draw.SimpleText(skinLine, font, x + padX, y + padTop + lineStep, textColor,
-        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-    draw.SimpleText(muscleLine, font, x + padX, y + padTop + lineStep * 2, textColor,
-        TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-    WSZC.CUHudFiltered = filtered
-end)
 
 local function ApplyUnitmenuIcons()
     local icons = _G.Icons
