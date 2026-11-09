@@ -826,36 +826,51 @@ local HIDDEN_NATIVE_STATUS_KEYS = {
     extremebleed = true, extremebleed_bandaged = true,
 }
 
-local HIDDEN_NATIVE_STATUS_PATHS = {
-    ["casunknown-images/icons/disinfected.png"] = true,
-    ["casunknown-images/icons/injectionwound.png"] = true,
-    ["casunknown-images/icons/injectionwound_red.png"] = true,
-    ["casunknown-images/icons/smallbleeding.png"] = true,
-    ["casunknown-images/icons/smallbleedingbandaged.png"] = true,
-    ["casunknown-images/icons/midbleeding.png"] = true,
-    ["casunknown-images/icons/midbleedingbandaged.png"] = true,
-    ["casunknown-images/icons/bleeding.png"] = true,
-    ["casunknown-images/icons/bleedingbandaged.png"] = true,
-    ["casunknown-images/icons/strongbleed.png"] = true,
-    ["casunknown-images/icons/strongbleedbandaged.png"] = true,
-    ["wszc/unitmenu/status/bleeding.png"] = true,
-    ["zcity_delta/unitmenu/status/bleeding.png"] = true,
+local HIDDEN_NATIVE_STATUS_STEMS = {
+    ["casunknown-images/icons/disinfected"] = true,
+    ["casunknown-images/icons/injectionwound"] = true,
+    ["casunknown-images/icons/injectionwound_red"] = true,
+    ["casunknown-images/icons/smallbleeding"] = true,
+    ["casunknown-images/icons/smallbleedingbandaged"] = true,
+    ["casunknown-images/icons/midbleeding"] = true,
+    ["casunknown-images/icons/midbleedingbandaged"] = true,
+    ["casunknown-images/icons/bleeding"] = true,
+    ["casunknown-images/icons/bleedingbandaged"] = true,
+    ["casunknown-images/icons/strongbleed"] = true,
+    ["casunknown-images/icons/strongbleedbandaged"] = true,
+    ["wszc/unitmenu/status/bleeding"] = true,
+    ["zcity_delta/unitmenu/status/bleeding"] = true,
 }
+
+local function NormalizeStatusMaterialName(raw)
+    if type(raw) ~= "string" or raw == "" then return nil end
+    local name = raw:lower():gsub("\\", "/")
+    name = name:gsub("^materials/", "")
+    name = name:gsub("%.%w+$", "")
+    name = name:gsub("_padded_red$", "_red"):gsub("_padded$", "")
+    return name
+end
 
 function WSZC.IsHiddenNativeStatusIcon(mat, icons)
     -- Icons is LOCAL in cl_health_gui.lua.  Identity covers recreated/padded
-    -- materials and mock/native paths; the exact path is the fallback when a
-    -- C:U revision does not expose that table to the recursive upvalue walk.
+    -- materials and mock/native paths; normalized stem matching covers real
+    -- Garry's Mod IMaterial:GetName() strings (which omit .png and may carry
+    -- _padded or !png_ runtime prefixes).
     icons = icons or _G.Icons
     if type(icons) == "table" then
         for key in pairs(HIDDEN_NATIVE_STATUS_KEYS) do
             if mat == icons[key] then return true end
         end
     end
-    local name = type(mat) == "string" and mat or MaterialName(mat)
-    if type(name) ~= "string" then return false end
-    name = name:lower():gsub("\\", "/"):gsub("_padded%.png$", ".png")
-    return HIDDEN_NATIVE_STATUS_PATHS[name] == true
+    local raw = type(mat) == "string" and mat or MaterialName(mat)
+    local name = NormalizeStatusMaterialName(raw)
+    if not name then return false end
+    if HIDDEN_NATIVE_STATUS_STEMS[name] then return true end
+    if name:find("casunknown-images/icons/disinfected", 1, true)
+        or name:find("casunknown-images/icons/injectionwound", 1, true) then
+        return true
+    end
+    return false
 end
 
 -- Second line of defence for injection sprites drawn OUTSIDE AddHudIcon and
@@ -2224,6 +2239,7 @@ hook.Add("Think", "WSZC_UnitmenuVisuals", function()
     WSZC.InstallMaterialTracker()
     if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
     if WSZC.InstallArterialBleedingStatus then WSZC.InstallArterialBleedingStatus() end
+    WSZC.InstallCUHudFilter()
     WSZC.InstallDisinfectedIconFilter()
     PatchActionButtonOffset()
     WSZC.InstallNeckMoodle()

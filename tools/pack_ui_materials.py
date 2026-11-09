@@ -203,6 +203,31 @@ def main():
             padded = base.replace('.png', '_padded.png')
             assert base in entries and padded in entries, base
 
+    # Antiseptic spray and syringe-puncture icons are removed by owner request.
+    # Keep valid 4x4 fully transparent PNGs at those exact paths so VFS overrides
+    # external Workshop C:U assets without triggering Source missing-texture errors.
+    removed_status_icons = (
+        'casunknown-images/icons/disinfected.png',
+        'casunknown-images/icons/disinfected_padded.png',
+        'casunknown-images/icons/injectionwound.png',
+        'casunknown-images/icons/injectionwound_padded.png',
+        'casunknown-images/icons/injectionwound_red.png',
+        'casunknown-images/icons/injectionwound_padded_red.png',
+    )
+    import struct, zlib
+    def _png_chunk(tag, payload):
+        return (struct.pack('>I', len(payload)) + tag + payload
+                + struct.pack('>I', zlib.crc32(tag + payload) & 0xffffffff))
+    raw_rows = b''.join(b'\x00' + (b'\x00\x00\x00\x00' * 4) for _ in range(4))
+    transparent_png = (
+        b'\x89PNG\r\n\x1a\n'
+        + _png_chunk(b'IHDR', struct.pack('>IIBBBBB', 4, 4, 8, 6, 0, 0, 0))
+        + _png_chunk(b'IDAT', zlib.compress(raw_rows, 9))
+        + _png_chunk(b'IEND', b'')
+    )
+    for rel in removed_status_icons:
+        entries[rel] = transparent_png
+
     for rel, data in entries.items():
         assert data, rel
         if rel.endswith('.png'):

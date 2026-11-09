@@ -111,6 +111,10 @@ local BleedIcons = {
     extremeBandaged = Material(iconPath .. "bleedingbandaged.png")
 }
 local matInfection = Material(iconPath .. "infection.png")
+local matFracture = Material("wszc/unitmenu/status/fracture.png")
+if matFracture and matFracture.IsError and matFracture:IsError() then
+    matFracture = Material(iconPath .. "fracturedbone.png")
+end
 
 WSZCBandageMinigame = WSZCBandageMinigame or {}
 local MG = WSZCBandageMinigame
@@ -368,6 +372,9 @@ local function GetBleedIcon(state)
     if MG.mode == "unwrap" then
         return matInfection, Color(205, 55, 55, 255)
     end
+    if MG.mode == "fracture" then
+        return matFracture, Color(235, 75, 75, 255)
+    end
     if not state then return nil end
 
     local rate = (tonumber(state.bleed) or 0) * 0.075
@@ -470,9 +477,10 @@ local function DrawBleedProgress(cx, cy, innerSize)
     local normalStopped = (tonumber(MG.bleedInitial) or 0) <= 0.0001
         or (tonumber(MG.bleedCurrent) or 0) <= 0.0001
     local text = MG.mode == "unwrap" and ("UNWRAP " .. tostring(percent) .. "%")
-        or ("STOP " .. tostring(percent) .. "%")
+        or (MG.mode == "fracture" and ("WRAP " .. tostring(percent) .. "%")
+        or ("STOP " .. tostring(percent) .. "%"))
     local textColor = progress >= 0.999 and Color(12, 80, 34, 255) or Color(24, 24, 24, 255)
-    if MG.mode ~= "unwrap" and arterial > 0.0001 and normalStopped then
+    if MG.mode ~= "unwrap" and MG.mode ~= "fracture" and arterial > 0.0001 and normalStopped then
         text = "TOURNIQUET"
         textColor = Color(155, 22, 22, 255)
     end

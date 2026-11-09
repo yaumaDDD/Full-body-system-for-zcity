@@ -2681,19 +2681,125 @@ local function DislocationStartTimer()
 end
 WSZC.DislocationStartTimer = DislocationStartTimer
 
--- ZCity writes a full break as org[key] = 1.  Regeneration (sv_pain.lua) and
--- ZCity medical SWEPs then bring it back down; 0.85 keeps the fracture icon
--- visible while the bone is still essentially broken.
-local FRACTURE_DAMAGE = 0.85
+-- ZCity writes a full break as org[key] = 1 (or org.skull >= 0.6).  Until
+-- stabilized by ZCity's 25-unit bandage immobilization (1.0 -> 0.95, skull ->
+-- 0.59 + bandagedskull) or a splint, regeneration is gated off.  Keep the
+-- fracture icon active across the severe half of ZCity's 4-minute recovery
+-- (>= 0.5, matching ZCity sh_inertia/sv_lungs thresholds).
+local FRACTURE_DAMAGE = 0.5
 
 local function Fractured(org, limbId, map)
     -- Only the middle limb of an arm/leg owns the fracture icon.  Otherwise
-    -- one org.larm >= 0.85 would mark arm, forearm AND hand at once.
+    -- one org.larm >= 0.5 would mark arm, forearm AND hand at once.
     if not BoneAnchor(limbId, "fracture") then return false end
     if limbId == "thorax" and (tonumber(org.brokenribs) or 0) > 0 then return true end
     return (tonumber(org[map and map.dmg]) or 0) >= FRACTURE_DAMAGE
 end
 WSZC.Fractured = Fractured -- exported for headless tests
+
+local FRACTURE_ANCHOR_ORDER = {
+    "neck", "thorax", "crus_L", "crus_R", "forearm_R", "forearm_L",
+}
+local LIMB_TO_FRACTURE_ANCHOR = {
+    head = "neck", neck = "neck",
+    thorax = "thorax",
+    arm_L = "forearm_L", forearm_L = "forearm_L", hand_L = "forearm_L",
+    arm_R = "forearm_R", forearm_R = "forearm_R", hand_R = "forearm_R",
+    thigh_L = "crus_L", crus_L = "crus_L", foot_L = "crus_L",
+    thigh_R = "crus_R", crus_R = "crus_R", foot_R = "crus_R",
+}
+
+function WSZC.ZCityFractureBandageCost(medic)
+    local doctor = IsValid(medic) and medic.Profession == "doctor"
+    return 25 * (doctor and 0.2 or 1)
+end
+
+function WSZC.CanBandageZCityFracture(ply, limbId)
+    limbId = NormalizeLimb(limbId)
+    if not (IsValid(ply) and limbId and BoneAnchor(limbId, "fracture")) then return false end
+    local org = ply.organism
+    if type(org) ~= "table" then return false end
+    if limbId == "neck" then
+        return (tonumber(org.skull) or 0) >= 0.6 and org.bandagedskull ~= true
+    end
+    local map = LIMB_ORG[limbId]
+    if not (map and map.dmg) then return false end
+    if map.amp and org[map.amp] == true then return false end
+    return (tonumber(org[map.dmg]) or 0) >= 0.999
+end
+
+function WSZC.BestZCityFractureLimb(ply, preferred)
+    if not IsValid(ply) or type(ply.organism) ~= "table" then return nil end
+    local prefAnchor = preferred and LIMB_TO_FRACTURE_ANCHOR[NormalizeLimb(preferred) or ""] or nil
+    if prefAnchor and WSZC.CanBandageZCityFracture(ply, prefAnchor) then
+        return prefAnchor
+    end
+    for _, limbId in ipairs(FRACTURE_ANCHOR_ORDER) do
+        if WSZC.CanBandageZCityFracture(ply, limbId) then
+            return limbId
+        end
+    end
+    return nil
+end
+
+function WSZC.StabilizeZCityFracture(ply, limbId, medic, swep)
+    limbId = NormalizeLimb(limbId)
+    if not WSZC.CanBandageZCityFracture(ply, limbId) then return false end
+    local org = ply.organism
+    if limbId == "neck" then
+        org.skull = 0.59
+        org.bandagedskull = true
+        org.pain = math.max((tonumber(org.pain) or 0) - 7, 0)
+    else
+        local map = LIMB_ORG[limbId]
+        if not (map and map.dmg) then return false end
+        org[map.dmg] = math.max((tonumber(org[map.dmg]) or 1) - 0.05, 0)
+        org.avgpain = math.max((tonumber(org.avgpain) or 0) - 7, 0)
+        if limbId == "thorax" then
+            org.brokenribs = math.floor(math.Clamp((tonumber(org.chest) or 0) * 3, 0, 3) + 0.5)
+        end
+    end
+    if IsValid(swep) and swep.poisoned2 then
+        org.poison4 = CurTime and CurTime() or 0
+        swep.poisoned2 = nil
+    end
+    local bone = COMPLICATION_BONES[limbId]
+    if bone then SyncBandagedWounds(ply, org, { [bone] = true }) end
+    ply.fullsend = true
+    return true
+end
+
+-- Vanilla sv_pain.lua knits lleg/rleg/larm/rarm (< 1) at dt/240 and sv_lungs.lua
+-- knits bandaged skull in [0.5, 1) at dt/600, but chest (< 1 after ZCity's 0.95
+-- bandage immobilization) and the lower half of bandaged skull (< 0.5) had no
+-- continuation tick.  Complete both at ZCity's exact bone rates.
+function WSZC.TickZCityBones(ply, org, dt)
+    if not (Authority() and IsValid(ply) and type(org) == "table") then return false end
+    dt = math.max(tonumber(dt) or 0, 0)
+    if dt <= 0 then return false end
+    local changed = false
+
+    local chest = tonumber(org.chest) or 0
+    if chest > 0 and chest < 1 then
+        org.chest = math.max(chest - dt / 240, 0)
+        org.brokenribs = math.floor(math.Clamp(org.chest * 3, 0, 3) + 0.5)
+        ply.fullsend = true
+        changed = true
+    end
+
+    local skull = tonumber(org.skull) or 0
+    if org.bandagedskull == true then
+        if skull > 0 and skull < 0.5 then
+            org.skull = math.max(skull - dt / 600, 0)
+            if org.skull <= 0 then org.bandagedskull = nil end
+            ply.fullsend = true
+            changed = true
+        elseif skull <= 0 then
+            org.bandagedskull = nil
+        end
+    end
+    return changed
+end
 
 --- True when the organism has at least one joint out of its socket.
 function WSZC.AnyDislocation(org)
@@ -3503,11 +3609,18 @@ local function PushShadow(ply, org)
             math.max(tonumber(org.stamina.max) or 180, 1) * 100, 0, 100))
     end
 
-    -- C:U body.adrenaline / painkiller are 0..100; ZCity organism uses 0..2
-    -- and 0..1.  Keeping them in sync stops ApplyMedicalDelta() from applying
-    -- a bogus delta, and keeps the C:U status HUD truthful.
-    bodySet("adrenaline", math.Clamp((tonumber(org.adrenaline) or 0) * 20, 0, 100))
+    -- C:U body.adrenaline / painkiller / opiateAmount / antagonistAmount mirror
+    -- ZCity's authoritative organism state for UI/cardio presentation.
+    local adrenEffective = math.max(
+        tonumber(org.adrenaline) or 0,
+        math.max(tonumber(org.adrenalineAdd) or 0, 0) * 0.5
+    )
+    bodySet("adrenaline", math.Clamp(adrenEffective * 25, 0, 100))
     bodySet("painkiller", math.Clamp((tonumber(org.painkiller) or 0) * 100, 0, 100))
+    bodySet("opiateAmount", math.Clamp(
+        ((tonumber(org.analgesia) or 0) + (tonumber(org.analgesiaAdd) or 0)) * 100, 0, 400))
+    bodySet("antagonistAmount", math.Clamp(
+        ((tonumber(org.naloxone) or 0) * 0.25 + (tonumber(org.naloxoneadd) or 0)) * 50, 0, 100))
 
     -- Values WE last wrote into C:U.  Anything above them was added by a C:U
     -- minigame (BreakShrapnelGrasp) and must be mirrored into the organism.
@@ -3714,20 +3827,11 @@ function WSZC.ApplyMedicalDelta(ply, limbId, before)
     local map = LIMB_ORG[limbId]
     if map and map.dmg then
         add(map.dmg, -(after.limbMuscle - before.limbMuscle) / 100, 0, 1)
-        if BoneAnchor(limbId, "fracture") and before.limbBroken then
-            local boneDelta = (after.limbBoneHealTimer - before.limbBoneHealTimer) / 100
-            if boneDelta < 0 then
-                add(map.dmg, boneDelta, 0, 1)
-                if limbId == "thorax" then
-                    -- Native sv_bone derives this display/count field from the
-                    -- same chest scalar; keep the two authoritative values in
-                    -- lockstep instead of clearing only the C:U icon.
-                    org.brokenribs = math.floor(math.Clamp((tonumber(org.chest) or 0) * 3, 0, 3) + 0.5)
-                end
-                ply.fullsend = true
-            end
-        end
-        -- A limb that healed past its shrapnel floor releases the block.
+        -- Do NOT mirror C:U limbBoneHealTimer deltas onto org.<limb>: C:U
+        -- bandages carry boneHealTimer = -20 per wrap, which erased ZCity
+        -- fractures in ~2 seconds just from bandaging a wound.  Fractures in
+        -- organism authority heal only via ZCity's 25-unit immobilization +
+        -- 240s natural knitting or WSZC.TickSplints.
         if org.wszc_shrapnel_floor and org.wszc_shrapnel_floor[limbId] then
             org.wszc_shrapnel_floor[limbId] = math.min(
                 org.wszc_shrapnel_floor[limbId], tonumber(org[map.dmg]) or 0)
@@ -4218,24 +4322,693 @@ local function PatchBodyDrugSpecs(wb)
 end
 WSZC.PatchBodyDrugSpecs = PatchBodyDrugSpecs
 
--- BloodBagGive already goes through H.ApplyItemToBody.  BloodBagTake is the
--- opposite native path and writes body.bloodVolume directly, so without this
--- wrapper the next organism shadow simply restored the supposedly drawn blood.
+---------------------------------------------------------------------------
+-- Authoritative ZCity SWEP & BloodBag Medicine (with WSZC minigames)
+---------------------------------------------------------------------------
+-- Upstream WB.SwepHeal translated ZCity SWEPs into C:U items/body functions
+-- (GAUZE, STERILIZEDBANDAGE, MORPHINE, FENTANYL, BLOODCOAGULANT, AdrenalineFn,
+-- MannitolFn, ThiamineFn, ...).  In Organism Authority mode, apply ZCity's
+-- canonical hg.organism formulas directly while preserving WSZC's bandage/
+-- syringe minigames, 180s reusable tourniquets, shrapnel/infection lifecycle
+-- and remote player treatment.
+
+local ZCITY_MEDICAL_SPECS = {
+    weapon_bandage_sh    = { kind = "bandage", item = "GAUZE", def = 40, hold = 10, delete = true },
+    weapon_bigbandage_sh = { kind = "bandage", item = "STERILIZEDBANDAGE", def = 150, hold = 10, delete = true },
+    weapon_tourniquet    = { kind = "tourniquet", item = "TOURNIQUET", def = 1, hold = 10, delete = true },
+    weapon_morphine      = { kind = "opioid", item = "MORPHINE", def = 1, rate = 0.5, holdSet = 50, fentanyl = false },
+    weapon_fentanyl      = { kind = "opioid", item = "FENTANYL", def = 1, rate = 1.0, holdSet = 50, fentanyl = true },
+    weapon_painkillers   = { kind = "instant", action = "painkillers", def = 1, hold = 4, delete = true,
+        sound = "snd_jack_hmcd_pillsuse.wav", garbageArgs = { nil, nil, "snd_jack_hmcd_foodbounce.wav", n = 3 } },
+    weapon_naloxone      = { kind = "instant", action = "naloxone", def = 1, hold = 4, delete = true,
+        sound = "snd_jack_hmcd_needleprick.wav",
+        garbageArgs = { "models/bloocobalt/l4d/items/w_eq_adrenaline.mdl", nil, nil, nil, "2211", n = 5 } },
+    weapon_adrenaline    = { kind = "instant", action = "adrenaline", def = 1, hold = 4, delete = true,
+        sound = "snd_jack_hmcd_needleprick.wav",
+        garbageArgs = { "models/bloocobalt/l4d/items/w_eq_adrenaline.mdl", nil, nil, nil, "2211", n = 5 } },
+    weapon_betablock     = { kind = "instant", action = "betablock", def = 1, hold = 4, delete = true,
+        sound = "snd_jack_hmcd_pillsuse.wav", garbageArgs = { nil, nil, "snd_jack_hmcd_foodbounce.wav", n = 3 } },
+    weapon_mannitol      = { kind = "instant", action = "mannitol", def = 1, hold = 4, delete = true,
+        sound = "snd_jack_hmcd_needleprick.wav",
+        garbageArgs = { "models/bloocobalt/l4d/items/w_eq_adrenaline.mdl", nil, nil, nil, "2211", n = 5 } },
+    weapon_thiamine      = { kind = "instant", action = "thiamine", def = 1, hold = 4, delete = true,
+        sound = "snd_jack_hmcd_pillsuse.wav", garbageArgs = { nil, nil, "snd_jack_hmcd_foodbounce.wav", n = 3 } },
+    weapon_needle        = { kind = "instant", action = "needle", def = 1, hold = 4, delete = true,
+        sound = "snd_jack_hmcd_needleprick.wav", garbageArgs = { nil, nil, nil, nil, "2211", n = 5 } },
+}
+
+local ZCITY_MEDKIT_SPECS = {
+    [1] = { kind = "bandage", item = "GAUZE", def = 80 },
+    [2] = { kind = "instant", action = "medkit_painkiller", def = 1, sound = "snds_jack_gmod/ez_medical/15.wav" },
+    [3] = { kind = "instant", action = "tranexamic", def = 10 },
+    [4] = { kind = "tourniquet", item = "TOURNIQUET", def = 1 },
+    [5] = { kind = "instant", action = "needle", def = 1, sound = "snd_jack_hmcd_needleprick.wav" },
+}
+
+local function ZCityRemaining(swep, idx)
+    return math.max(tonumber(swep and swep.modeValues and swep.modeValues[idx]) or 0, 0)
+end
+
+local function ZCityConsume(swep, idx, amount)
+    if not (swep and type(swep.modeValues) == "table") then return 0 end
+    local left = ZCityRemaining(swep, idx) - math.max(tonumber(amount) or 0, 0)
+    swep.modeValues[idx] = left > 0.0005 and left or 0
+    if swep.SetNetVar then pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues) end
+    return swep.modeValues[idx]
+end
+
+local function ZCityDefOf(swep, idx, fallback)
+    local d = swep and swep.modeValuesdef and swep.modeValuesdef[idx]
+    if type(d) == "table" then d = d[1] end
+    return math.max(tonumber(d) or tonumber(fallback) or 1, 0.0001)
+end
+
+local function ZCityTransferPoison(swep, org)
+    if IsValid(swep) and swep.poisoned2 and type(org) == "table" then
+        org.poison4 = CurTime and CurTime() or 0
+        swep.poisoned2 = nil
+    end
+end
+
+local function ZCityEmitSound(ent, soundName, level, pitch)
+    if not (IsValid(ent) and ent.EmitSound and type(soundName) == "string" and soundName ~= "") then return end
+    if level then
+        pcall(ent.EmitSound, ent, soundName, level, pitch or 100)
+    else
+        pcall(ent.EmitSound, ent, soundName)
+    end
+end
+
+local function ZCityAfterUse(swep, spec, class)
+    if not IsValid(swep) then return end
+    if swep.SetNetVar and type(swep.modeValues) == "table" then
+        pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues)
+    end
+    local isMedkit = class == "weapon_medkit_sh"
+    if not (spec.delete or isMedkit) then return end
+    local maxIdx = isMedkit and 5 or 1
+    for i = 1, maxIdx do
+        if ZCityRemaining(swep, i) > 0 then return end
+    end
+    if isMedkit and not swep.ShouldDeleteOnFullUse then return end
+    local owner = swep.GetOwner and swep:GetOwner() or nil
+    if spec.garbageArgs and swep.SpawnGarbage then
+        pcall(swep.SpawnGarbage, swep, unpack(spec.garbageArgs, 1, spec.garbageArgs.n or #spec.garbageArgs))
+    end
+    if IsValid(owner) and owner.SelectWeapon then
+        pcall(owner.SelectWeapon, owner, "weapon_hands_sh")
+    end
+    if swep.Remove then pcall(swep.Remove, swep) end
+end
+
+local function ZCityHoldGate(swep, ent, class, spec)
+    local cv = GetConVar and GetConVar("hg_healanims") or nil
+    if not (cv and cv.GetBool and cv:GetBool()) then return true end
+    local owner = IsValid(swep) and swep.GetOwner and swep:GetOwner() or nil
+    local selfChar = (hg and hg.GetCurrentCharacter and IsValid(owner))
+        and hg.GetCurrentCharacter(owner) or owner
+    if ent ~= selfChar then return true end
+    if not (swep.GetHolding and swep.SetHolding) then return true end
+    if class == "weapon_medkit_sh" then
+        swep:SetHolding(math.min((tonumber(swep:GetHolding()) or 0) + 50, 100))
+        return (tonumber(swep:GetHolding()) or 0) >= 100
+    end
+    if spec.holdSet then
+        swep:SetHolding(math.Clamp((tonumber(swep:GetHolding()) or 0) + 100, 0, spec.holdSet))
+        return true
+    end
+    if spec.hold then
+        swep:SetHolding(math.min((tonumber(swep:GetHolding()) or 0) + spec.hold, 100))
+        return (tonumber(swep:GetHolding()) or 0) >= 100
+    end
+    return true
+end
+
+local function AimedZCityLimb(swep, ent, target, bone)
+    local direct = NormalizeLimb(LimbFromBoneName(BoneNameOf(ent, bone)))
+    if direct then return direct end
+    local owner = IsValid(swep) and swep.GetOwner and swep:GetOwner() or nil
+    if not (IsValid(owner) and hg and hg.eyeTrace) then return nil end
+    local ok, tr = pcall(hg.eyeTrace, owner)
+    if not ok or type(tr) ~= "table" or not IsValid(tr.Entity) then return nil end
+    local wb = WB()
+    local hitOwner = (wb and wb.GetPlayer and wb.GetPlayer(tr.Entity)) or OwnerOf(tr.Entity)
+    if hitOwner ~= target then return nil end
+    local hit = tr.Entity
+    if hit.IsRagdoll and hit:IsRagdoll() and tr.PhysicsBone
+        and hit.TranslatePhysBoneToBone and hit.GetBoneName then
+        local bOk, boneId = pcall(hit.TranslatePhysBoneToBone, hit, tr.PhysicsBone)
+        boneId = tonumber(boneId)
+        if bOk and boneId and boneId >= 0 then
+            local nOk, boneName = pcall(hit.GetBoneName, hit, boneId)
+            if nOk and boneName then
+                local mapped = NormalizeLimb(LimbFromBoneName(boneName))
+                if not mapped then
+                    local h = H()
+                    if h and type(h.RagdollBoneNameToLimb) == "function" then
+                        local mOk, rLimb = pcall(h.RagdollBoneNameToLimb, boneName)
+                        if mOk then mapped = NormalizeLimb(rLimb) end
+                    end
+                end
+                if mapped then return mapped end
+            end
+        end
+    end
+    return NormalizeLimb(LimbFromHitgroup(tr.HitGroup))
+end
+
+local function SyncPatientShadowNow(ply)
+    if not (IsValid(ply) and type(ply.organism) == "table") then return end
+    ply.fullsend = true
+    if hg and hg.send_organism then pcall(hg.send_organism, ply.organism, ply) end
+    if not (cvShadow and not cvShadow:GetBool()) then
+        ply._WSZCShadowNext = 0
+        pcall(PushShadow, ply, ply.organism)
+    end
+end
+
+function WSZC.ApplyZCityOpioidDose(medic, target, swep, injected, isFentanyl)
+    injected = math.max(tonumber(injected) or 0, 0)
+    if injected <= 0 or not (IsValid(target) and type(target.organism) == "table") then return false end
+    local org = target.organism
+    org.analgesiaAdd = math.min((tonumber(org.analgesiaAdd) or 0) + injected, 4)
+
+    if IsValid(medic) then
+        medic.injectedinto = type(medic.injectedinto) == "table" and medic.injectedinto or {}
+        local key = org.owner or target
+        medic.injectedinto[key] = (tonumber(medic.injectedinto[key]) or 0) + injected
+        if medic.injectedinto[key] > 1 and hook and hook.Run and type(DamageInfo) == "function" then
+            pcall(function()
+                local dmgInfo = DamageInfo()
+                if dmgInfo and dmgInfo.SetAttacker then dmgInfo:SetAttacker(medic) end
+                local harm = isFentanyl
+                    and ((zb and tonumber(zb.MaximumHarm)) or 10)
+                    or ((zb and tonumber(zb.MaximumHarm)) or 1)
+                local charEnt = (hg and hg.GetCurrentCharacter and hg.GetCurrentCharacter(target)) or target
+                hook.Run("HomigradDamage", target, dmgInfo, HITGROUP_RIGHTARM or 5, charEnt, injected * harm)
+            end)
+        end
+    end
+
+    ZCityTransferPoison(swep, org)
+    SyncPatientShadowNow(target)
+    return true
+end
+
+local function ZCityMinigamesEnabled(wb)
+    if wb and wb.cvMinigame and wb.cvMinigame.GetBool then
+        local ok, val = pcall(wb.cvMinigame.GetBool, wb.cvMinigame)
+        if ok then return val == true end
+    end
+    local cv = GetConVar and GetConVar("zc_woundsystem_minigames") or nil
+    if cv and cv.GetBool then
+        local ok, val = pcall(cv.GetBool, cv)
+        if ok then return val == true end
+    end
+    return false
+end
+
+local function StartZCityMinigameSession(owner, swep, options)
+    if not (IsValid(owner) and owner:IsPlayer() and owner:Alive()) then return nil end
+    local h = H()
+    local startFn = type(WSZC.StartExternalMinigameImpl) == "function"
+        and WSZC.StartExternalMinigameImpl
+        or (h and type(h.StartExternalMinigame) == "function" and h.StartExternalMinigame or nil)
+    local hasFn = type(WSZC.HasExternalMinigameImpl) == "function"
+        and WSZC.HasExternalMinigameImpl
+        or (h and type(h.HasExternalMinigame) == "function" and h.HasExternalMinigame or nil)
+    if not startFn then return nil end
+    if hasFn and hasFn(owner) then return true end
+    local now = CurTime and CurTime() or 0
+    if IsValid(swep) and (tonumber(swep._wbMgCooldown) or 0) > now then return true end
+
+    local started = startFn(owner, options)
+    if started and WSZC.MinigameSessions and WSZC.MinigameSessions[owner] then
+        WSZC.MinigameSessions[owner].remote = options.target ~= owner
+    end
+    return started == true
+end
+
+local function BestInjectionLimb(target, preferred)
+    local h = H()
+    local limbs = h and h.GetLimbs and h.GetLimbs(target) or nil
+    if type(limbs) ~= "table" then return preferred or "arm_R" end
+    if preferred and type(limbs[preferred]) == "table" and limbs[preferred].dismembered ~= true then
+        return preferred
+    end
+    for _, id in ipairs({ "arm_R", "forearm_R", "arm_L", "forearm_L", "thigh_R", "thigh_L", "thorax" }) do
+        if type(limbs[id]) == "table" and limbs[id].dismembered ~= true then
+            return id
+        end
+    end
+    return "thorax"
+end
+
+function WSZC.ZCitySwepHeal(swep, ent, mode, bone)
+    local wb = WB()
+    if not (wb and wb.IsEnabled and wb.IsEnabled() and IsValid(ent) and IsValid(swep)) then
+        return nil
+    end
+    local target = wb.GetPlayer and wb.GetPlayer(ent) or OwnerOf(ent)
+    if not (IsValid(target) and target:IsPlayer() and target:Alive()) then return nil end
+    local org = target.organism
+    if type(org) ~= "table" then return nil end
+
+    local okClass, rawClass = pcall(swep.GetClass, swep)
+    local class = okClass and tostring(rawClass or "") or ""
+    local spec, idx
+    if class == "weapon_medkit_sh" then
+        idx = tonumber(swep.mode or mode) or 1
+        spec = ZCITY_MEDKIT_SPECS[idx]
+    else
+        idx = 1
+        spec = ZCITY_MEDICAL_SPECS[class]
+    end
+    if not spec then return nil end
+
+    local owner = swep.GetOwner and swep:GetOwner() or nil
+    if not ZCityHoldGate(swep, ent, class, spec) then return false end
+
+    local avail = ZCityRemaining(swep, idx)
+    if avail <= 0 then return false end
+
+    local selfChar = (hg and hg.GetCurrentCharacter and IsValid(owner))
+        and hg.GetCurrentCharacter(owner) or owner
+    local selfUse = (ent == selfChar) or (target == owner)
+    local aimed = (not selfUse) and AimedZCityLimb(swep, ent, target, bone)
+        or NormalizeLimb(LimbFromBoneName(BoneNameOf(ent, bone)))
+
+    if spec.kind == "bandage" then
+        local limbId = WSZC.BestBandageLimb(target, { kind = "bandage" }, aimed)
+        local fractureMode, fractureCost = false, 0
+        if not limbId then
+            fractureCost = WSZC.ZCityFractureBandageCost(owner)
+            if avail >= fractureCost - 0.0001 then
+                limbId = WSZC.BestZCityFractureLimb(target, aimed)
+                if limbId then fractureMode = true end
+            end
+        end
+        if not limbId then return false end
+
+        local def = ZCityDefOf(swep, idx, spec.def)
+        local items = WoundSystem and WoundSystem.Items
+        local maxDur = (items and items.GetMax and items.GetMax(spec.item)) or 100
+
+        if ZCityMinigamesEnabled(wb) then
+            local amount = avail / def * maxDur
+            local appliedLive = 0
+            local mgSpec = { kind = "bandage", item = spec.item, rate = 25, mg = { kind = "bandage" } }
+            local started = StartZCityMinigameSession(owner, swep, {
+                kind = "bandage",
+                itemId = spec.item,
+                limbId = limbId,
+                amount = amount,
+                bandageMode = fractureMode and "fracture" or nil,
+                fractureRequired = fractureMode and 1440 or nil,
+                fractureCost = fractureMode and fractureCost or nil,
+                swep = swep,
+                idx = idx,
+                spec = mgSpec,
+                target = target,
+                maxDur = maxDur,
+                live = true,
+                oneDose = false,
+                _WSZCZCityDirect = true,
+                _WSZCSetAppliedLive = function(value)
+                    appliedLive = math.max(tonumber(value) or 0, 0)
+                end,
+                onFractureComplete = fractureMode and function()
+                    if WSZC.StabilizeZCityFracture(target, limbId, owner, swep) then
+                        appliedLive = math.max(appliedLive, 1)
+                        SyncPatientShadowNow(target)
+                    end
+                end or nil,
+                onProgress = function(_, session, durCost)
+                    if fractureMode or not IsValid(swep) or not IsValid(target) then return end
+                    local start = math.max(tonumber(session and session.startAmount) or amount, 0.0001)
+                    durCost = math.min(tonumber(durCost) or 0, math.max(start - appliedLive, 0))
+                    if durCost <= 0 then return end
+                    local h = H()
+                    local limbState = h and h.GetLimbState and h.GetLimbState(target, limbId) or nil
+                    local beforeSev = WSZC.BandageSeverityOnLimb(target, limbId)
+                    local rem = ZCityRemaining(swep, idx)
+                    if rem <= 0 then return end
+                    local profile = { effects = { bandageSlowAmount = 45 } }
+                    local sevPerFull = WSZC.BandageSeverityPerFullEffect(profile)
+                    local desired = math.min(durCost / maxDur * def, beforeSev, rem)
+                    local frac = (desired > 0 and sevPerFull > 0) and (desired / sevPerFull) or (durCost / maxDur)
+                    WSZC.ApplyBandageToOrganism({ ply = target, limbId = limbId, limb = limbState }, profile, frac)
+                    local afterSev = WSZC.BandageSeverityOnLimb(target, limbId)
+                    local treated = math.Clamp(beforeSev - afterSev, 0, rem)
+                    if treated > 0 then
+                        if tonumber(org.pain) then
+                            org.pain = math.max(tonumber(org.pain) - treated * 0.25, 0)
+                        end
+                        ZCityTransferPoison(swep, org)
+                        ZCityConsume(swep, idx, treated)
+                    end
+                    appliedLive = appliedLive + durCost
+                    SyncPatientShadowNow(target)
+                end,
+                onClose = function(ply, session, reason)
+                    if IsValid(swep) then swep._wbMgCooldown = (CurTime and CurTime() or 0) + 0.6 end
+                    local interrupted = reason == "dead" or reason == "respawn"
+                        or reason == "disabled" or reason == "invalid_limb"
+                        or reason == "replaced" or reason == "target_gone"
+                    if appliedLive <= 0.01 and (tonumber(session and session.deferredUsed) or 0) <= 0.01 then
+                        if not interrupted and IsValid(ply) and ply.PrintMessage then
+                            pcall(ply.PrintMessage, ply, HUD_PRINTCENTER or 2, "Not completed - nothing was applied")
+                        end
+                        return
+                    end
+                    ZCityEmitSound(IsValid(owner) and owner or target, "snd_jack_hmcd_bandage.wav", 60, math.random(95, 105))
+                    SyncPatientShadowNow(target)
+                    ZCityAfterUse(swep, spec, class)
+                end,
+            })
+            if started ~= nil then return false end
+        end
+
+        if fractureMode then
+            if not WSZC.StabilizeZCityFracture(target, limbId, owner, swep) then return false end
+            ZCityConsume(swep, idx, fractureCost)
+            ZCityEmitSound(IsValid(owner) and owner or target, "snd_jack_hmcd_bandage.wav", 60, math.random(95, 105))
+            SyncPatientShadowNow(target)
+            ZCityAfterUse(swep, spec, class)
+            return true
+        end
+
+        local now = CurTime and CurTime() or 0
+        local dt = now - (tonumber(swep._wbLast) or 0)
+        swep._wbLast = now
+        if dt <= 0 or dt > 0.3 then dt = 0.015 end
+
+        local h = H()
+        local limbState = h and h.GetLimbState and h.GetLimbState(target, limbId) or nil
+        local beforeSev = WSZC.BandageSeverityOnLimb(target, limbId)
+        local aftercare = WSZC.ShrapnelAftercarePending(target, limbId)
+        local stepSev = math.min(math.max(dt * 12, 0.25), beforeSev, avail)
+        if stepSev <= 0.0001 and not aftercare then return false end
+        local profile = { effects = { bandageSlowAmount = 45 } }
+        local sevPerFull = WSZC.BandageSeverityPerFullEffect(profile)
+        local frac = (stepSev > 0.0001 and sevPerFull > 0) and (stepSev / sevPerFull) or (1 / 12)
+        WSZC.ApplyBandageToOrganism({ ply = target, limbId = limbId, limb = limbState }, profile, frac)
+        local afterSev = WSZC.BandageSeverityOnLimb(target, limbId)
+        local treated = math.Clamp(beforeSev - afterSev, 0, avail)
+        if treated <= 0.0001 and not aftercare then return false end
+        if treated > 0.0001 then
+            if tonumber(org.pain) then
+                org.pain = math.max(tonumber(org.pain) - treated * 0.25, 0)
+            end
+            ZCityConsume(swep, idx, treated)
+        end
+        ZCityTransferPoison(swep, org)
+        SyncPatientShadowNow(target)
+        ZCityAfterUse(swep, spec, class)
+        return true
+
+    elseif spec.kind == "tourniquet" then
+        local routed
+        local routeOk, resolved = pcall(WSZC.ResolveTourniquetLimb, swep, ent, mode, bone)
+        if routeOk and resolved then
+            routed = WSZC.TourniquetApplicationSite(target, resolved) or resolved
+        end
+        local limbId = routed or WSZC.BestTourniquetLimb(
+            target, { kind = "apply", item = "TOURNIQUET", pick = "extremity" }, aimed)
+        if not limbId then return false end
+
+        local h = H()
+        local limbState = h and h.GetLimbState and h.GetLimbState(target, limbId) or nil
+        local treatOk, treated = pcall(WSZC.ApplyTourniquetToOrganism, {
+            ply = target, limbId = limbId, limb = limbState,
+        })
+        if not treatOk or (tonumber(treated) or 0) <= 0 then return false end
+
+        if type(limbState) == "table" then
+            limbState.tourniqueted = true
+            limbState.blockedBleeding = true
+            limbState.customStatuses = type(limbState.customStatuses) == "table"
+                and limbState.customStatuses or {}
+            limbState.customStatuses.TOURNIQUET = 0.01
+            if h and h.SendLimbUpdate then pcall(h.SendLimbUpdate, target, limbId, true) end
+        end
+
+        ZCityConsume(swep, idx, 1)
+        ZCityEmitSound(IsValid(owner) and owner or target, "snd_jack_hmcd_bandage.wav", 60, math.random(95, 105))
+        SyncPatientShadowNow(target)
+        ZCityAfterUse(swep, spec, class)
+        return true
+
+    elseif spec.kind == "opioid" then
+        local limbId = BestInjectionLimb(target, aimed)
+        local def = ZCityDefOf(swep, idx, spec.def)
+        local items = WoundSystem and WoundSystem.Items
+        local maxDur = (items and items.GetMax and items.GetMax(spec.item)) or 100
+
+        if ZCityMinigamesEnabled(wb) then
+            local amount = avail / def * maxDur
+            local appliedLive = 0
+            local mgSpec = { kind = "syringe", item = spec.item, rate = spec.rate, mg = { kind = "syringe" } }
+            local started = StartZCityMinigameSession(owner, swep, {
+                kind = "syringe",
+                itemId = spec.item,
+                limbId = limbId,
+                amount = amount,
+                swep = swep,
+                idx = idx,
+                spec = mgSpec,
+                target = target,
+                maxDur = maxDur,
+                live = true,
+                oneDose = false,
+                _WSZCZCityDirect = true,
+                onProgress = function(_, session, durCost)
+                    if not IsValid(swep) or not IsValid(target) then return end
+                    local start = math.max(tonumber(session and session.startAmount) or amount, 0.0001)
+                    durCost = math.min(tonumber(durCost) or 0, math.max(start - appliedLive, 0))
+                    if durCost <= 0 then return end
+                    local rem = ZCityRemaining(swep, idx)
+                    local injected = math.min((durCost / math.max(maxDur, 0.0001)) * def, rem)
+                    if injected <= 0 then return end
+                    WSZC.ApplyZCityOpioidDose(owner, target, swep, injected, spec.fentanyl)
+                    ZCityConsume(swep, idx, injected)
+                    appliedLive = appliedLive + durCost
+                end,
+                onClose = function(ply, _, reason)
+                    if IsValid(swep) then swep._wbMgCooldown = (CurTime and CurTime() or 0) + 0.6 end
+                    local interrupted = reason == "dead" or reason == "respawn"
+                        or reason == "disabled" or reason == "needle_break"
+                        or reason == "invalid_limb" or reason == "replaced" or reason == "target_gone"
+                    if appliedLive <= 0.01 then
+                        if not interrupted and IsValid(ply) and ply.PrintMessage then
+                            pcall(ply.PrintMessage, ply, HUD_PRINTCENTER or 2, "Not completed - nothing was applied")
+                        end
+                        return
+                    end
+                    SyncPatientShadowNow(target)
+                    ZCityAfterUse(swep, spec, class)
+                end,
+            })
+            if started ~= nil then return false end
+        end
+
+        local ft = (FrameTime and FrameTime()) or 0.1
+        if ft <= 0 then ft = 0.015 end
+        local injected = math.min(ft * (tonumber(spec.rate) or 0.5), avail)
+        if injected <= 0 then return false end
+        WSZC.ApplyZCityOpioidDose(owner, target, swep, injected, spec.fentanyl)
+        local left = ZCityConsume(swep, idx, injected)
+        if left > 0 then
+            local entOwner = IsValid(owner) and (IsValid(owner.FakeRagdoll) and owner.FakeRagdoll or owner) or target
+            ZCityEmitSound(entOwner, "pshiksnd")
+        end
+        ZCityAfterUse(swep, spec, class)
+        return true
+
+    elseif spec.kind == "instant" then
+        local action = spec.action
+        if action == "adrenaline" then
+            org.adrenalineAdd = math.Approach(tonumber(org.adrenalineAdd) or 0, 4, avail * 4)
+            ZCityConsume(swep, idx, avail)
+        elseif action == "betablock" then
+            org.adrenalineAdd = math.Approach(tonumber(org.adrenalineAdd) or 0, -4, avail * 2)
+            ZCityConsume(swep, idx, avail)
+        elseif action == "mannitol" then
+            org.mannitol = math.Approach(tonumber(org.mannitol) or 0, 4, avail * 2)
+            ZCityConsume(swep, idx, avail)
+        elseif action == "thiamine" then
+            org.thiamine = math.min((tonumber(org.thiamine) or 0) + avail, 1)
+            ZCityConsume(swep, idx, avail)
+        elseif action == "naloxone" then
+            org.naloxoneadd = math.min((tonumber(org.naloxoneadd) or 0) + avail, 1)
+            ZCityConsume(swep, idx, avail)
+        elseif action == "painkillers" then
+            org.analgesiaAdd = math.min((tonumber(org.analgesiaAdd) or 0) + avail * 0.4, 4)
+            ZCityConsume(swep, idx, avail)
+        elseif action == "medkit_painkiller" then
+            org.analgesiaAdd = math.min((tonumber(org.analgesiaAdd) or 0) + avail * 0.3, 4)
+            ZCityConsume(swep, idx, avail)
+        elseif action == "tranexamic" then
+            local internalNeed = math.max(
+                (tonumber(org.internalBleed) or 0) - (tonumber(org.internalBleedHeal) or 0), 0)
+            if internalNeed <= 0 then return false end
+            local mul = (IsValid(owner) and owner.Profession == "doctor") and 0.5 or 1
+            local healed = math.min(internalNeed, avail)
+            if healed <= 0 then return false end
+            org.internalBleedHeal = (tonumber(org.internalBleedHeal) or 0) + healed
+            ZCityConsume(swep, idx, healed * mul)
+        elseif action == "needle" then
+            org.needle = 1
+            if type(org.lungsR) == "table" and type(org.lungsL) == "table"
+                and org.lungsR[2] ~= 1 and org.lungsL[2] ~= 1 then
+                if math.random(2) == 1 then org.lungsR[2] = 1 else org.lungsL[2] = 1 end
+            end
+            ZCityConsume(swep, idx, avail)
+        else
+            return nil
+        end
+
+        ZCityTransferPoison(swep, org)
+        local soundName = spec.sound
+        if not soundName and action == "tranexamic" then
+            soundName = "snds_jack_gmod/ez_medical/" .. math.random(16, 18) .. ".wav"
+        end
+        ZCityEmitSound(IsValid(owner) and owner or target, soundName, 60, math.random(95, 105))
+        SyncPatientShadowNow(target)
+        ZCityAfterUse(swep, spec, class)
+        return true
+    end
+
+    return nil
+end
+
+function WSZC.ZCityBloodBagGive(swep, charEnt)
+    local wb = WB()
+    local ply = (wb and wb.GetPlayer and wb.GetPlayer(charEnt)) or OwnerOf(charEnt)
+    if not (wb and wb.IsBridged and wb.IsBridged(ply)) then return false end
+    if not (IsValid(ply) and type(ply.organism) == "table" and IsValid(swep)) then return false end
+    if IsValid(charEnt) and charEnt.GetVelocity and charEnt:GetVelocity():LengthSqr() >= 1000 then
+        return true
+    end
+    local avail = ZCityRemaining(swep, 1)
+    if avail <= 0 then return true end
+
+    local org = ply.organism
+    local ft = (FrameTime and FrameTime()) or 0.1
+    local pulse = tonumber(org.pulse) or 70
+    local step = math.min(ft * 0.5 * math.max(pulse / 70, 0.3), avail)
+    if step <= 0 then return true end
+
+    local bagType = swep.bloodtype or "o-"
+    local recType = org.bloodtype or "o-"
+    local compatTable = hg and hg.organism and hg.organism.bloodtypes
+    local goodType = (type(compatTable) == "table" and compatTable[bagType])
+        and (compatTable[bagType][recType] == true)
+        or (bagType == "o-" or bagType == recType)
+
+    ZCityTransferPoison(swep, org)
+
+    local oldBlood = tonumber(org.blood) or 5000
+    local mlPerBag = goodType and 500 or 200
+    org.blood = math.min(oldBlood + step * mlPerBag, 5200)
+    if not goodType then
+        org.hemotransfusionshock = (tonumber(org.hemotransfusionshock) or 0)
+            + math.min(ft * 0.5, avail)
+    end
+    local gained = math.max(org.blood - oldBlood, 0)
+    if (bagType == "c-" or swep.furryinfected) and ply.PlayerClassName ~= "furry" and gained > 0 then
+        org.furryinfected = true
+    end
+
+    local used = gained > 0 and (gained / mlPerBag) or 0
+    if used > 0 then
+        ZCityConsume(swep, 1, used)
+        local now = CurTime and CurTime() or 0
+        if (tonumber(swep.sndcd) or 0) < now then
+            local owner = swep.GetOwner and swep:GetOwner() or ply
+            ZCityEmitSound(owner, "zcity/healing/bloodbag_loop_" .. math.random(8) .. ".wav")
+            swep.sndcd = now + 0.7
+        end
+        SyncPatientShadowNow(ply)
+    end
+    return true
+end
+
+function WSZC.ZCityBloodBagTake(swep, charEnt)
+    local wb = WB()
+    local ply = (wb and wb.GetPlayer and wb.GetPlayer(charEnt)) or OwnerOf(charEnt)
+    if not (wb and wb.IsBridged and wb.IsBridged(ply)) then return false end
+    if not (IsValid(ply) and type(ply.organism) == "table" and IsValid(swep)) then return false end
+    local org = ply.organism
+    if IsValid(charEnt) and charEnt.GetVelocity and charEnt:GetVelocity():LengthSqr() >= 25 then
+        return true
+    end
+    local curBlood = tonumber(org.blood) or 5000
+    if curBlood <= 2000 then return true end
+
+    local old = ZCityRemaining(swep, 1)
+    if old >= 1 then return true end
+    local donorType = org.bloodtype or "o-"
+    if old > 0 and swep.bloodtype and swep.bloodtype ~= donorType then
+        return true
+    end
+
+    local ft = (FrameTime and FrameTime()) or 0.1
+    local pulse = tonumber(org.pulse) or 70
+    local maxFromDonor = math.max((curBlood - 2000) / 500, 0)
+    local newVal = math.min(old + math.min(ft * math.max(pulse / 70, 0.3) * 0.5, maxFromDonor), 1)
+    local taken = newVal - old
+    if taken > 0 then
+        swep.modeValues[1] = newVal
+        swep.bloodtype = donorType
+        if org.furryinfected then swep.furryinfected = true end
+        ZCityTransferPoison(swep, org)
+        org.blood = math.max(curBlood - taken * 500, 0)
+        if swep.SetNetVar then pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues) end
+        local now = CurTime and CurTime() or 0
+        if (tonumber(swep.sndcd) or 0) < now then
+            local owner = swep.GetOwner and swep:GetOwner() or ply
+            ZCityEmitSound(owner, "zcity/healing/bloodbag_loop_" .. math.random(8) .. ".wav")
+            swep.sndcd = now + 0.7
+        end
+        SyncPatientShadowNow(ply)
+    end
+    return true
+end
+
+local function PatchBloodBagGive(wb)
+    if type(wb) ~= "table" or type(wb.BloodBagGive) ~= "function" then return false end
+    if wb.BloodBagGive == wb._WSZCBloodBagGiveWrapper then return true end
+    local base = wb.BloodBagGive
+    local wrapped = function(swep, ent)
+        if not Authority() then return base(swep, ent) end
+        local ok, res = pcall(WSZC.ZCityBloodBagGive, swep, ent)
+        if not ok then
+            Warn("WSZC.ZCityBloodBagGive failed: " .. tostring(res))
+            return nil
+        end
+        return res
+    end
+    wb._WSZCOriginalBloodBagGive = base
+    wb._WSZCBloodBagGiveWrapper = wrapped
+    wb.BloodBagGive = wrapped
+    return true
+end
+
+-- BloodBagTake in Organism Authority mode runs canonical ZCity blood drawing
+-- (2000 ml floor, bloodtype lock, 500 ml per bag) and syncs C:U's shadow.
 local function PatchBloodBagTake(wb)
     if type(wb) ~= "table" or type(wb.BloodBagTake) ~= "function" then return false end
     if wb.BloodBagTake == wb._WSZCBloodBagTakeWrapper then return true end
     local base = wb.BloodBagTake
     local wrapped = function(swep, ent)
         if not Authority() then return base(swep, ent) end
-        local ply = OwnerOf(ent)
-        local before = ply and WSZC.SnapshotMedical(ply, "body") or nil
-        local ok, a, b, c = pcall(base, swep, ent)
+        local ok, res = pcall(WSZC.ZCityBloodBagTake, swep, ent)
         if not ok then
-            Warn("WB.BloodBagTake failed: " .. tostring(a))
+            Warn("WSZC.ZCityBloodBagTake failed: " .. tostring(res))
             return nil
         end
-        if before then WSZC.ApplyMedicalDelta(ply, "body", before) end
-        return a, b, c
+        return res
     end
     wb._WSZCOriginalBloodBagTake = base
     wb._WSZCBloodBagTakeWrapper = wrapped
@@ -4350,6 +5123,7 @@ local function InstallMedicalBridge()
     if not (wb and wb.SwepHeal) then return false end
     PatchBridgePlayerResolver(wb)
     PatchBodyDrugSpecs(wb)
+    PatchBloodBagGive(wb)
     PatchBloodBagTake(wb)
     InstallTimedEffectBridge()
     WSZC.InstallDirectSwepHealAdapters()
@@ -4359,6 +5133,18 @@ local function InstallMedicalBridge()
     PatchTourniquetBestLimb(original)
     wb.SwepHeal = function(swep, ent, mode, bone)
         if not Authority() then return original(swep, ent, mode, bone) end
+        -- Canonical ZCity medical SWEPs and medkit modes execute ZCity's own
+        -- organism formulas directly (with WSZC minigames).  Unknown/custom
+        -- entries added to wb.SwepSpecs fall back to the legacy C:U delta path.
+        local zcOk, zcResult = pcall(WSZC.ZCitySwepHeal, swep, ent, mode, bone)
+        if not zcOk then
+            Warn("WSZC.ZCitySwepHeal failed: " .. tostring(zcResult))
+            return nil
+        end
+        if zcResult ~= nil then
+            return zcResult
+        end
+
         local ply = OwnerOf(ent) or (IsValid(ent) and ent:IsPlayer() and ent)
         local before = ply and WSZC.SnapshotMedical(ply, "body") or nil
         local previousRoute = WSZC.TourniquetLimbOverride
@@ -4550,6 +5336,8 @@ function WSZC.ClearAllShrapnel(ply, org)
         -- Fractured() reads that derived field, so leaving it behind brings
         -- the red thorax fracture icon straight back on the next shadow pass.
         org.brokenribs = 0
+        org.bandagedskull = nil
+        org.internalBleedHeal = 0
         org.pain, org.avgpain, org.painadd = 0, 0, 0
         org.shock, org.hurt, org.hurtadd = 0, 0, 0
         org.immobilization, org.disorientation = 0, 0
@@ -4782,6 +5570,8 @@ function WSZC.InstallResetStructureGuard()
             -- transition.  Cover the same native brokenribs omission here;
             -- FakeUp/down transitions deliberately keep the injury instead.
             org.brokenribs = 0
+            org.bandagedskull = nil
+            org.internalBleedHeal = 0
             ClearMovementPenalties(org)
             return a, b, c
         end
@@ -5213,6 +6003,7 @@ function WSZC.InstallOrganismMode()
         if type(org) ~= "table" then return end
 
         WSZC.TickTourniquets(owner, org, dt)
+        WSZC.TickZCityBones(owner, org, dt)
         WSZC.TickSplints(owner, org, dt)
         WSZC.TickTimedBodyEffects(owner, dt)
         if cvShadow and cvShadow:GetBool() then

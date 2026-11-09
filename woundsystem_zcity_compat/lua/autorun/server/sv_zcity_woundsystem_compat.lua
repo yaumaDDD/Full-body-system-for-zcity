@@ -703,6 +703,8 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
     local bandageEffectFraction = 0
     local directTourniquetTreated, directTourniquetAfter = 0, nil
 
+    local authorityMode = WSZC.OrganismAuthority and WSZC.OrganismAuthority() or false
+
     if minigame == "bandage" then
         local profile = BandageProfile(itemId, item)
         local perWrap = math.max(tonumber(profile.durabilityPerWrap) or (maxDurability / 12), 0.0001)
@@ -712,11 +714,26 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         ctx.wrapFraction = wrapFraction
         ctx.degreesMoved = wrapFraction * 360
         ctx.profile = profile
+        local limb = type(ctx.limb) == "table" and ctx.limb or nil
+        local savedBroken = limb and limb.broken
+        local savedBoneTimer = limb and limb.boneHealTimer
+        local savedDislocated = limb and limb.dislocated
+        local savedDislocTimer = limb and limb.dislocationTimer
+        local savedDisinfect = limb and limb.disinfectTime
         if WSZC.ApplyBandageProfile then
             local callOk, result = pcall(WSZC.ApplyBandageProfile, ctx, profile)
             ok = callOk and result ~= false
         else
             ok = ApplyBandageProfile(ctx, profile, effectFraction)
+        end
+        if authorityMode and limb then
+            -- Bandaging bleeding wounds must never apply C:U's boneHealTimer /
+            -- dislocationTimer / disinfectTime side-effects in ZCity authority.
+            limb.broken = savedBroken
+            limb.boneHealTimer = savedBoneTimer
+            limb.dislocated = savedDislocated
+            limb.dislocationTimer = savedDislocTimer
+            limb.disinfectTime = savedDisinfect
         end
     elseif minigame == "syringe" then
         local profile = SyringeProfile(itemId, item)
@@ -724,11 +741,21 @@ local function ApplyItemToBodyImpl(ply, itemId, limbId, amount, opts)
         ctx.injectDepth = 1
         ctx.durabilityCost = used
         ctx.profile = profile
+        local limb = type(ctx.limb) == "table" and ctx.limb or nil
+        local savedInjection = limb and limb.hasInjection
+        local savedSyringeWound = limb and type(limb.customStatuses) == "table"
+            and limb.customStatuses.SYRINGE_WOUND or nil
         if WSZC.ApplySyringeProfile then
             local callOk, result = pcall(WSZC.ApplySyringeProfile, ctx, profile)
             ok = callOk and result ~= false
         else
             ok = ApplySyringeProfile(ctx, profile, ctx.syringeFraction)
+        end
+        if authorityMode and limb then
+            limb.hasInjection = savedInjection == true
+            if type(limb.customStatuses) == "table" and savedSyringeWound == nil then
+                limb.customStatuses.SYRINGE_WOUND = nil
+            end
         end
     else
         -- Ordinary item: reuse C:U's own use.apply/canUse/validLimbs logic

@@ -63,10 +63,13 @@ check("S02 body-drug minigame callback has its own guarded snapshot",
       "local function PatchBodyDrugSpecs" in organism_s
       and "(WSZC.SwepHealDepth or 0) <= 0" in organism_s
       and "patchedBodyDrugFns[wrapped] = true" in organism_s)
-check("S03 canonical BloodBagTake mirrors its direct blood-volume delta",
-      "local function PatchBloodBagTake" in organism_s
-      and "WSZC.SnapshotMedical(ply, \"body\")" in organism_s
-      and "body.bloodVolume = math.max" in server_bridge_s)
+check("S03 canonical BloodBagGive/Take run ZCity blood formulas and sync shadow",
+      "local function PatchBloodBagGive" in organism_s
+      and "local function PatchBloodBagTake" in organism_s
+      and "function WSZC.ZCityBloodBagGive" in organism_s
+      and "function WSZC.ZCityBloodBagTake" in organism_s
+      and "curBlood <= 2000" in organism_s
+      and "hemotransfusionshock" in organism_s)
 check("S04 only a successful chest drain sets ZCity org.needle",
       'if itemId == "INJECTION" and WSZC.OrganismAuthority' in server_s
       and server_s.index("if not ok then return false, 0 end")
@@ -82,10 +85,11 @@ check("S06 negative shadow bleed treatment reduces real ordinary and arterial wo
       "local function ReduceLimbWoundBleeding" in organism_s
       and "ReduceLimbWoundBleeding(ply, org, limbId, bleedTreatment)" in organism_s
       and "CompactWoundTable(org.arterialwounds)" in organism_s)
-check("S07 fracture timer follows native remaining-time semantics in both directions",
+check("S07 fracture shadow uses ZCity 0.5 threshold and never mirrors C:U boneHealTimer",
       "state.boneHealTimer = 100" in native_health_s
+      and "local FRACTURE_DAMAGE = 0.5" in organism_s
       and "math.Clamp(dmg * 100, 0, 100)" in organism_s
-      and "after.limbBoneHealTimer - before.limbBoneHealTimer" in organism_s
+      and "after.limbBoneHealTimer - before.limbBoneHealTimer" not in organism_s
       and "org.brokenribs = math.floor" in organism_s)
 check("S08 splint keeps native wear and recovery multipliers in organism authority",
       "* 0.025" in native_splint_s and "splintMult = state.splinted and 2.5" in native_health_s
@@ -272,67 +276,114 @@ local ply = MakePlayer()
 local swep = MakeSwep(ply, "weapon_adrenaline", 1)
 local ok = hg.WoundBridge.SwepHeal(swep, ply, 1)
 local body = Bodies[ply]
-return ok == true and swep.modeValues[1] == 0
-    and math.abs(body.adrenaline - 45) < 0.001
-    and math.abs(ply.organism.adrenaline - 0.9) < 0.001
-    and math.abs(ply.organism.pulse - 85) < 0.001
-    and math.abs(ply.organism.stamina[1] - 144) < 0.001
+return ok == true and swep.modeValues[1] == 0 and swep.removed == true
+    and math.abs((ply.organism.adrenalineAdd or 0) - 4) < 0.001
+    and math.abs(body.adrenaline - 50) < 0.001
 ''')
-    check("R01 canonical instant adrenaline applies exactly one authoritative dose", instant)
+    check("R01 canonical instant adrenaline sets ZCity adrenalineAdd=4 and consumes the SWEP", instant)
 
     asynchronous = lua.execute(r'''
 MinigameEnabled = true
 CapturedMinigame = nil
-local ply = MakePlayer()
-local swep = MakeSwep(ply, "weapon_adrenaline", 1)
-local startedResult = hg.WoundBridge.SwepHeal(swep, ply, 1)
+local medic = MakePlayer()
+local patient = MakePlayer()
+local swep = MakeSwep(medic, "weapon_fentanyl", 1)
+local startedResult = hg.WoundBridge.SwepHeal(swep, patient, 1)
 local captured = CapturedMinigame
-local before = ply.organism.adrenaline
+if not captured then return false end
 local session = { startAmount = captured.options.amount, deferredUsed = 0 }
-captured.options.onProgress(ply, session, captured.options.amount)
-local oneDose = startedResult == false and ply.organism.adrenaline - before == 0.9
-    and math.abs(ply.organism.pulse - 85) < 0.001
-    and math.abs(ply.organism.stamina[1] - 144) < 0.001
+-- Inject 20% first (safe daily dose: 0.2 analgesiaAdd), then the remaining 80%.
+captured.options.onProgress(medic, session, captured.options.amount * 0.2)
+local partialOK = startedResult == false
+    and math.abs((patient.organism.analgesiaAdd or 0) - 0.2) < 0.001
+    and math.abs(swep.modeValues[1] - 0.8) < 0.001
+    and math.abs((medic.injectedinto[patient] or 0) - 0.2) < 0.001
+captured.options.onProgress(medic, session, captured.options.amount * 0.8)
+captured.options.onClose(medic, session, "complete")
+return partialOK
+    and math.abs((patient.organism.analgesiaAdd or 0) - 1.0) < 0.001
+    and math.abs(Bodies[patient].opiateAmount - 100) < 0.001
     and swep.modeValues[1] == 0
-captured.options.onClose(ply, session, "complete")
-return oneDose and ply.organism.adrenaline == 0.9 and swep.removed == true
 ''')
-    check("R02 canonical minigame adrenaline applies once onProgress and consumes the SWEP", asynchronous)
+    check("R02 continuous opioid syringe minigame doses ZCity analgesiaAdd and tracks injectedinto", asynchronous)
 
     other_body_drugs = lua.execute(r'''
 MinigameEnabled = false
 local beta = MakePlayer()
-Bodies[beta].adrenaline, Bodies[beta].heartRate, Bodies[beta].shock = 80, 100, 50
-beta.organism.adrenaline, beta.organism.pulse = 1.6, 100
-hg.WoundBridge.SwepSpecs.weapon_betablock.fn(beta, Bodies[beta], 1)
-local betaOK = math.abs(Bodies[beta].adrenaline - 40) < 0.001
-    and math.abs(beta.organism.adrenaline - 0.8) < 0.001
-    and beta.organism.pulse == 80 and math.abs(beta.organism.shock - 31.5) < 0.001
+beta.organism.adrenalineAdd = 1
+local betaSwep = MakeSwep(beta, "weapon_betablock", 1)
+local betaHeal = hg.WoundBridge.SwepHeal(betaSwep, beta, 1)
+local betaOK = betaHeal == true and betaSwep.modeValues[1] == 0 and betaSwep.removed == true
+    and math.abs((beta.organism.adrenalineAdd or 0) - (-1)) < 0.001
 
 local mannitol = MakePlayer()
-hg.WoundBridge.SwepSpecs.weapon_mannitol.fn(mannitol, Bodies[mannitol], 1)
-local mannitolOK = Bodies[mannitol].brainHealth == 88
-    and math.abs(mannitol.organism.brain - 0.12) < 0.001
+local manSwep = MakeSwep(mannitol, "weapon_mannitol", 1)
+local manHeal = hg.WoundBridge.SwepHeal(manSwep, mannitol, 1)
+
 local thiamine = MakePlayer()
-hg.WoundBridge.SwepSpecs.weapon_thiamine.fn(thiamine, Bodies[thiamine], 1)
-local thiamineOK = Bodies[thiamine].brainHealth == 84
-    and math.abs(thiamine.organism.brain - 0.16) < 0.001
-return betaOK, mannitolOK and thiamineOK
+local thiSwep = MakeSwep(thiamine, "weapon_thiamine", 1)
+local thiHeal = hg.WoundBridge.SwepHeal(thiSwep, thiamine, 1)
+
+local pk = MakePlayer()
+local pkSwep = MakeSwep(pk, "weapon_painkillers", 1)
+local pkHeal = hg.WoundBridge.SwepHeal(pkSwep, pk, 1)
+
+local nal = MakePlayer()
+local nalSwep = MakeSwep(nal, "weapon_naloxone", 1)
+local nalHeal = hg.WoundBridge.SwepHeal(nalSwep, nal, 1)
+
+-- Custom third-party body specs on wb.SwepSpecs still mirror deltas cleanly.
+local custom = MakePlayer()
+hg.WoundBridge.SwepSpecs.weapon_mannitol.fn(custom, Bodies[custom], 1)
+local customOK = Bodies[custom].brainHealth == 88
+    and math.abs(custom.organism.brain - 0.12) < 0.001
+
+local othersOK = manHeal == true and math.abs((mannitol.organism.mannitol or 0) - 2) < 0.001
+    and thiHeal == true and math.abs((thiamine.organism.thiamine or 0) - 1) < 0.001
+    and pkHeal == true and math.abs((pk.organism.analgesiaAdd or 0) - 0.4) < 0.001
+    and nalHeal == true and math.abs((nal.organism.naloxoneadd or 0) - 1) < 0.001
+    and customOK
+return betaOK, othersOK
 ''')
-    check("R03 asynchronous betablock mirrors adrenaline, pulse and shock", other_body_drugs[0])
-    check("R04 mannitol and thiamine both mirror their brain-health effect", other_body_drugs[1])
+    check("R03 ZCity betablock reduces adrenalineAdd by 2 and consumes pills", other_body_drugs[0])
+    check("R04 mannitol, thiamine, painkillers and naloxone write canonical ZCity organism fields", other_body_drugs[1])
 
     blood_take = lua.execute(r'''
 local ply = MakePlayer()
+ply.organism.bloodtype = "a+"
 local swep = MakeSwep(ply, "weapon_bloodbag", 0)
 FrameTimeValue = 0.2
 local ok = hg.WoundBridge.BloodBagTake(swep, ply)
-return ok == true and math.abs(swep.modeValues[1] - 0.1) < 0.001
+local takeOK = ok == true and math.abs(swep.modeValues[1] - 0.1) < 0.001
     and math.abs(Bodies[ply].bloodVolume - 99) < 0.001
     and math.abs(ply.organism.blood - 4950) < 0.001
-    and swep.bloodtype == "o-"
+    and swep.bloodtype == "a+"
+
+local lowDonor = MakePlayer()
+lowDonor.organism.blood = 2000
+local emptyBag = MakeSwep(lowDonor, "weapon_bloodbag", 0)
+hg.WoundBridge.BloodBagTake(emptyBag, lowDonor)
+local floorOK = emptyBag.modeValues[1] == 0 and lowDonor.organism.blood == 2000
+
+local compatRec = MakePlayer()
+compatRec.organism.blood, compatRec.organism.bloodtype = 4000, "a+"
+local compatBag = MakeSwep(compatRec, "weapon_bloodbag", 1)
+compatBag.bloodtype = "o-"
+hg.WoundBridge.BloodBagGive(compatBag, compatRec)
+local compatOK = math.abs(compatRec.organism.blood - 4050) < 0.001
+    and (compatRec.organism.hemotransfusionshock or 0) == 0
+
+local incompatRec = MakePlayer()
+incompatRec.organism.blood, incompatRec.organism.bloodtype = 4000, "o-"
+local incompatBag = MakeSwep(incompatRec, "weapon_bloodbag", 1)
+incompatBag.bloodtype = "ab+"
+hg.WoundBridge.BloodBagGive(incompatBag, incompatRec)
+local incompatOK = math.abs(incompatRec.organism.blood - 4020) < 0.001
+    and math.abs((incompatRec.organism.hemotransfusionshock or 0) - 0.1) < 0.001
+
+return takeOK and floorOK and compatOK and incompatOK
 ''')
-    check("R05 real BloodBagTake removes the same volume from C:U and ZCity", blood_take)
+    check("R05 ZCity BloodBagGive/Take enforce 2000ml floor, 500/200ml rate and transfusion shock", blood_take)
 
     lua.execute(r'''
 local Definitions = {
@@ -342,7 +393,9 @@ local Definitions = {
             bandagedAtSlow = 10 } } },
     STERILIZEDBANDAGE = { max = 100, use = { minigame = "bandage", validLimbs = "any",
         bandage = { durabilityPerWrap = 100 / 12, effectDivisor = 12,
-            effects = { bandageSlowAmount = 45 }, bandagedAtSlow = 10 } } },
+            disinfectTime = 90,
+            effects = { bandageSlowAmount = 45, boneHealTimer = -20, dislocationTimer = -20 },
+            bandagedAtSlow = 10 } } },
     MORPHINE = { max = 100, use = { minigame = "syringe", validLimbs = "any",
         syringe = { drugEffects = { opiateAmount = 100 } } } },
     FENTANYL = { max = 100, use = { minigame = "syringe", validLimbs = "any",
@@ -502,53 +555,111 @@ return effect.remaining == 24 and ply.organism.internalBleed == twice
     check("R14 extending an active timed effect adds duration without another immediate dose", extension)
 
     fractures = lua.execute(r'''
-local ply = MakePlayer()
-ply.organism.rarm = 1
-local forearm = Limbs[ply].forearm_R
-forearm.broken, forearm.boneHealTimer, forearm.muscle = true, 100, 0
-local perWrap = 100 / 12
-WoundSystem.Health.ApplyItemToBody(ply, "GAUZE", "forearm_R", perWrap)
-local oneWrap = math.abs(ply.organism.rarm - (1 - 0.2 / 12)) < 0.001
-    and math.abs(forearm.boneHealTimer - (100 - 20 / 12)) < 0.001
-    and forearm.broken == true
-for _ = 2, 12 do
-    WoundSystem.Health.ApplyItemToBody(ply, "GAUZE", "forearm_R", perWrap)
+MinigameEnabled = false
+-- 1) C:U bandage/syringe profiles never leak boneHealTimer, dislocationTimer,
+-- disinfectTime or SYRINGE_WOUND in Organism Authority mode.
+local guarded = MakePlayer()
+guarded.organism.rarm = 1
+local gForearm = Limbs[guarded].forearm_R
+gForearm.broken, gForearm.boneHealTimer, gForearm.muscle = true, 100, 0
+gForearm.disinfectTime = 0
+for _ = 1, 12 do
+    WoundSystem.Health.ApplyItemToBody(guarded, "GAUZE", "forearm_R", 100 / 12)
+    WoundSystem.Health.ApplyItemToBody(guarded, "STERILIZEDBANDAGE", "forearm_R", 100 / 12)
 end
-local fullRoll = math.abs(ply.organism.rarm - 0.8) < 0.001
-    and math.abs(forearm.boneHealTimer - 80) < 0.001
-WSZC.RestoreBones(ply)
-local restored = forearm.broken == false and forearm.boneHealTimer == 0
-    and math.abs(ply.organism.rarm - 0.8) < 0.001
+WoundSystem.Health.ApplyItemToBody(guarded, "MORPHINE", "forearm_R", 100)
+local noSideEffects = guarded.organism.rarm == 1
+    and gForearm.broken == true and gForearm.boneHealTimer == 100
+    and (gForearm.disinfectTime or 0) == 0
+    and not gForearm.hasInjection
+    and not (gForearm.customStatuses and gForearm.customStatuses.SYRINGE_WOUND)
 
-local nonAnchor = MakePlayer()
-nonAnchor.organism.rarm = 1
-Limbs[nonAnchor].arm_R.muscle = 100
-WoundSystem.Health.ApplyItemToBody(nonAnchor, "GAUZE", "arm_R", 100)
-local onlyMiddle = nonAnchor.organism.rarm == 1
+-- 2) Canonical ZCity fracture immobilization: 25 bandage units (5 for doctor),
+-- 1.0 -> 0.95, avgpain - 7; remaining 15 units on a 40-unit roll cannot treat a second break.
+local patient = MakePlayer()
+patient.organism.rarm, patient.organism.larm = 1, 1
+patient.organism.avgpain = 40
+local roll = MakeSwep(patient, "weapon_bandage_sh", 40)
+roll.modeValuesdef = { { 40, true } }
+local first = hg.WoundBridge.SwepHeal(roll, patient, 1)
+local second = hg.WoundBridge.SwepHeal(roll, patient, 1)
+local doc = MakePlayer()
+doc.Profession = "doctor"
+doc.organism.rleg = 1
+local docRoll = MakeSwep(doc, "weapon_bandage_sh", 40)
+docRoll.modeValuesdef = { { 40, true } }
+local docOK = hg.WoundBridge.SwepHeal(docRoll, doc, 1)
+local immobilized = first == true and second == false
+    and math.abs(roll.modeValues[1] - 15) < 0.001
+    and (math.abs((patient.organism.rarm or 0) - 0.95) < 0.001
+        or math.abs((patient.organism.larm or 0) - 0.95) < 0.001)
+    and math.abs((patient.organism.avgpain or 0) - 33) < 0.001
+    and docOK == true and math.abs(docRoll.modeValues[1] - 35) < 0.001
+    and math.abs((doc.organism.rleg or 0) - 0.95) < 0.001
 
-local neck = MakePlayer()
-neck.organism.skull = 1
-local neckState = Limbs[neck].neck
-neckState.broken, neckState.boneHealTimer, neckState.muscle = true, 100, 0
-WoundSystem.Health.ApplyItemToBody(neck, "GAUZE", "neck", 100)
-local neckHeals = math.abs(neck.organism.skull - 0.8) < 0.001
-return oneWrap, fullRoll and restored, onlyMiddle, neckHeals
+-- 3) Bleeding takes strict priority over fracture immobilization on the patient.
+local bleedingAndBroken = MakePlayer()
+bleedingAndBroken.organism.rarm = 1
+bleedingAndBroken.organism.wounds = {
+    { 4, Vector(), Angle(), "ValveBiped.Bip01_R_Forearm", 0 },
+}
+local bleedRoll = MakeSwep(bleedingAndBroken, "weapon_bandage_sh", 40)
+bleedRoll.modeValuesdef = { { 40, true } }
+hg.WoundBridge.SwepHeal(bleedRoll, bleedingAndBroken, 1)
+local bleedFirst = bleedingAndBroken.organism.rarm == 1
+    and bleedRoll.modeValues[1] > 35
+
+-- 4) Skull fracture (>= 0.6) immobilizes to 0.59 + bandagedskull and heals to 0 at dt / 600.
+local skullPly = MakePlayer()
+skullPly.organism.skull = 0.8
+skullPly.organism.pain = 30
+local skullRoll = MakeSwep(skullPly, "weapon_bandage_sh", 40)
+skullRoll.modeValuesdef = { { 40, true } }
+local skullDone = hg.WoundBridge.SwepHeal(skullRoll, skullPly, 1)
+local skullStabilized = skullDone == true and skullPly.organism.bandagedskull == true
+    and math.abs(skullPly.organism.skull - 0.59) < 0.001
+    and math.abs(skullPly.organism.pain - 23) < 0.001
+skullPly.organism.skull = 0.49
+for _ = 1, 600 do WSZC.TickZCityBones(skullPly, skullPly.organism, 0.5) end
+local skullHealed = skullStabilized and skullPly.organism.skull == 0
+    and skullPly.organism.bandagedskull == nil
+
+return noSideEffects, immobilized, bleedFirst, skullHealed
 ''')
-    check("R15 one GAUZE wrap reduces the real fracture without instant healing", fractures[0])
-    check("R16 a full roll survives RestoreBones instead of clearing only the icon", fractures[1])
-    check("R17 fracture treatment remains only on the anatomical middle limb", fractures[2])
-    check("R18 neck fracture treatment changes org.skull, not merely its shadow", fractures[3])
+    check("R15 C:U bandage/syringe profiles leak no boneHealTimer, disinfectTime or injection wound", fractures[0])
+    check("R16 ZCity fracture immobilization spends 25 units (5 doctor) and sets 0.95", fractures[1])
+    check("R17 active wound bleeding takes priority over fracture immobilization", fractures[2])
+    check("R18 skull fracture immobilizes to 0.59 + bandagedskull and heals down to 0", fractures[3])
 
     ribs = lua.execute(r'''
+MinigameEnabled = false
+-- Arm fracture clears its icon as soon as damage drops below 0.5 (~110s after 0.95).
+local armPly = MakePlayer()
+armPly.organism.rarm = 1
+local armSwep = MakeSwep(armPly, "weapon_bandage_sh", 40)
+armSwep.modeValuesdef = { { 40, true } }
+local armStarted = hg.WoundBridge.SwepHeal(armSwep, armPly, 1)
+armPly.organism.rarm = 0.49
+armPly._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(armPly, armPly.organism)
+local armIconClearedAtHalf = armStarted == true and Limbs[armPly].forearm_R.broken == false
+
+-- Rib fracture immobilizes to 0.95 and ticks chest/brokenribs down to 0 in 240s.
 local ply = MakePlayer()
 ply.organism.chest, ply.organism.brokenribs = 1, 3
-local thorax = Limbs[ply].thorax
-thorax.broken, thorax.boneHealTimer, thorax.muscle = true, 100, 0
-for _ = 1, 5 do WoundSystem.Health.ApplyItemToBody(ply, "GAUZE", "thorax", 100) end
-return math.abs(ply.organism.chest) < 0.001 and ply.organism.brokenribs == 0
-    and thorax.broken == false and thorax.boneHealTimer == 0
+local swep = MakeSwep(ply, "weapon_bigbandage_sh", 150)
+swep.modeValuesdef = { { 150, true } }
+local ok = hg.WoundBridge.SwepHeal(swep, ply, 1)
+local started = ok == true and math.abs(ply.organism.chest - 0.95) < 0.001
+    and math.abs(swep.modeValues[1] - 125) < 0.001
+for _ = 1, 480 do WSZC.TickZCityBones(ply, ply.organism, 0.5) end
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+return armIconClearedAtHalf and started
+    and Limbs[ply].thorax.broken == false
+    and ply.organism.chest == 0 and ply.organism.brokenribs == 0
 ''')
-    check("R19 rib treatment keeps chest and brokenribs authoritative through full healing", ribs)
+    check("R19 stabilized fractures clear limb icon below 0.5 and heal chest/brokenribs in 4m", ribs)
 
     dislocations = lua.execute(r'''
 local ply = MakePlayer()
@@ -557,13 +668,11 @@ WSZC.RestoreBones(ply)
 local arm = Limbs[ply].arm_R
 arm.dislocated, arm.dislocationTimer = true, 35
 WoundSystem.Health.ApplyItemToBody(ply, "GAUZE", "arm_R", 100)
-local firstRoll = arm.dislocated == true and math.abs(arm.dislocationTimer - 15) < 0.001
-    and ply.organism.rarmdislocation == true
 WoundSystem.Health.ApplyItemToBody(ply, "GAUZE", "arm_R", 100)
-local nativeReduced = arm.dislocated == false and arm.dislocationTimer == 0
 WSZC.SyncDislocation(ply, ply.organism, Limbs[ply], false)
-local authoritative = nativeReduced and ply.organism.rarmdislocation == false
-    and ply.organism.painadd == 10
+local bandageCannotReduce = arm.dislocated == true
+    and math.abs(arm.dislocationTimer - 35) < 0.001
+    and ply.organism.rarmdislocation == true
 
 local neighbor = MakePlayer()
 neighbor.organism.rarmdislocation = true
@@ -571,9 +680,9 @@ WSZC.RestoreBones(neighbor)
 Limbs[neighbor].forearm_R.dislocated = false
 WSZC.SyncDislocation(neighbor, neighbor.organism, Limbs[neighbor], false)
 local neighborCannotReduce = neighbor.organism.rarmdislocation == true
-return firstRoll and authoritative, neighborCannotReduce
+return bandageCannotReduce, neighborCannotReduce
 ''')
-    check("R20 two real GAUZE rolls reduce a dislocation through the authoritative anchor", dislocations[0])
+    check("R20 GAUZE wraps never reduce a dislocation in Organism Authority mode", dislocations[0])
     check("R21 a non-anchor neighbour cannot falsely reduce the whole arm", dislocations[1])
 
     splints = lua.execute(r'''
@@ -884,8 +993,8 @@ player.GetAll = function() return { linkedPatient } end
 local networkResolved = hg.WoundBridge.GetPlayer(linkedBody)
 player.GetAll = oldGetAll
 return native == nil and resolved == patient and networkResolved == linkedPatient and ok == true
-    and Bodies[patient].adrenaline == 45 and Bodies[medic].adrenaline == 0
-    and patient.organism.adrenaline > 0 and medic.organism.adrenaline == 0
+    and Bodies[patient].adrenaline == 50 and Bodies[medic].adrenaline == 0
+    and (patient.organism.adrenalineAdd or 0) == 4 and (medic.organism.adrenalineAdd or 0) == 0
 ''')
     check("R34 shared-organism/network-only ragdolls resolve when native owner lookup fails", remote_ragdoll_resolver)
 
@@ -961,11 +1070,13 @@ FrameTimeValue = 0.2
 for _, ragdollForm in ipairs({ false, true }) do
     local patient, body = MakeRemoteMedicalPatient("body")
     local target = ragdollForm and body or patient
+    patient.organism.blood = 4000
     Bodies[patient].bloodVolume = 80
     local medic = MakePlayer()
     local bag = MakeSwep(medic, "weapon_bloodbag", 1)
     local gave = hg.WoundBridge.BloodBagGive(bag, target)
     local giveOK = gave == true and bag.modeValues[1] < 1
+        and patient.organism.blood > 4000
         and Bodies[patient].bloodVolume > 80 and Bodies[medic].bloodVolume == 100
 
     local donor, donorBody = MakeRemoteMedicalPatient("body")
@@ -1003,7 +1114,7 @@ end
 for _, ragdollForm in ipairs({ false, true }) do
     local bandagePatient, bandageMedic, bandageSwep = RunContinuous("weapon_bandage_sh", "bandage", 40, ragdollForm)
     local bandageOK = bandagePatient and #bandagePatient.organism.wounds == 0
-        and bandageSwep.modeValues[1] == 0 and bandageMedic.organism.wounds
+        and math.abs(bandageSwep.modeValues[1] - 36) < 0.001 and bandageMedic.organism.wounds
         and #bandageMedic.organism.wounds == 0
     local drugPatient, drugMedic, drugSwep = RunContinuous("weapon_morphine", "body", 1, ragdollForm)
     local drugOK = drugPatient and Bodies[drugPatient].opiateAmount > 0
@@ -1046,6 +1157,146 @@ return installed == 1 and blockedOK and fallbackOK and again == 0
     and WSZC.LastMedicalHealRoute == "weapon_bandage_sh -> legacy"
 ''')
     check("R39 direct Workshop Heal adapter reaches bridge without double legacy", direct_workshop_heal)
+
+    minigames_s = (CONN / "lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua").read_text(encoding="utf-8")
+    layout_s = (CONN / "lua/autorun/client/cl_zcity_woundsystem_compat_layout.lua").read_text(encoding="utf-8")
+
+    lua.execute("net.Receive = function(name, fn) net.Receivers[name] = fn end")
+    fracture_minigame = lua.execute(minigames_s + "\n" + r'''
+MinigameEnabled = true
+WSZC.BridgeEnabled = function() return hg.WoundBridge.IsEnabled() end
+WSZC.Bridged = function(ply) return hg.WoundBridge.IsBridged(ply) end
+-- Re-point ZCitySwepHeal to the real Bridge (R39 mocked SwepHeal above).
+hg.WoundBridge.SwepHeal = function(swep, ent, mode, bone)
+    return WSZC.ZCitySwepHeal(swep, ent, mode, bone)
+end
+net.WriteBool = function() end
+net.WriteString = function() end
+net.WriteFloat = function() end
+net.Send = function() end
+local ply = MakePlayer()
+ply.organism.rarm = 1
+ply.organism.avgpain = 40
+local swep = MakeSwep(ply, "weapon_bandage_sh", 40)
+swep.modeValuesdef = { { 40, true } }
+local started = hg.WoundBridge.SwepHeal(swep, ply, 1)
+local session = WSZC.MinigameSessions[ply]
+if started ~= false or not session or session.mode ~= "fracture" then return false end
+local sid = session.id
+-- 3 turns (1080 deg): 75%, must not stabilize or spend bandage yet.
+local q1 = { sid, 360 }
+net.ReadUInt = function() return q1[1] end
+net.ReadFloat = function() return q1[2] end
+net.Receivers["WSZC_BandageInput"](0, ply)
+net.Receivers["WSZC_BandageInput"](0, ply)
+net.Receivers["WSZC_BandageInput"](0, ply)
+local midOK = ply.organism.rarm == 1 and swep.modeValues[1] == 40
+    and WSZC.MinigameSessions[ply] ~= nil
+-- 4th turn (1440 deg total): completes immobilization, sets 0.95 and spends 25.
+net.Receivers["WSZC_BandageInput"](0, ply)
+local swepDone = midOK and math.abs(ply.organism.rarm - 0.95) < 0.001
+    and math.abs(swep.modeValues[1] - 15) < 0.001
+    and math.abs(ply.organism.avgpain - 33) < 0.001
+    and WSZC.MinigameSessions[ply] == nil
+
+-- Standalone weapon_wszc_bandage also supports 4-turn fracture immobilization (doctor = 5).
+local doc = MakePlayer()
+doc.Profession = "doctor"
+doc.organism.lleg = 1
+local standalone = MakeSwep(doc, "weapon_wszc_bandage", 40)
+standalone.modeValuesdef = { { 40, true } }
+local stStarted = WSZC.UseStandaloneBandage(standalone, doc)
+local stSession = WSZC.MinigameSessions[doc]
+if stStarted ~= true or not stSession or stSession.mode ~= "fracture" then return false end
+local stId = stSession.id
+q1 = { stId, 360 }
+for _ = 1, 4 do
+    net.Receivers["WSZC_BandageInput"](0, doc)
+end
+local standaloneDone = math.abs(doc.organism.lleg - 0.95) < 0.001
+    and math.abs(standalone.modeValues[1] - 35) < 0.001
+    and WSZC.MinigameSessions[doc] == nil
+
+return swepDone and standaloneDone
+''')
+    check("R40 4-turn (1440 deg) fracture bandage minigame stabilizes at 100% for ZCity and standalone SWEPs", fracture_minigame)
+
+    client_lua = LuaRuntime(unpack_returned_tuples=True)
+    client_lua.execute(r'''
+SERVER = false; CLIENT = true
+WSZC = {}
+FCVAR_ARCHIVE, FCVAR_REPLICATED, FCVAR_NOTIFY = 0, 0, 0
+CreateClientConVar = function() return { GetBool = function() return true end, GetFloat = function() return 1 end } end
+CreateConVar = CreateClientConVar
+ConVarExists = function() return false end
+GetConVar = function() return nil end
+Color = function(r, g, b, a) return { r = r, g = g, b = b, a = a or 255 } end
+Material = function(name)
+    return { GetName = function() return name end, IsError = function() return false end }
+end
+surface = { CreateFont = function() end }
+hook = { Add = function() end, Remove = function() end, GetTable = function() return {} end }
+net = { Receive = function() end }
+timer = { Create = function() end, Simple = function() end }
+IsValid = function(v) return v ~= nil and v ~= false end
+LocalPlayer = function() return nil end
+ScrW = function() return 1920 end
+ScrH = function() return 1080 end
+''')
+    client_lua.execute(layout_s)
+    icon_filter_ok = client_lua.execute(r'''
+local hidden = {
+    "casunknown-images/icons/disinfected",
+    "casunknown-images/icons/disinfected.png",
+    "casunknown-images/icons/disinfected_padded",
+    "materials/casunknown-images/icons/disinfected_padded.png",
+    "casunknown-images/icons/injectionwound",
+    "casunknown-images/icons/injectionwound_padded",
+    "casunknown-images/icons/injectionwound_red",
+    "casunknown-images/icons/injectionwound_padded_red.png",
+}
+for _, name in ipairs(hidden) do
+    if not WSZC.IsHiddenNativeStatusIcon(Material(name)) then return false end
+end
+local visible = {
+    "casunknown-images/icons/fracturedbone",
+    "casunknown-images/icons/fracturedbone.png",
+    "casunknown-images/icons/fracturedbone_padded",
+    "casunknown-images/icons/dislocatedbone",
+    "casunknown-images/icons/dislocatedbone_padded.png",
+    "wszc/unitmenu/status/fracture.png",
+    "wszc/unitmenu/status/dislocation.png",
+    "wszc/unitmenu/status/bleed.png",
+    "wszc/unitmenu/status/arterial.png",
+    "wszc/unitmenu/status/tourniquet.png",
+    "wszc/unitmenu/status/splint.png",
+    "wszc/unitmenu/status/infection.png",
+}
+for _, name in ipairs(visible) do
+    if WSZC.IsHiddenNativeStatusIcon(Material(name)) then return false end
+end
+return true
+''')
+    check("R41 client HUD filter hides disinfected/injectionwound with or without .png and keeps fracture/dislocation", icon_filter_ok)
+
+    from PIL import Image
+    icons_dir = CONN / "materials/casunknown-images/icons"
+    transparent_ok = True
+    for stem in (
+        "disinfected", "disinfected_padded",
+        "injectionwound", "injectionwound_padded",
+        "injectionwound_red", "injectionwound_padded_red",
+    ):
+        with Image.open(icons_dir / f"{stem}.png") as im:
+            alpha = im.convert("RGBA").getchannel("A")
+            if alpha.getextrema()[1] != 0:
+                transparent_ok = False
+    for keep_stem in ("fracturedbone", "dislocatedbone"):
+        with Image.open(icons_dir / f"{keep_stem}.png") as im:
+            alpha = im.convert("RGBA").getchannel("A")
+            if alpha.getextrema()[1] == 0:
+                transparent_ok = False
+    check("R42 disinfected/injectionwound PNGs are 0-alpha while fracturedbone/dislocatedbone remain opaque", transparent_ok)
 
 failed = [name for name, ok in results if not ok]
 print(f"TEST_OK {len(results) - len(failed)} / {len(results)}")

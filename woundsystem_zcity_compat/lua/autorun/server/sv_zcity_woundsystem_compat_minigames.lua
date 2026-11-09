@@ -324,6 +324,21 @@ local function SendBandageState(ply, session)
             net.WriteFloat(0)
         end)
         return
+    elseif session.mode == "fracture" then
+        local required = math.max(tonumber(session.fractureRequired) or 1440, 1)
+        local wrapped = math.Clamp(tonumber(session.fractureProgress) or 0, 0, required)
+        local progress = wrapped / required
+        session.lastBleed = required - wrapped
+        session.lastArterialBleed = 0
+        session.lastBleedProgress = progress
+        Send("WSZC_BandageState", ply, function()
+            net.WriteUInt(session.id, 24)
+            net.WriteFloat(required)
+            net.WriteFloat(required - wrapped)
+            net.WriteFloat(progress)
+            net.WriteFloat(0)
+        end)
+        return
     end
     local initial = math.max(tonumber(session.initialBleed) or 0, 0)
     local current = CurrentBandageBleeding(session)
@@ -556,7 +571,10 @@ local function StartMinigame(ply, data)
     end
 
     local H = WSZC.H
-    if type(H) ~= "table" or type(H.ApplyItemToBody) ~= "function" then
+    local authorityDirect = WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+        and (data._WSZCZCityDirect == true
+            or (kind == "bandage" and type(WSZC.ApplyBandageToOrganism) == "function"))
+    if type(H) ~= "table" or (not authorityDirect and type(H.ApplyItemToBody) ~= "function") then
         return StartResult(false, "ApplyItemToBody unavailable")
     end
 
@@ -605,11 +623,13 @@ local function StartMinigame(ply, data)
         local okAng, ang = pcall(ply.EyeAngles, ply)
         if okAng then frozenAngles = ang end
     end
-    local initialBleed = kind == "bandage"
+    local bandageMode = data.bandageMode
+    local initialBleed = (kind == "bandage" and bandageMode ~= "fracture")
         and CurrentBandageBleeding({ target = target, limbId = limbId }) or 0
     local session = {
         id = id,
         kind = kind,
+        mode = bandageMode,
         itemId = itemId,
         item = item,
         limbId = limbId,
@@ -626,7 +646,12 @@ local function StartMinigame(ply, data)
         initialBleed = initialBleed,
         lastBleed = initialBleed,
         lastBleedProgress = 0,
-        nativeBandage = kind == "bandage" and live and NativeBandageContext(data, maxDur) or nil,
+        fractureRequired = bandageMode == "fracture" and (tonumber(data.fractureRequired) or 1440) or nil,
+        fractureProgress = bandageMode == "fracture" and 0 or nil,
+        fractureCost = bandageMode == "fracture" and (tonumber(data.fractureCost) or 25) or nil,
+        onFractureComplete = bandageMode == "fracture" and data.onFractureComplete or nil,
+        nativeBandage = (kind == "bandage" and bandageMode ~= "fracture" and live)
+            and NativeBandageContext(data, maxDur) or nil,
         onProgress = data.onProgress,
         onClose = data.onClose,
         data = data,
@@ -648,7 +673,7 @@ local function StartMinigame(ply, data)
         Send("WSZC_BandageOpen", ply, function()
             net.WriteUInt(session.id, 24)
             net.WriteString(session.limbId)
-            net.WriteString(profile.mode or "gauze")
+            net.WriteString(session.mode or profile.mode or "gauze")
             net.WriteUInt(session.slotIdx, 3)
         end)
         SendBandageState(ply, session)
@@ -770,6 +795,14 @@ function WSZC.UseStandaloneBandage(swep, target)
 
     local limbId = WSZC.BestBandageLimb
         and WSZC.BestBandageLimb(target, STANDALONE_BANDAGE_SPEC, nil) or nil
+    local fractureMode, fractureCost = false, 0
+    if not limbId and WSZC.BestZCityFractureLimb and WSZC.ZCityFractureBandageCost then
+        fractureCost = WSZC.ZCityFractureBandageCost(owner)
+        if remaining >= fractureCost - 0.0001 then
+            limbId = WSZC.BestZCityFractureLimb(target, nil)
+            if limbId then fractureMode = true end
+        end
+    end
     if not limbId then return StandaloneBandageReject(owner, "no ordinary bleeding wound") end
 
     local items = WoundSystem and WoundSystem.Items
@@ -780,11 +813,20 @@ function WSZC.UseStandaloneBandage(swep, target)
     local data
     data = {
         kind = "bandage", itemId = "GAUZE", limbId = limbId, amount = amount,
+        bandageMode = fractureMode and "fracture" or nil,
+        fractureRequired = fractureMode and 1440 or nil,
+        fractureCost = fractureMode and fractureCost or nil,
         swep = swep, idx = 1, spec = STANDALONE_BANDAGE_SPEC, target = target,
         maxDur = maxDur, live = true, oneDose = false,
+        _WSZCZCityDirect = true,
         _WSZCSetAppliedLive = function(value)
             appliedLive = math.max(tonumber(value) or 0, 0)
         end,
+        onFractureComplete = fractureMode and function()
+            if WSZC.StabilizeZCityFracture then
+                WSZC.StabilizeZCityFracture(target, limbId, owner, swep)
+            end
+        end or nil,
         onProgress = function(ply, session, durCost)
             -- Used only outside the organism-authority native-cost path.  The
             -- authoritative path consumes exact ZCity severity in
@@ -867,7 +909,11 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
         return true, true
     end
     local H = WSZC.H
-    if not (H and type(H.ApplyItemToBody) == "function") then return false, false end
+    local directBandage = WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+        and type(WSZC.ApplyBandageToOrganism) == "function"
+    if not directBandage and not (H and type(H.ApplyItemToBody) == "function") then
+        return false, false
+    end
     if type(swep.modeValues) ~= "table" then return false, false end
 
     local remaining = math.max(tonumber(swep.modeValues[idx]) or 0, 0)
@@ -890,17 +936,33 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
         beforeSeverity, remaining
     )
     if desired <= 0.000001 and not finalAftercare then return true, false end
+    local applyFraction = desired > 0.000001
+        and (desired / severityPerFull)
+        or baseEffectFraction
     local applyAmount = desired > 0.000001
-        and ((desired / severityPerFull) * perWrap * effectDivisor)
+        and (applyFraction * perWrap * effectDivisor)
         or baseCost -- zero-bleed aftercare still needs its final dressing input
 
-    local callOk, ok = pcall(H.ApplyItemToBody,
-        session.target, session.itemId, session.limbId, applyAmount)
-    if not callOk then
-        Warn("native ZCity bandage apply failed: " .. tostring(ok))
-        return true, false
+    if directBandage then
+        local limbState = H and H.GetLimbState and H.GetLimbState(session.target, session.limbId) or nil
+        local callOk, err = pcall(WSZC.ApplyBandageToOrganism, {
+            ply = session.target, limbId = session.limbId, limb = limbState,
+        }, profile, applyFraction)
+        if not callOk then
+            Warn("direct ZCity bandage apply failed: " .. tostring(err))
+            return true, false
+        end
+        if H and H.SendLimbUpdate then pcall(H.SendLimbUpdate, session.target, session.limbId, true) end
+        if H and H.SendCardioUpdate then pcall(H.SendCardioUpdate, session.target) end
+    else
+        local callOk, ok = pcall(H.ApplyItemToBody,
+            session.target, session.itemId, session.limbId, applyAmount)
+        if not callOk then
+            Warn("native ZCity bandage apply failed: " .. tostring(ok))
+            return true, false
+        end
+        if not ok then return true, false end
     end
-    if not ok then return true, false end
 
     local afterSeverity = WSZC.BandageSeverityOnLimb
         and WSZC.BandageSeverityOnLimb(session.target, session.limbId)
@@ -909,6 +971,16 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
     if desired > 0 then treated = math.min(treated, desired + 0.000001) end
 
     if treated > 0.000001 then
+        local org = session.target and session.target.organism
+        if type(org) == "table" then
+            if tonumber(org.pain) then
+                org.pain = math.max(tonumber(org.pain) - treated * 0.25, 0)
+            end
+            if swep.poisoned2 then
+                org.poison4 = CurTime and CurTime() or 0
+                swep.poisoned2 = nil
+            end
+        end
         local left = math.max(remaining - treated, 0)
         swep.modeValues[idx] = left > 0.0005 and left or 0
         -- Mirror the physical remainder into the virtual slot as well.  This
@@ -985,6 +1057,58 @@ local function ProcessBandageInput(_, ply)
             StopMinigame(ply, removed and "unwrapped" or "unwrap_failed")
         end
         return -- no durability, bleeding treatment or foreign onProgress
+    elseif session.mode == "fracture" then
+        if WSZC.CanBandageZCityFracture
+            and not WSZC.CanBandageZCityFracture(session.target, session.limbId) then
+            SendAck(ply, session, ACK_BANDAGE, inputSeq)
+            StopMinigame(ply, "completed")
+            return
+        end
+        local swep = ClosureValue(session.data, "swep")
+        local idx = tonumber(ClosureValue(session.data, "idx")) or 1
+        if not IsValid(swep) or type(swep.modeValues) ~= "table" then
+            StopMinigame(ply, "target_gone")
+            return
+        end
+        local required = math.max(tonumber(session.fractureRequired) or 1440, 1)
+        local cost = math.max(tonumber(session.fractureCost) or 25, 0)
+        local remainingItem = math.max(tonumber(swep.modeValues[idx]) or 0, 0)
+        if remainingItem + 0.0001 < cost then
+            SendBandageState(ply, session)
+            SendAck(ply, session, ACK_BANDAGE, inputSeq)
+            StopMinigame(ply, "empty")
+            return
+        end
+        local beforeProgress = math.Clamp(tonumber(session.fractureProgress) or 0, 0, required)
+        local deltaDegrees = math.Clamp(math.min(degrees, required - beforeProgress), 0, required)
+        if deltaDegrees <= 0.0001 then
+            SendBandageState(ply, session)
+            SendAck(ply, session, ACK_BANDAGE, inputSeq)
+            return
+        end
+        session.fractureProgress = beforeProgress + deltaDegrees
+        SendBandageState(ply, session)
+        SendAck(ply, session, ACK_BANDAGE, inputSeq)
+        if session.fractureProgress >= required - 0.001 then
+            local left = math.max(remainingItem - cost, 0)
+            swep.modeValues[idx] = left > 0.0005 and left or 0
+            if swep.SetNetVar then pcall(swep.SetNetVar, swep, "modeValues", swep.modeValues) end
+            local def = swep.modeValuesdef and swep.modeValuesdef[idx]
+            if type(def) == "table" then def = def[1] end
+            def = math.max(tonumber(def) or cost or 40, 0.0001)
+            session.deferredUsed = math.min(session.startAmount, cost * (session.maxDur / def))
+            if type(session.data._WSZCSetAppliedLive) == "function" then
+                pcall(session.data._WSZCSetAppliedLive, math.max(session.deferredUsed, 1))
+            end
+            SendSlot(ply, session)
+            if type(session.onFractureComplete) == "function" then
+                pcall(session.onFractureComplete, ply, session)
+            elseif WSZC.StabilizeZCityFracture then
+                pcall(WSZC.StabilizeZCityFracture, session.target, session.limbId, ply, swep)
+            end
+            StopMinigame(ply, "completed")
+        end
+        return
     end
 
     -- An artery is not a bandage target.  Do not spend even a partial roll
