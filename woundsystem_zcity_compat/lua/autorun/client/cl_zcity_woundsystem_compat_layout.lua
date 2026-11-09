@@ -1257,8 +1257,10 @@ local cvHandPivotY = CreateClientConVar("zc_woundsystem_compat_hand_pivot_y", "0
     "Grip point inside the hand sprite, Y fraction 0..1", 0, 1)
 local cvHandMaxScreen = CreateClientConVar("zc_woundsystem_compat_hand_max_screen", "0.34", true, false,
     "Legacy unused option: the compact hand is scaled, not screen-capped")
+-- Keep the old archived convar for compatibility, but an old saved 0 must not
+-- bring the OS arrow back over a minigame.
 local cvHideCursor = CreateClientConVar("zc_woundsystem_compat_hide_minigame_cursor", "1", true, false,
-    "1 = hide the OS cursor during every minigame while preserving mouse input")
+    "Legacy option: the OS cursor is always hidden during minigames")
 local cvHideHand = CreateClientConVar("zc_woundsystem_compat_hide_minigame_hand", "0", true, false,
     "1 = hide only the drawn hand artwork; does not re-enable the OS cursor")
 local cvHandPinCursor = CreateClientConVar("zc_woundsystem_compat_hand_pin_cursor", "1", true, false,
@@ -2254,6 +2256,35 @@ local function SetMinigameOverlayCursors(cursor)
         local panel = type(mg) == "table" and mg.overlay or nil
         local valid = panel and (not IsValid or IsValid(panel))
         if valid and type(panel.SetCursor) == "function" then
+            if cursor == "blank" and mg.active == true then
+                -- Most C:U overlays explicitly disable mouse input.  Their
+                -- cursor is therefore ignored, and a hovered WoundView/Q-menu
+                -- panel supplies its own arrow even if the world is blank.
+                -- Make the existing full-screen overlay the mouse target;
+                -- games use input.IsMouseDown/gui.MousePos, and self-harm's
+                -- own OnMousePressed remains on this very same panel.
+                if not panel._WSZCCursorPopup then
+                    local wasMouse = false
+                    if type(panel.IsMouseInputEnabled) == "function" then
+                        local ok, value = pcall(panel.IsMouseInputEnabled, panel)
+                        if ok then wasMouse = value == true end
+                    end
+                    panel._WSZCPreviousMouseInput = wasMouse
+                    if type(panel.MakePopup) == "function" then pcall(panel.MakePopup, panel) end
+                    if type(panel.SetKeyboardInputEnabled) == "function" then
+                        pcall(panel.SetKeyboardInputEnabled, panel, false)
+                    end
+                    if type(panel.SetMouseInputEnabled) == "function" then
+                        pcall(panel.SetMouseInputEnabled, panel, true)
+                    end
+                    panel._WSZCCursorPopup = true
+                end
+            elseif cursor ~= "blank" and panel._WSZCCursorPopup then
+                if type(panel.SetMouseInputEnabled) == "function" then
+                    pcall(panel.SetMouseInputEnabled, panel, panel._WSZCPreviousMouseInput == true)
+                end
+                panel._WSZCCursorPopup, panel._WSZCPreviousMouseInput = nil, nil
+            end
             pcall(panel.SetCursor, panel, cursor)
         end
     end
@@ -2264,17 +2295,16 @@ end
 -- builds prefer the hovered overlay's cursor over the world cursor.  Hiding
 -- the hand artwork is independent and must never bring the arrow back.
 function WSZC.BlankMinigameCursor()
-    if not cvHideCursor:GetBool() then
-        WSZC.RestoreMinigameCursor(true)
-        return false
-    end
     local panel = WorldPanel()
-    if not panel then return false end
-    if not cursorHidden and panel.GetCursor then
-        local ok, value = pcall(panel.GetCursor, panel)
-        if ok and value and value ~= "blank" then savedCursor = value end
+    if panel then
+        if not cursorHidden and panel.GetCursor then
+            local ok, value = pcall(panel.GetCursor, panel)
+            if ok and value and value ~= "blank" then savedCursor = value end
+        end
+        pcall(panel.SetCursor, panel, "blank")
     end
-    pcall(panel.SetCursor, panel, "blank")
+    -- The popup is the actual hovered target, even if the world panel is not
+    -- available yet while VGUI is being initialised.
     SetMinigameOverlayCursors("blank")
     cursorHidden = true
     return true
@@ -2294,7 +2324,7 @@ function WSZC.SyncMinigameCursor()
     local active = (WSZC.MinigameActive and WSZC.MinigameActive())
         or (WSZC.WSZCMinigameActive and WSZC.WSZCMinigameActive())
         or (WSZC.NativeMinigameActive and WSZC.NativeMinigameActive())
-    if active and cvHideCursor:GetBool() then
+    if active then
         return WSZC.BlankMinigameCursor()
     end
     WSZC.RestoreMinigameCursor(true)

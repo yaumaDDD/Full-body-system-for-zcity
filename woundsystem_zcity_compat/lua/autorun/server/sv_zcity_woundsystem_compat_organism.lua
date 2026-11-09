@@ -3103,14 +3103,14 @@ local function RestoreShrapnelSoon(ply)
     -- order could clear the organism shadow before we re-attach it.
     ply._WSZCRagdollTransitionUntil = (CurTime and CurTime() or 0) + 5
     ply._WSZCSpawnKind = "ragdoll"
-    timer.Simple(0, function()
+    local resetGeneration = ply._WSZCResetGeneration or 0
+    local function restoreIfCurrent()
+        if not IsValid(ply) or (ply._WSZCResetGeneration or 0) ~= resetGeneration then return end
         WSZC.RestoreShrapnel(ply)
         WSZC.RestoreBones(ply)
-    end)
-    timer.Simple(0.3, function()
-        WSZC.RestoreShrapnel(ply)
-        WSZC.RestoreBones(ply)
-    end)
+    end
+    timer.Simple(0, restoreIfCurrent)
+    timer.Simple(0.3, restoreIfCurrent)
 end
 WSZC.RestoreShrapnelSoon = RestoreShrapnelSoon
 hook.Add("Fake", "WSZC_ShrapnelRagdollKeep", function(ply, ragdoll)
@@ -5894,9 +5894,23 @@ function WSZC.ClearAllShrapnel(ply, org, priorEntities)
         -- Fractured() reads that derived field, so leaving it behind brings
         -- the red thorax fracture icon straight back on the next shadow pass.
         org.brokenribs = 0
-        for _, key in ipairs({ "larm", "rarm", "lleg", "rleg", "skull", "chest", "pelvis", "spine1", "spine2", "spine3" }) do
+        -- Native Clear does not reset every injury on every supported build:
+        -- notably jaw and Organs+ fields can survive the stock Org Clear hook.
+        -- These values are reset ONLY on a real respawn or explicit reset.
+        for _, key in ipairs({ "larm", "rarm", "lleg", "rleg", "skull", "jaw", "chest", "pelvis",
+            "spine1", "spine2", "spine3", "brain", "heart", "liver", "stomach", "intestines", "trachea",
+            "spleen", "kidneys", "pancreas", "bladder", "l_eye", "r_eye", "internalToxins",
+            "pneumothorax", "needle", "hemotransfusionshock", "painkiller", "analgesia", "analgesiaAdd",
+            "naloxone", "naloxoneadd", "tranquilizer", "lightstun", "adrenaline", "adrenalineAdd" }) do
             org[key] = 0
         end
+        org.blood, org.consciousness, org.health = 5000, 1, 100
+        org.bleedingmul, org.legstrength, org.recoilmul, org.meleespeed = 1, 1, 1, 1
+        org.lungsL, org.lungsR = { 0, 0 }, { 0, 0 }
+        org.o2 = { [1] = 30, range = 30, regen = 4, k = 0.5, curregen = 4 }
+        org.CO, org.COregen = 0, 0
+        org.lungsfunction, org.heartstop = true, false
+        org.torsoamputated = false
         for _, key in ipairs({ "larmdislocation", "rarmdislocation", "llegdislocation", "rlegdislocation",
             "larmamputated", "rarmamputated", "llegamputated", "rlegamputated", "headamputated" }) do
             org[key] = false
@@ -5917,6 +5931,10 @@ function WSZC.ClearAllShrapnel(ply, org, priorEntities)
     end
 
     if IsValid(ply) then
+        -- Invalidate delayed Fake/FakeUp callbacks from the previous life or
+        -- before this explicit reset; they must never restore its shadow later.
+        ply._WSZCResetGeneration = (ply._WSZCResetGeneration or 0) + 1
+        if ply.Alive and ply:Alive() and ply.SetHealth then ply:SetHealth(100) end
         ply._WSZCTimedBodyEffects = nil
         ply._WSZCTourniquetCycles = nil
         ply._WSZCBandagedFractures = nil
@@ -6114,6 +6132,9 @@ function WSZC.InstallResetStructureGuard()
         local ragdollSnap = fakeUpSpawn and SnapshotRagdollOrganism(org) or nil
         CarryShrapnelShadow(owner, org)
         local a, b, c = originalClear(org, ...)
+        if genuineSpawn and IsValid(owner) then
+            owner._WSZCSpawnNativeClearSequence = owner._WSZCSpawnSequence
+        end
         if explicit and IsValid(owner) then
             owner._WSZCExplicitClearCount = (owner._WSZCExplicitClearCount or 0) + 1
         end
@@ -6708,10 +6729,44 @@ function WSZC.InstallOrganismMode()
     WSZC.ReconcileSpawnShrapnel = ReconcileSpawnShrapnel
 
     hook.Add("PlayerSpawn", "WSZC_OrganismSpawn", function(ply)
-        if not Authority() then return end
+        if not (Authority() and IsValid(ply)) then return end
+        -- ZCity FakeUp wraps its internal ply:Spawn() in OverrideSpawn.  Never
+        -- use old shrapnel, fake flags or the previous transition marker to
+        -- decide whether an actual PlayerSpawn starts a new life.
+        if OverrideSpawn == true then
+            ply._WSZCSpawnKind = "ragdoll"
+            ReconcileSpawnShrapnel(ply, false)
+            return
+        end
+        ply._WSZCSpawnKind = "genuine"
+        ply._WSZCRagdollTransitionUntil, ply._WSZCShrapnelCarry = nil, nil
+        ply._WSZCSpawnSequence = (ply._WSZCSpawnSequence or 0) + 1
+        local sequence = ply._WSZCSpawnSequence
         ReconcileSpawnShrapnel(ply, false)
         timer.Simple(0, function()
-            if IsValid(ply) then ReconcileSpawnShrapnel(ply, true) end
+            if not (Authority() and IsValid(ply)) or ply._WSZCSpawnSequence ~= sequence
+                or ply._WSZCSpawnKind ~= "genuine" then return end
+            -- ZCity's separate "Player Spawn" event can be absent, delayed,
+            -- replaced by another addon or run after PlayerSpawn.  If its
+            -- wrapped native Clear has not run, run it now with genuine-spawn
+            -- context so all native modules and Org Clear hooks also reset.
+            if ply._WSZCSpawnNativeClearSequence ~= sequence
+                and hg and hg.organism and type(hg.organism.Clear) == "function"
+                and type(ply.organism) == "table" then
+                ply._WSZCGenuineSpawnDepth = (ply._WSZCGenuineSpawnDepth or 0) + 1
+                local ok, err = pcall(hg.organism.Clear, ply.organism)
+                ply._WSZCGenuineSpawnDepth = math.max((ply._WSZCGenuineSpawnDepth or 1) - 1, 0)
+                if not ok then Warn("respawn organism Clear failed: " .. tostring(err)) end
+            end
+            ReconcileSpawnShrapnel(ply, true)
+            local org = ply.organism
+            if type(org) == "table" then
+                ply.fullsend = true
+                if hg and hg.send_organism then pcall(hg.send_organism, org) end
+                ply.fullsend = true
+                if hg and hg.send_bareinfo then pcall(hg.send_bareinfo, org) end
+                if cvShadow and cvShadow:GetBool() then pcall(PushShadow, ply, org) end
+            end
         end)
     end)
 
