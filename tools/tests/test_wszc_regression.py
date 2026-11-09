@@ -565,6 +565,15 @@ check('S61 remote and self share the same advanced WoundView and explicit sessio
       and 'live = live, oneDose = oneDose' in remote_server_s
       and 'data[name] ~= nil then return data[name]' in src('woundsystem_zcity_compat/lua/autorun/server/sv_zcity_woundsystem_compat_minigames.lua'))
 
+check('S62 WoundView has no ZCity medicine strip or duplicate treatment buttons',
+      all(marker not in inspect_s for marker in (
+          'WSZC_WoundViewTreatHUD', 'ZCITY_MED_BAR_DEFS', 'CollectMedicineBarEntries',
+          'BuildLimbContextActions', 'InstallLimbActionButtons', 'WSZC.SendWoundViewTreat',
+          'ПЕРЕВЯЗАТЬ РАНУ', 'ПЕРЕБИНТОВАТЬ ПЕРЕЛОМ', 'НАЛОЖИТЬ ЖГУТ'))
+      and '_ActiveTreatRects' not in layout_s
+      and 'WoundSystemActionButtonPos' in layout_s
+      and 'InstallUnconsciousInspectionBridge' in inspect_s)
+
 # Lua syntax (luaparser is optional).
 try:
     sys.path.insert(0, '/tmp/luaparser_pkg')
@@ -2182,32 +2191,6 @@ timer = { Simple = function() end }
 hg = { radialOptions = {} }
 ''')
     radial_lua.execute(inspect_s)
-    context_actions = radial_lua.execute(r'''
-IsValid = function(v) return v ~= nil and v.valid ~= false end
-local bandage = { valid = true, modeValues = { 40 },
-    GetClass = function() return "weapon_bandage_sh" end,
-    GetNetVar = function() return { 0 } end }
-local medic = { GetWeapons = function() return { bandage } end }
-local function action(state, kind)
-    for _, item in ipairs(WSZC.BuildLimbContextActions(medic, "forearm_R", state)) do
-        if item.kind == kind then return item end
-    end
-end
-local empty = action({ bleed = 5 }, "bandage_wound") == nil
-bandage.GetNetVar = function() return { 10 } end
-local arteryOnly = action({ bleed = 20, customStatuses = { WSZC_ARTERIAL_BLEEDING = 20 } }, "bandage_wound") == nil
-local partial = action({ bleed = 5, isBandaged = true }, "bandage_wound") ~= nil
-local fracture = action({ broken = true }, "bandage_fracture")
-local doctor = { Profession = "doctor", GetWeapons = medic.GetWeapons }
-local doctorAction
-for _, item in ipairs(WSZC.BuildLimbContextActions(doctor, "forearm_R", { broken = true })) do
-    if item.kind == "bandage_fracture" then doctorAction = item end
-end
-return empty and arteryOnly and partial and fracture and fracture.enabled == false
-    and doctorAction and doctorAction.enabled == true
-''')
-    check('R47 WoundView respects actual supply, artery-only wounds and partial dressings', context_actions)
-
     radial_filter = radial_lua.execute(r'''
 WSZC.LegacyRadialMedicineBlocked = function() return Blocked end
 local function legacy(label) return { function() end, label } end
@@ -2286,98 +2269,67 @@ return nativeBlocked and restoredAfterOpen and stayedOpen and closedCleanly
 ''')
     check('R45 brain-injury unconscious inspection opens, survives Think and closes cleanly', unconscious_inspection)
 
-    key_and_limb_ui = radial_lua.execute(r'''
-local patient = { alive = true, Nick = function() return "Bob" end, GetPlayerName = function() return "Wanda" end }
-local medic = {
-    alive = true,
-    Alive = function(self) return self.alive end,
-    GetNWBool = function() return false end,
-    SetNWBool = function() end,
-    GetWeapons = function()
-        return {
-            { GetClass = function() return "weapon_bandage_sh" end, modeValues = { 40 } },
-            { GetClass = function() return "weapon_tourniquet" end, modeValues = { 1 } },
-        }
-    end,
-}
+    no_medicine_ui = radial_lua.execute(r'''
+local nativeCalls = 0
+local nativeAction = function() nativeCalls = nativeCalls + 1 end
+_G.WoundSystemDrawLimbActionPoint = nativeAction
+local patient = { alive = true }
+local medic = { alive = true, Alive = function(self) return self.alive end }
 LocalPlayer = function() return medic end
-KEY_T = 30
-local tPressed = false
-input = {
-    IsKeyDown = function(code) return code == 30 and tPressed end,
-    IsMouseDown = function() return false end,
-}
-local remoteOpened = nil
-WSZC.RemoteMedical = {
-    active = true,
-    target = patient,
-    FindPatient = function() return patient end,
-}
-WSZC.OpenRemotePatient = function(target)
-    remoteOpened = target
-    return true
-end
-WoundSystemHealthHUDOpen = false
+WSZC.RemoteMedical = { active = true, target = patient }
 WSZC.InstallUnconsciousInspectionBridge()
-tPressed = true
-hook.GetTable().Think.ToggleHUDInput()
--- T must NOT hijack into remote inspection; remote WoundView opens from Q menu!
-local tDidNotHijackRemote = (remoteOpened == nil)
-
--- Outside WoundView, PostDrawHUD must NOT draw any floating world prompt.
-local drawnOutside = 0
-surface = {
-    SetDrawColor = function() end,
-    DrawRect = function() drawnOutside = drawnOutside + 1 end,
-    DrawOutlinedRect = function() end,
-    PlaySound = function() end,
-}
-draw = { SimpleText = function() drawnOutside = drawnOutside + 1 end }
-ScrW = function() return 1920 end
-ScrH = function() return 1080 end
-hook.GetTable().PostDrawHUD.WSZC_WoundViewTreatHUD()
-local cleanWorldHUD = (drawnOutside == 0)
-
--- Inside the remote patient's WoundView, contextual limb action pills dispatch WSZC_WoundViewTreat on click.
-WoundSystemHealthHUDOpen = true
-local packets = {}
-local current = nil
-net = {
-    Start = function(name) current = { name = name, vals = {} }; packets[#packets + 1] = current end,
-    WriteEntity = function(v) current.vals[#current.vals + 1] = v end,
-    WriteString = function(v) current.vals[#current.vals + 1] = v end,
-    WriteUInt = function(v) current.vals[#current.vals + 1] = v end,
-    SendToServer = function() end,
-}
-WoundSystemActionButtonPos = { x = 600, y = 400 }
-_G.WoundSystemDrawLimbActionPoint = function() end
-WSZC.InstallLimbActionButtons()
-
-local limbState = {
-    bleed = 5,
-    broken = true,
-    isBandaged = false,
-    customStatuses = { WSZC_ARTERIAL_BLEEDING = true },
-}
--- Draw once to compute rectangles, then click the fracture pill (row 3: tourniquet, wound, fracture)
-_G.WoundSystemDrawLimbActionPoint("crus_R", limbState, { x = 560, y = 460 }, 400, 300, 1, 1.5, -1, -1, false, false, false)
-local rects = WSZC._ActiveLimbTreatRects
-local hasAllThree = type(rects) == "table" and #rects == 3
-local fracRect = hasAllThree and rects[3] or nil
-if fracRect then
-    _G.WoundSystemDrawLimbActionPoint(
-        "crus_R", limbState, { x = 560, y = 460 }, 400, 300, 1, 1.5,
-        fracRect.x + 15, fracRect.y + 10, true, false, false
-    )
-end
-local clickedFracture = #packets == 1
-    and packets[1].name == "WSZC_WoundViewTreat"
-    and packets[1].vals[1] == patient
-    and packets[1].vals[2] == "crus_R"
-    and packets[1].vals[3] == "bandage_fracture"
-return tDidNotHijackRemote and cleanWorldHUD and hasAllThree and clickedFracture
+local callsAfterInstall = _G.WoundSystemDrawLimbActionPoint == nativeAction
+_G.WoundSystemDrawLimbActionPoint("hand_R", { shrapnel = 1 })
+local post = hook.GetTable().PostDrawHUD or {}
+return callsAfterInstall and nativeCalls == 1
+    and post.WSZC_WoundViewTreatHUD == nil
+    and WSZC.BuildLimbContextActions == nil
+    and WSZC.SendWoundViewTreat == nil
 ''')
-    check('R46 remote WoundView opens via Q-menu without world HUD clutter and limb pills treat remote patient', key_and_limb_ui)
+    check('R46 WoundView preserves native limb actions without adding medicine controls', no_medicine_ui)
+
+    native_gui = src('woundsystem_zcity_compat/lua/wszc_vendor/cu/woundsystem/client/cl_health_gui.lua')
+    start = native_gui.index('function WoundSystemDrawLimbActionPoint(')
+    end = native_gui.index('hook.Add("HUDPaint", "WoundDollAndPanel"', start)
+    radial_lua.execute(r'''
+WoundSystemActionButtonPos = { x = nil, y = nil }
+WoundSystemLimbUIConfig = { ShrapnelPoint = { TextEnabled = false } }
+GUIState = { lastMouseState = false }
+Icons = { uiPoint = {} }
+render = { SetScissorRect = function() end }
+surface = { SetDrawColor = function() end }
+draw = { SimpleText = function() end }
+math.Clamp = function(v, lo, hi) return math.max(lo, math.min(hi, v)) end
+RealFrameTime = function() return 0.1 end
+Lerp = function(t, a, b) return a + t * (b - a) end
+SetGuiMaterial = function() end
+DrawRectInt = function() end
+WoundSystemTooltipText = function() return "", "" end
+WoundSystemQueueDirectTooltip = function() end
+NativeRequests = {}
+RequestShrapnelMinigameStart = function(id) NativeRequests[#NativeRequests + 1] = {"shrapnel", id} end
+RequestDislocationMinigameStart = function(id) NativeRequests[#NativeRequests + 1] = {"dislocation", id} end
+RequestRemoveLimbStatus = function(id, status) NativeRequests[#NativeRequests + 1] = {status, id} end
+''')
+    radial_lua.execute(native_gui[start:end])
+    native_actions = radial_lua.execute(r'''
+local function click(state)
+    WoundSystemActionButtonPos = { x = nil, y = nil }
+    WoundSystemDrawLimbActionPoint("forearm_R", state, { x = 560, y = 460 },
+        400, 300, 1, 1.5, 611, 370, true, false, false)
+end
+click({ shrapnel = 1, dislocated = true })
+click({ shrapnel = 0, dislocated = true })
+click({ shrapnel = 0, customStatuses = { TOURNIQUET = true } })
+click({ shrapnel = 0, customStatuses = { SPLINTED = true } })
+click({ shrapnel = 0, bleed = 10, broken = true })
+return #NativeRequests == 4
+    and NativeRequests[1][1] == "shrapnel" and NativeRequests[1][2] == "forearm_R"
+    and NativeRequests[2][1] == "dislocation"
+    and NativeRequests[3][1] == "TOURNIQUET"
+    and NativeRequests[4][1] == "SPLINTED"
+''')
+    check('R47 native action point retains shrapnel, dislocation and removal, not medicine buttons', native_actions)
 
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)

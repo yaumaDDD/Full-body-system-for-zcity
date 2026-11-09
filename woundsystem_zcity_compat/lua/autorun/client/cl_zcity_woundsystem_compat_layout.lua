@@ -649,14 +649,6 @@ function WSZC.WoundViewEmptyClick(mx, my, s)
     if type(ap) == "table" and type(ap.x) == "number" and type(ap.y) == "number" then
         if Inside(ap.x - 60 * s, ap.y - 60 * s, 320 * s, 210 * s) then return false end
     end
-    local treatRects = WSZC._ActiveTreatRects
-    if type(treatRects) == "table" then
-        for _, r in ipairs(treatRects) do
-            if type(r) == "table" and Inside(r.x - 8, r.y - 8, r.w + 16, r.h + 16) then
-                return false
-            end
-        end
-    end
     return true
 end
 
