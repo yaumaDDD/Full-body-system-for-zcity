@@ -2503,6 +2503,45 @@ return treated and healed
 ''')
     check('R54 red icon hidden after bandaging even when native renderer is inlined and debug is unavailable', independent_hud)
 
+    selection_reset = lua.execute(r'''
+local limb = { skin = 12, broken = true }
+local GUIState = { hudOpen = true, openTime = 1, selectedLimbData = { id = "head", state = limb },
+    HoverAnims = { head = 0.5, arm = 0.2 }, LastHoverStates = { head = true, arm = false } }
+local function NativeHUD()
+    return GUIState.selectedLimbData, GUIState.HoverAnims, GUIState.LastHoverStates
+end
+hook.Add("HUDPaint", "WoundDollAndPanel", NativeHUD)
+WSZC.ClearCULimbsCache()
+WSZC.InstallCUHudFilter()
+WoundSystemHealthHUDOpen = true
+WoundSystemSelectedLimbId = "head"
+local first = hook._t.HUDPaint.WoundDollAndPanel()
+local fresh = first == nil and WoundSystemSelectedLimbId == nil and GUIState.HoverAnims.head == 0
+    and GUIState.LastHoverStates.head == false
+GUIState.selectedLimbData = { id = "head", state = limb }
+GUIState.HoverAnims.head = 0.5
+GUIState.LastHoverStates.head = true
+WoundSystemSelectedLimbId = "head"
+local stillSelected = hook._t.HUDPaint.WoundDollAndPanel() ~= nil
+WoundSystemHealthHUDOpen = false
+hook._t.Think.WSZC_ClearClosedWoundViewSelection()
+local closed = GUIState.selectedLimbData == nil and WoundSystemSelectedLimbId == nil
+    and GUIState.HoverAnims.head == 0 and GUIState.LastHoverStates.head == false
+-- If close and reopen happen before Think, the changed native openTime still
+-- clears the previous selection before the first native draw.
+WoundSystemHealthHUDOpen = true
+GUIState.openTime = 2
+hook._t.HUDPaint.WoundDollAndPanel()
+GUIState.selectedLimbData = { id = "head", state = limb }
+WoundSystemSelectedLimbId = "head"
+GUIState.openTime = 3
+local reopened = hook._t.HUDPaint.WoundDollAndPanel() == nil
+    and WoundSystemSelectedLimbId == nil
+return fresh and stillSelected and closed, reopened and limb.skin == 12 and limb.broken == true
+''')
+    check('R55 WoundView selection and hover reset on close, but remain during an open view', selection_reset[0])
+    check('R56 fast reopen clears stale selection before native draw without changing damage', selection_reset[1])
+
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)
 passed = sum(1 for _, ok in results if ok)

@@ -1026,6 +1026,7 @@ local function InstallHudFilter()
 
     savedHudFn = fn
     hudWrapper = function(...)
+        if WSZC.SyncWoundViewSelection then WSZC.SyncWoundViewSelection() end
         -- A minigame draws its own overlay.  Leaving WoundView behind it made
         -- the doll, FIX DISLOCATION label and tooltips appear stacked over the
         -- bone/hand ("too many reductions, all too high to click").
@@ -1501,6 +1502,45 @@ local function FindCUGUIState()
     if type(savedHudFn) == "function" then return walk(savedHudFn, 0) end
     return nil
 end
+
+-- C:U keeps the last hovered limb in its private GUIState even after closing.
+-- Reset only UI selection/hover state, never the underlying medical state.
+local selectionGUIState, selectionOpenTime, selectionWasOpen
+local function ClearWoundViewSelection(guiState)
+    if guiState then
+        guiState.selectedLimbData = nil
+        for id in pairs(guiState.HoverAnims) do guiState.HoverAnims[id] = 0 end
+        for id in pairs(guiState.LastHoverStates) do guiState.LastHoverStates[id] = false end
+    end
+    WoundSystemSelectedLimbId = nil
+end
+
+function WSZC.SyncWoundViewSelection()
+    local isOpen = WoundSystemHealthHUDOpen == true
+    -- Avoid repeatedly searching all HUD closures before C:U has loaded.
+    local guiState = (isOpen or cachedCUGUIState or WoundSystemSelectedLimbId ~= nil)
+        and FindCUGUIState() or nil
+    if not isOpen then
+        if guiState and (selectionWasOpen or guiState.selectedLimbData ~= nil) then
+            ClearWoundViewSelection(guiState)
+        else
+            WoundSystemSelectedLimbId = nil
+        end
+        selectionWasOpen = false
+        return
+    end
+    if not guiState then return end
+    -- openTime catches a close/reopen between frames, when no Think saw the
+    -- closed state. A fresh hover in the same draw can immediately select again.
+    if not selectionWasOpen or selectionGUIState ~= guiState or selectionOpenTime ~= guiState.openTime then
+        ClearWoundViewSelection(guiState)
+    end
+    selectionGUIState, selectionOpenTime, selectionWasOpen = guiState, guiState.openTime, true
+end
+
+hook.Add("Think", "WSZC_ClearClosedWoundViewSelection", function()
+    if WoundSystemHealthHUDOpen ~= true then WSZC.SyncWoundViewSelection() end
+end)
 
 local function FindCULimbs()
     if cachedCULimbs and IsCULimbsTable(cachedCULimbs) then return cachedCULimbs end
