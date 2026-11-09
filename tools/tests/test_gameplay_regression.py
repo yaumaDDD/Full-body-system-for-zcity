@@ -576,6 +576,60 @@ return formerlyCovered, clean, fresh and stable
     check("R108 reset clears detached and current character dressing tables and netvars", fresh_after_reset[1])
     check("R109 a new pellet after reset remains an uncovered bleeding wound", fresh_after_reset[2])
 
+    tracked_reset = lua.execute(r'''
+local ply = MakePlayer()
+local rag = { bandaged_limbs = { old = true }, tourniquets = { { 1 } },
+    wounds = { { 5 } }, arterialwounds = { { 10 } },
+    SetNetVar = function(self, key, value) self.net = self.net or {}; self.net[key] = value end }
+ply.FakeRagdoll = rag
+hook._t.Fake.WSZC_ShrapnelRagdollKeep(ply, rag)
+ply.FakeRagdoll = nil -- the old body is no longer discoverable by current-character lookups
+ply.bandaged_limbs, ply.tourniquets = { old = true }, { { 1 } }
+ply._limbs.hand_R.customStatuses = { TOURNIQUET = 5, OTHER_MEDICAL = 10 }
+ply._limbs.hand_R.hasInjection, ply._limbs.hand_R.disinfectTime = true, 55
+hg.TourniquetGuys = { rag, ply }
+local ok = hg.WoundBridge.ResetOrganism(ply)
+local clean = ok and next(rag.bandaged_limbs) == nil and next(rag.tourniquets) == nil
+    and next(rag.net.bandaged_limbs) == nil and next(rag.net.Tourniquets) == nil
+    and next(rag.wounds) == nil and next(rag.arterialwounds) == nil
+    and next(rag.net.wounds) == nil and next(rag.net.arterialwounds) == nil
+    and next(ply.bandaged_limbs) == nil and next(ply.tourniquets) == nil
+    and #hg.TourniquetGuys == 0 and next(ply._limbs.hand_R.customStatuses) == nil
+    and not ply._limbs.hand_R.hasInjection and ply._limbs.hand_R.disinfectTime == 0
+return clean
+''')
+    check("R111 explicit reset clears tracked detached bodies, tourniquets and all medical statuses", tracked_reset)
+
+    physical_on_error = lua.execute(r'''
+local ply = MakePlayer()
+local rag = { bandaged_limbs = { old = true }, tourniquets = { 1 },
+    SetNetVar = function(self, key, value) self.net = self.net or {}; self.net[key] = value end }
+ply.FakeRagdoll = rag
+local previous = WoundSystem.Health.GetLimbs
+WoundSystem.Health.GetLimbs = function() error("broken C:U limb accessor") end
+local ok = pcall(WSZC.ClearAllShrapnel, ply, ply.organism)
+WoundSystem.Health.GetLimbs = previous
+return not ok and next(rag.bandaged_limbs) == nil and next(rag.tourniquets) == nil
+    and next(rag.net.bandaged_limbs) == nil and next(rag.net.Tourniquets) == nil
+''')
+    check("R112 physical dressing cleanup runs even if C:U limb reset fails", physical_on_error)
+
+    visual_broadcast = lua.execute(r'''
+local previous = net
+local written = {}
+net = { Start = function(name) written.name = name end,
+    WriteUInt = function(value, bits) written[#written + 1] = { value, bits } end,
+    Broadcast = function() written.broadcast = true end }
+WSZC.SendMedicalVisualReset({ { EntIndex = function() return 14 end },
+    { EntIndex = function() return 29 end } })
+net = previous
+return written.name == "WSZC_ResetMedicalVisuals" and written.broadcast
+    and written[1][1] == 2 and written[1][2] == 8
+    and written[2][1] == 14 and written[2][2] == 16
+    and written[3][1] == 29 and written[3][2] == 16
+''')
+    check("R115 reset notifies all clients to remove physical treatment models", visual_broadcast)
+
     death_reset = lua.execute(r'''
 local dead = MakePlayer()
 dead.Alive = function() return false end
@@ -601,6 +655,9 @@ end
 local originalResolver = hg.RagdollOwner
 WSZC.AddShrapnel(dead, "hand_R", 1, "shotgun")
 propertyNick = nil
+ragdoll.bandaged_limbs, ragdoll.tourniquets = { stale = true }, { 1 }
+ragdoll.SetNetVar = function(self, key, value) self.net = self.net or {}; self.net[key] = value end
+dead.DeathRagdoll = nil -- admin targets a ragdoll no longer attached to its owner
 local property = { Filter = function() return true end }
 property.Receive = function(self, length, admin)
     local ent = net.ReadEntity()
@@ -619,6 +676,8 @@ local propertyWorks = ok and propertyNick == "regression_player"
     and (dead.organism.wszc_shrapnel == nil or (dead.organism.wszc_shrapnel.hand_R or 0) == 0)
     and dead.organism.blood == 5000
     and hg.RagdollOwner == originalResolver and WSZC._ExplicitResetDepth == 0
+    and WSZC._ResetPropertyTarget == nil and next(ragdoll.bandaged_limbs) == nil
+    and next(ragdoll.tourniquets) == nil and next(ragdoll.net.Tourniquets) == nil
 if not ok then propertyError = tostring(err) end
 
 local cleanupPlayer = MakePlayer()
@@ -1624,9 +1683,9 @@ assert(WSZC.InstallAmputationStatus())
 local state = { customStatuses = { TOURNIQUET = 4, WSZC_AMPUTATION = true } }
 local active = WoundSystem.Statuses.GetActive(state)
 return #active == 2 and active[1].id == "WSZC_AMPUTATION" and active[2].id == "TOURNIQUET"
-    and active[1].data.icon == "casunknown-images/moodles/amputation.png"
+    and active[1].data.icon == ""
 ''')
-    check("R50 native Statuses.GetActive draws amputation before tourniquet/bleed statuses", native_status_order)
+    check("R50 amputation stays tracked without an extra WoundView icon", native_status_order)
 
     internal_registration = shared_s.split('WSZC.INTERNAL_BLEEDING_STATUS_ID =', 1)[1].split('-- Short-lived context flag:', 1)[0]
     status_client.execute('WSZC.INTERNAL_BLEEDING_STATUS_ID =' + internal_registration)
@@ -1647,13 +1706,25 @@ assert(WSZC.InstallArterialBleedingStatus())
 local state = { customStatuses = { WSZC_ARTERIAL_BLEEDING = 12 } }
 local active = WoundSystem.Statuses.GetActive(state)
 local ok = #active == 1 and active[1].id == "WSZC_ARTERIAL_BLEEDING"
-    and active[1].data.icon == "casunknown-images/icons/strongbleed.png"
-    and active[1].data.color[1] == 255 and active[1].data.color[2] == 55
+    and active[1].data.icon == "wszc/unitmenu/status/arterial.png"
+    and active[1].data.color[1] == 255 and active[1].data.color[2] == 255
     and active[1].data.type == "number" and active[1].data.order == -8000
 state.customStatuses.WSZC_ARTERIAL_BLEEDING = 0
 return ok and #WoundSystem.Statuses.GetActive(state) == 0
 ''')
     check("R96 arterial marker uses its own red blood material and disappears at zero", native_arterial_icon)
+
+    refreshed_status = status_client.execute(r'''
+local statuses = WoundSystem.Statuses.Stored
+statuses.WSZC_AMPUTATION.icon = "casunknown-images/moodles/amputation.png"
+statuses.WSZC_ARTERIAL_BLEEDING.icon = "casunknown-images/icons/strongbleed.png"
+assert(WSZC.InstallAmputationStatus() and WSZC.InstallArterialBleedingStatus())
+return statuses.WSZC_AMPUTATION.icon == ""
+    and statuses.WSZC_ARTERIAL_BLEEDING.icon == "wszc/unitmenu/status/arterial.png"
+    and statuses.WSZC_ARTERIAL_BLEEDING.color[2] == 255
+''')
+    check("R113 reload removes the unwanted icon and refreshes the distinct arterial marker", refreshed_status)
+    check("R114 distinct arterial icon is bundled", (CONN / "materials/wszc/unitmenu/status/arterial.png").is_file())
 
     neck_state = lua.execute(r'''
 local ply = MakePlayer()
@@ -1874,7 +1945,7 @@ local state = ply._limbs.forearm_R
 local active = WoundSystem.Statuses.GetActive(state)
 local present = state.customStatuses[id] == 12 and state.bleed > 12
     and #active == 1 and active[1].id == id
-    and active[1].data.icon == "casunknown-images/icons/strongbleed.png"
+    and active[1].data.icon == "wszc/unitmenu/status/arterial.png"
     and (not ply._limbs.hand_R.customStatuses
         or ply._limbs.hand_R.customStatuses[id] == nil)
 

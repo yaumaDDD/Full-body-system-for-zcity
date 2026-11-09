@@ -632,11 +632,15 @@ function WSZC.InstallAmputationStatus()
         return false
     end
     local id = WSZC.AMPUTATION_STATUS_ID
-    if type(statuses.Stored) == "table" and statuses.Stored[id] then return true end
+    local existing = type(statuses.Stored) == "table" and statuses.Stored[id] or nil
+    if existing then
+        existing.icon = ""
+        return true
+    end
     statuses.Register(id, {
         title = "Amputation",
         desc = "The limb is severed. Arterial bleeding is a separate wound; apply a tourniquet to the stump.",
-        icon = "casunknown-images/moodles/amputation.png",
+        icon = "",
         type = "bool",
         order = -10000,
         color = { 255, 116, 116 },
@@ -682,14 +686,19 @@ function WSZC.InstallArterialBleedingStatus()
         return false
     end
     local id = WSZC.ARTERIAL_BLEEDING_STATUS_ID
-    if type(statuses.Stored) == "table" and statuses.Stored[id] then return true end
+    local existing = type(statuses.Stored) == "table" and statuses.Stored[id] or nil
+    if existing then
+        existing.icon = "wszc/unitmenu/status/arterial.png"
+        existing.color = { 255, 255, 255 }
+        return true
+    end
     statuses.Register(id, {
         title = "Arterial bleeding",
         desc = "An artery is open. Apply a tourniquet; an ordinary bandage cannot close it.",
-        icon = "casunknown-images/icons/strongbleed.png",
+        icon = "wszc/unitmenu/status/arterial.png",
         type = "number",
         order = -8000,
-        color = { 255, 55, 55 },
+        color = { 255, 255, 255 },
         networkDecimals = 2,
     })
     return true

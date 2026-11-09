@@ -18,6 +18,35 @@ WSZC = WSZC or {}
 if WSZC._ClientLayoutLoaded then return end
 WSZC._ClientLayoutLoaded = true
 
+-- ZCity's bandages and tourniquets use clientside models and entity netvars.
+-- An explicit organism reset removes both even on a detached ragdoll.  The
+-- server still clears the real state and sends ZCity's normal netvars first.
+net.Receive("WSZC_ResetMedicalVisuals", function()
+    local count = net.ReadUInt(8)
+    for _ = 1, count do
+        local index = net.ReadUInt(16)
+        if zb and zb.net and type(zb.net[index]) == "table" then
+            zb.net[index].bandaged_limbs = {}
+            zb.net[index].Tourniquets = {}
+            zb.net[index].wounds, zb.net[index].arterialwounds = {}, {}
+        end
+        local ent = Entity(index)
+        if IsValid(ent) then
+            ent.bandaged_limbs, ent.tourniquets = {}, {}
+            ent.wounds, ent.arterialwounds = {}, {}
+            if IsValid(ent.bandagesModel) then ent.bandagesModel:Remove() end
+            ent.bandagesModel = nil
+            if type(ent.tourniquetsM) == "table" then
+                for _, model in pairs(ent.tourniquetsM) do
+                    if IsValid(model) then model:Remove() end
+                end
+            end
+            ent.tourniquetsM = nil
+        end
+    end
+end)
+
+
 local cvFullscreen = CreateClientConVar("zc_woundsystem_compat_fullscreen_minigame", "1", true, false,
     "1 = stretch the bandage / syringe minigames over the whole screen")
 local cvZoom = CreateClientConVar("zc_woundsystem_compat_minigame_zoom", "0.85", true, false,
@@ -860,8 +889,8 @@ WSZC.InstallCUHudDrawWrappers = InstallDrawWrappers
 -- Keep treatment state intact; filter ONLY presentation in native WoundView.
 -- Owner-marked icons: disinfect spray and injection.  Fracture/dislocation
 -- and all bleeding icons (ordinary + arterial) stay visible.
--- Infection, shrapnel, tourniquet/splint, amputation and internal-bleed status
--- are not part of this removal and keep their existing behaviour.
+-- Infection, shrapnel, tourniquet/splint and internal-bleed status keep their
+-- existing behaviour. The amputation state is preserved without its old icon.
 local disinfectedFilterFns = setmetatable({}, { __mode = "k" })
 local disinfectedFilterWrappers = setmetatable({}, { __mode = "k" })
 
@@ -1142,8 +1171,7 @@ hook.Add("Think", "WSZC_CUInventoryLayout", function()
     -- is what keeps the doll / status icons out of HiddenRegion().
     WSZC.InstallMaterialTracker()
     -- Register the client half of the stump status after C:U's shared status
-    -- module has loaded.  The server syncs only this extra customStatus key;
-    -- native Statuses.GetActive() draws it before every arterial bleed icon.
+    -- module has loaded. It remains synchronized but has no WoundView icon.
     if WSZC.InstallAmputationStatus then WSZC.InstallAmputationStatus() end
     if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
     if WSZC.InstallArterialBleedingStatus then WSZC.InstallArterialBleedingStatus() end

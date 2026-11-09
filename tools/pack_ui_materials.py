@@ -156,7 +156,7 @@ def main():
         for folder in ('wszc/unitmenu', 'wszc/minigame')
         for p in (OUT / folder).rglob('*') if p.is_file()
     }
-    assert len(generated) == 39, ('34 limb + 3 status + 2 hand PNGs', len(generated))
+    assert len(generated) == 40, ('34 limb + 4 status + 2 hand PNGs', len(generated))
 
     # ------------------------------------------------------------------ aliases
     refs = referenced_paths(collect_lua_sources())
@@ -241,7 +241,7 @@ def main():
     print('packed', len(entries), 'materials', dict(exts))
     actual_materials = [p for p in OUT.rglob('*') if p.is_file()]
     limb_pngs = [p for p in (OUT / 'wszc/unitmenu/limbs').glob('*.png')]
-    assert len(actual_materials) == 653, ('complete material count', len(actual_materials))
+    assert len(actual_materials) == 654, ('complete material count', len(actual_materials))
     assert len(limb_pngs) == 34, ('17 fill + 17 edge sprites', len(limb_pngs))
     print('ALL_LUA_UI_MATERIALS_RESOLVED', len(refs), 'referenced paths')
 

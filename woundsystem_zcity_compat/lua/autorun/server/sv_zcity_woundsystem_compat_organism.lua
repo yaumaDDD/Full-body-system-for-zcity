@@ -856,6 +856,14 @@ local function NormalizeNativeWound(wound)
     return wound
 end
 
+-- Keep weak references to this life's physical bodies: a ragdoll can be
+-- detached before an admin resets its owner, while its visual netvars survive.
+local function TrackMedicalEntity(ply, ent)
+    if not (IsValid(ply) and IsValid(ent)) then return end
+    ply._WSZCMedicalEntities = ply._WSZCMedicalEntities or setmetatable({}, { __mode = "k" })
+    ply._WSZCMedicalEntities[ent] = true
+end
+
 local function SyncBandagedWounds(ply, org, bandagedBones)
     local owner = IsValid(org.owner) and org.owner or ply
     local entities = { ply, owner, ply.FakeRagdoll }
@@ -868,6 +876,7 @@ local function SyncBandagedWounds(ply, org, bandagedBones)
     for _, ent in ipairs(entities) do
         if IsValid(ent) and not seen[ent] then
             seen[ent] = true
+            TrackMedicalEntity(ply, ent)
             ent.bandaged_limbs = ent.bandaged_limbs or {}
             for bone in pairs(bandagedBones) do ent.bandaged_limbs[bone] = true end
             if ent.SetNetVar then
@@ -1457,6 +1466,7 @@ local function SyncTourniquetWounds(ply, org, visualWound, limbId)
     for _, ent in ipairs(entities) do
         if IsValid(ent) and not seen[ent] then
             seen[ent] = true
+            TrackMedicalEntity(ply, ent)
             ent.tourniquets = ent.tourniquets or {}
             ent.tourniquets[#ent.tourniquets + 1] = {
                 visualWound[2], visualWound[3], visualBone,
@@ -3109,7 +3119,10 @@ local function RestoreShrapnelSoon(ply)
     end)
 end
 WSZC.RestoreShrapnelSoon = RestoreShrapnelSoon
-hook.Add("Fake", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
+hook.Add("Fake", "WSZC_ShrapnelRagdollKeep", function(ply, ragdoll)
+    if OrganismHooksActive() then TrackMedicalEntity(ply, ragdoll) end
+    RestoreShrapnelSoon(ply)
+end)
 -- Server ZCity emits "Fake Up" immediately BEFORE its internal ply:Spawn();
 -- client ZCity uses "FakeUp".  Listen to both names, never just the client one.
 hook.Add("Fake Up", "WSZC_ShrapnelRagdollKeep", function(ply) RestoreShrapnelSoon(ply) end)
@@ -3124,6 +3137,8 @@ hook.Add("PlayerDeath", "WSZC_RagdollTransitionDeath", function(ply)
     if not IsValid(ply) then return end
     ply._WSZCRagdollTransitionUntil = nil
     ply._WSZCShrapnelCarry = nil
+    -- Previous life's corpse keeps its wounds unless it is explicitly reset.
+    ply._WSZCMedicalEntities = nil
     ply._WSZCSpawnKind = "genuine"
 end)
 
@@ -5826,6 +5841,12 @@ local function ResetMedicalEntities(ply, org, prior)
     add(ply)
     if type(org) == "table" then add(org.owner) end
     if IsValid(ply) then
+        if type(ply._WSZCMedicalEntities) == "table" then
+            for ent in pairs(ply._WSZCMedicalEntities) do add(ent) end
+        end
+        local target = WSZC._ResetPropertyTarget
+        if IsValid(target) and (target == ply or (type(org) == "table" and target.organism == org)
+            or OwnerOf(target, true, true) == ply) then add(target) end
         add(ply.FakeRagdoll)
         if ply.Alive and not ply:Alive() then add(ply.DeathRagdoll) end
         if hg and hg.GetCurrentCharacter then
@@ -5834,6 +5855,28 @@ local function ResetMedicalEntities(ply, org, prior)
         end
     end
     return entities
+end
+
+if util and util.AddNetworkString then util.AddNetworkString("WSZC_ResetMedicalVisuals") end
+
+-- Native netvars remain authoritative; this extra reliable message explicitly
+-- removes already-created clientside models, including on detached ragdolls.
+function WSZC.SendMedicalVisualReset(entities)
+    if not (net and net.Start and net.WriteUInt and net.Broadcast) then return end
+    local indices = {}
+    for _, ent in ipairs(entities) do
+        if IsValid(ent) and ent.EntIndex and #indices < 255 then
+            local index = ent:EntIndex()
+            if type(index) == "number" and index > 0 and index < 65536 then
+                indices[#indices + 1] = index
+            end
+        end
+    end
+    if #indices == 0 then return end
+    net.Start("WSZC_ResetMedicalVisuals")
+    net.WriteUInt(#indices, 8)
+    for _, index in ipairs(indices) do net.WriteUInt(index, 16) end
+    net.Broadcast()
 end
 
 function WSZC.ClearAllShrapnel(ply, org, priorEntities)
@@ -5879,10 +5922,41 @@ function WSZC.ClearAllShrapnel(ply, org, priorEntities)
         if WSZC.CancelRemotePatientTreatment then
             pcall(WSZC.CancelRemotePatientTreatment, ply, "zcity_compat_reset")
         end
-        if WSZC.StopAllMinigames then WSZC.StopAllMinigames(ply, "zcity_compat_reset", true) end
+        if WSZC.StopAllMinigames then pcall(WSZC.StopAllMinigames, ply, "zcity_compat_reset", true) end
+        -- Explicit reset also removes ZCity's own medical presentation.  A
+        -- stale bandaged_limbs entry would otherwise keep rendering a dressing
+        -- after every real wound and infection has already been cleared.
+        local seen = {}
+        for _, ent in ipairs(entities) do
+            if IsValid(ent) and not seen[ent] then
+                seen[ent] = true
+                ent.bandaged_limbs, ent.tourniquets = {}, {}
+                ent.wounds, ent.arterialwounds = {}, {}
+                if ent.SetNetVar then
+                    pcall(ent.SetNetVar, ent, "bandaged_limbs", ent.bandaged_limbs)
+                    pcall(ent.SetNetVar, ent, "Tourniquets", ent.tourniquets)
+                    -- ZCity's client prefers the ragdoll's own wound netvars
+                    -- over the player's; leaving those stale resurrects blood.
+                    pcall(ent.SetNetVar, ent, "wounds", ent.wounds)
+                    pcall(ent.SetNetVar, ent, "arterialwounds", ent.arterialwounds)
+                end
+            end
+        end
+        if hg and type(hg.TourniquetGuys) == "table" then
+            for i = #hg.TourniquetGuys, 1, -1 do
+                if seen[hg.TourniquetGuys[i]] then table.remove(hg.TourniquetGuys, i) end
+            end
+            if SetNetVar then pcall(SetNetVar, "TourniquetGuys", hg.TourniquetGuys) end
+        end
+        ply._WSZCMedicalEntities = nil
+        local visualOK, visualErr = pcall(WSZC.SendMedicalVisualReset, entities)
+        if not visualOK then Warn("medical visual reset notification failed: " .. tostring(visualErr)) end
         local h = H()
-        if h and h.ResetPlayer then pcall(h.ResetPlayer, ply)
-        elseif h and h.InitPlayer then pcall(h.InitPlayer, ply) end
+        local resetOK, resetResult = false, false
+        if h and h.ResetPlayer then resetOK, resetResult = pcall(h.ResetPlayer, ply) end
+        if (not resetOK or resetResult == false) and h and h.InitPlayer then
+            pcall(h.InitPlayer, ply)
+        end
         local limbs = h and h.GetLimbs and h.GetLimbs(ply)
         if type(limbs) == "table" then
             for limbId, state in pairs(limbs) do
@@ -5895,16 +5969,10 @@ function WSZC.ClearAllShrapnel(ply, org, priorEntities)
                     state.tourniquetPain, state.tourniquetDurability = 0, nil
                     state.tourniquetSourceSlot = nil
                     state.splinted, state.splintItemId, state.splintSourceSlot = false, nil, nil
-                    if type(state.customStatuses) == "table" then
-                        state.customStatuses.SPLINTED = nil
-                        state.customStatuses.TOURNIQUET = nil
-                        state.customStatuses.WSZC_FRACTURE_BANDAGED = nil
-                        state.customStatuses.WSZC_ARTERIAL_BLEEDING = nil
-                        state.customStatuses.WSZC_INTERNAL_BLEEDING = nil
-                        state.customStatuses.WSZC_AMPUTATION = nil
-                    end
+                    state.customStatuses = {}
                     state.bandageSlowAmount = 0
                     state.infection, state.infectionSpeed = 0, 0
+                    state.disinfectTime, state.hasInjection = 0, false
                     state.dislocationTimer = 0
                     if h.SendLimbUpdate then pcall(h.SendLimbUpdate, ply, limbId, true) end
                 end
@@ -5912,26 +5980,6 @@ function WSZC.ClearAllShrapnel(ply, org, priorEntities)
             ply._WSZCLimbsRef = limbs
         end
 
-        -- Explicit reset also removes ZCity's own medical presentation.  A
-        -- stale bandaged_limbs entry would otherwise keep rendering a dressing
-        -- after every real wound and infection has already been cleared.
-        local seen = {}
-        for _, ent in ipairs(entities) do
-            if IsValid(ent) and not seen[ent] then
-                seen[ent] = true
-                ent.bandaged_limbs, ent.tourniquets = {}, {}
-                if ent.SetNetVar then
-                    pcall(ent.SetNetVar, ent, "bandaged_limbs", ent.bandaged_limbs)
-                    pcall(ent.SetNetVar, ent, "Tourniquets", ent.tourniquets)
-                end
-            end
-        end
-        if hg and type(hg.TourniquetGuys) == "table" then
-            for i = #hg.TourniquetGuys, 1, -1 do
-                if seen[hg.TourniquetGuys[i]] then table.remove(hg.TourniquetGuys, i) end
-            end
-            if SetNetVar then pcall(SetNetVar, "TourniquetGuys", hg.TourniquetGuys) end
-        end
         ply._WSZCExpectedBleed, ply._WSZCExpectedPain = {}, {}
         ply._WSZCExpectedDislocation = {}
         ply._WSZCShrapnelCarry = nil
@@ -6213,7 +6261,9 @@ function WSZC.InstallResetStructureGuard()
             entry._WSZCOriginalReceive = originalReceive
             entry.Receive = function(self, ...)
                 local originalResolver = hg.RagdollOwner
+                local previousTarget = WSZC._ResetPropertyTarget
                 hg.RagdollOwner = function(ent, ...)
+                    WSZC._ResetPropertyTarget = ent
                     if originalResolver then
                         local ok, owner = pcall(originalResolver, ent, ...)
                         if ok and IsValid(owner) then return owner end
@@ -6229,6 +6279,7 @@ function WSZC.InstallResetStructureGuard()
                 end)
                 WSZC._ExplicitResetDepth = math.max((WSZC._ExplicitResetDepth or 1) - 1, 0)
                 hg.RagdollOwner = originalResolver
+                WSZC._ResetPropertyTarget = previousTarget
                 if not ok then
                     Warn("reset_org Receive failed:\n" .. tostring(res))
                     return false

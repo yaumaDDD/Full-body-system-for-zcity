@@ -13,7 +13,7 @@ build directory:
     notifications / AED status labels / death text / icons all survive,
   * runtime behaviour of the HUD filter, full-screen minigames, hand pivot and
     cursor hiding (lupa / LuaRuntime; skipped if lupa is unavailable),
-  * both ZIPs, the 653-material mirror and MANIFEST sha256.
+  * both ZIPs, the 654-material mirror and MANIFEST sha256.
 
 Usage: python3 tools/tests/test_wszc_regression.py
 """
@@ -439,9 +439,9 @@ check('S56b pelvis is a real 17th client/server limb with bone-routed wounds',
 packer_s = (ROOT / 'tools/pack_ui_materials.py').read_text(encoding='utf-8')
 check('S57 packer regenerates the 17-part doll and keeps generated/source counts separate',
       "subprocess.run(doll_cmd, cwd=ROOT, check=True)" in packer_s
-      and "len(generated) == 39" in packer_s
+      and "len(generated) == 40" in packer_s
       and "wanted in entries or wanted in generated" in packer_s
-      and "len(actual_materials) == 653" in packer_s
+      and "len(actual_materials) == 654" in packer_s
       and "len(limb_pngs) == 34" in packer_s
       and 'HEAD_SPLIT_FRAC' in generator_s
       and 'HEAD_SOURCE_LAYOUT' not in generator_s
@@ -869,7 +869,7 @@ try:
           all(im.size == (512, 1260) for im in hand_frames)
           and all(px[3] > 200 and px[0] > px[1] > px[2] for px in grip_pixels))
     mats = [p for p in (CONN / 'materials').rglob('*') if p.is_file()]
-    check('S21 connector ships 653 UI materials', len(mats) == 653)
+    check('S21 connector ships 654 UI materials', len(mats) == 654)
     checksums = (CONN / 'MATERIALS.sha256').read_text(encoding='utf-8').splitlines()
     check('S22 MATERIALS.sha256 has 614 source entries',
           len([l for l in checksums if l.strip() and not l.startswith('#')]) == 614)
@@ -885,12 +885,12 @@ def validate_zips():
         assert z.testzip() is None
         full = {i.filename: z.read(i.filename) for i in z.infolist()}
     conn_files = {p.relative_to(CONN).as_posix(): p.read_bytes() for p in CONN.rglob('*') if p.is_file()}
-    assert len(conn_files) == len(compat) == 753
+    assert len(conn_files) == len(compat) == 754
     assert all(compat['woundsystem_zcity_compat/' + r] == d for r, d in conn_files.items())
     mirror = {n[len('garrysmod/addons/casualties_unknown_health_system_beta/materials/'):]: d
               for n, d in full.items()
               if n.startswith('garrysmod/addons/casualties_unknown_health_system_beta/materials/')}
-    assert len(mirror) == 653
+    assert len(mirror) == 654
     assert all(mirror[r[len('materials/'):]] == d for r, d in conn_files.items() if r.startswith('materials/'))
     assert json.loads(compat['woundsystem_zcity_compat/addon.json'])
     external_bridge = full['garrysmod/addons/z_city/lua/homigrad/woundbridge/sv_woundbridge.lua']
@@ -924,7 +924,7 @@ def validate_zips():
     # +4 neck/pelvis PNGs in the connector and +4 in the C:U material mirror.
     # Six fonts/shaders moved C:U -> connector without changing the old total.
     # The isolated embedded runtime adds 75 Lua files + one provenance manifest.
-    assert len(full) == 2856
+    assert len(full) == 2858
     declared_total = re.search(r'Всего файлов в архиве:\s*(\d+)', manifest)
     assert declared_total and int(declared_total.group(1)) == len(full)
     return True
@@ -991,9 +991,9 @@ gui = { EnableScreenClicker = function(on) clickerOn = on end,
 clickerOn = false
 WoundSystemHealthHUDOpen = false
 input = { IsMouseDown = function() return false end, IsKeyDown = function() return false end }
-netMessages, currentNetMessage = {}, nil
+netMessages, currentNetMessage, resetReceivers = {}, nil, {}
 net = {
-    Receive = function() end,
+    Receive = function(name, fn) resetReceivers[name] = fn end,
     Start = function(name) currentNetMessage = { name = name, writes = {} } end,
     WriteUInt = function(value, bits) table.insert(currentNetMessage.writes, { "uint", value, bits }) end,
     WriteFloat = function(value) table.insert(currentNetMessage.writes, { "float", value }) end,
@@ -2502,6 +2502,29 @@ debug = priorDebug
 return treated and healed
 ''')
     check('R54 red icon hidden after bandaging even when native renderer is inlined and debug is unavailable', independent_hud)
+
+    client_visual_reset = lua.execute(r'''
+local removed = 0
+local function model() return { Remove = function() removed = removed + 1 end } end
+local ent = { bandaged_limbs = { hand = true }, tourniquets = { 1 },
+    wounds = { 1 }, arterialwounds = { 2 }, bandagesModel = model(), tourniquetsM = { model(), model() } }
+local other = { bandaged_limbs = { safe = true }, tourniquets = { 1 } }
+local objects = { [12] = ent, [13] = other }
+Entity = function(index) return objects[index] end
+zb = { net = { [12] = { bandaged_limbs = { hand = true }, Tourniquets = { 1 },
+                        wounds = { 1 }, arterialwounds = { 2 } },
+               [13] = { bandaged_limbs = { safe = true }, Tourniquets = { 1 } } } }
+local values, cursor = { 2, 12, 99 }, 0
+net.ReadUInt = function(bits) cursor = cursor + 1; return values[cursor] end
+resetReceivers.WSZC_ResetMedicalVisuals()
+return removed == 3 and ent.bandagesModel == nil and ent.tourniquetsM == nil
+    and next(ent.bandaged_limbs) == nil and next(ent.tourniquets) == nil
+    and next(zb.net[12].bandaged_limbs) == nil and next(zb.net[12].Tourniquets) == nil
+    and next(ent.wounds) == nil and next(ent.arterialwounds) == nil
+    and next(zb.net[12].wounds) == nil and next(zb.net[12].arterialwounds) == nil
+    and other.bandaged_limbs.safe == true and #other.tourniquets == 1
+''')
+    check('R57 reset message removes client models and netvar shadows only for addressed entities', client_visual_reset)
 
     selection_reset = lua.execute(r'''
 local limb = { skin = 12, broken = true }
