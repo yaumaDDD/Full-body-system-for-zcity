@@ -112,7 +112,7 @@ resources_covered = all(
 )
 build_s = BUILD.read_text(encoding="utf-8")
 check("S08 connector owns byte-identical C:U fonts/shaders and scans every material root",
-      relocated_bytes_ok and resources_covered and len(source_resources) == 660
+      relocated_bytes_ok and resources_covered and len(source_resources) == 659
       and all(('"' + root + '"') in server_s for root in required_resource_roots)
       and all(('"' + rel + '"') in server_s for rel in relocated)
       and "CU_RELOCATED" in build_s
@@ -134,8 +134,8 @@ with ZipFile(connector_zip) as packed, ZipFile(full_zip) as full:
     )
     source_count = sum(1 for path in CONN.rglob("*") if path.is_file() and "__pycache__" not in path.parts)
     check("S09 rebuilt ZIPs contain one physical copy of relocated C:U resources",
-          packaged_relocated_ok and len(connector_names) == source_count == 754
-          and len(full_names) == 2858)
+          packaged_relocated_ok and len(connector_names) == source_count == 753
+          and len(full_names) == 2856)
 
 vendor_check = subprocess.run(
     [sys.executable, str(ROOT / "tools/embed_runtime.py"), "--check"],

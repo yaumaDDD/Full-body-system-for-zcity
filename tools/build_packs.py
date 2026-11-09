@@ -8,7 +8,7 @@ only the parts this repository owns:
 
   * garrysmod/addons/woundsystem_zcity_compat/**      <- the connector folder
   * garrysmod/addons/casualties_unknown_health_system_beta/materials/**
-        <- the exact same 654 UI materials mirrored into C:U
+        <- the exact same 653 UI materials mirrored into C:U
   * C:U resource/fonts/** and shaders/fxc/** are RELOCATED into the connector,
     so the standalone connector owns every UI resource it needs
   * the connector also carries an isolated embedded C:U + WoundBridge runtime;
@@ -148,7 +148,7 @@ def main():
     lua = [r for r in conn if r.endswith('.lua')]
     mats = [r for r in conn if r.startswith('materials/')]
     assert len(lua) == 89, ('connector + embedded Lua count', len(lua))
-    assert len(mats) >= 654, ('connector material count', len(mats))
+    assert len(mats) >= 653, ('connector material count', len(mats))
     embedded_cu = [r for r in lua if r.startswith('lua/wszc_vendor/cu/')]
     embedded_bridge = [r for r in lua if r.startswith('lua/wszc_vendor/zcity/woundbridge/')]
     assert len(embedded_cu) == 71, ('embedded C:U count', len(embedded_cu))

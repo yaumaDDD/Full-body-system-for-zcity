@@ -998,8 +998,8 @@ local function FractureHudProjection()
                 saved[#saved + 1] = { state = state, broken = true }
                 state.broken = false
             else
-                -- A delayed network update must not leave a black marker on a
-                -- healed limb; the server will shortly clear the stale status.
+                -- The marker is internal only, including while a healed
+                -- limb is waiting for the latest server status update.
                 saved[#saved + 1] = { statuses = statuses, id = id, value = true }
                 statuses[id] = nil
             end

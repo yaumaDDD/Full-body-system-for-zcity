@@ -598,8 +598,8 @@ function WSZC.InstallArterialBleedingStatus()
     return true
 end
 
--- ZCity fracture immobilization indicator (bandaged fracture knitting faster by
--- ZCity physiology, distinct from C:U's removable SPLINTED status).
+-- Internal ZCity fracture-immobilization marker (distinct from C:U's
+-- removable SPLINTED status).  It has no icon in WoundView.
 WSZC.FRACTURE_BANDAGED_STATUS_ID = "WSZC_FRACTURE_BANDAGED"
 
 function WSZC.InstallFractureBandagedStatus()
@@ -608,24 +608,17 @@ function WSZC.InstallFractureBandagedStatus()
         return false
     end
     local id = WSZC.FRACTURE_BANDAGED_STATUS_ID
-    local icon = "wszc/unitmenu/status/fracture_bandaged.png"
     local existing = type(statuses.Stored) == "table" and statuses.Stored[id] or nil
     if existing then
-        existing.icon = icon
-        local color = existing.color
-        if type(color) ~= "table" or (color.r or color[1]) ~= 255
-            or (color.g or color[2]) ~= 255 or (color.b or color[3]) ~= 255 then
-            existing.color = { 255, 255, 255 }
-        end
+        existing.icon = ""
         return true
     end
     statuses.Register(id, {
         title = "Fracture immobilized",
         desc = "The fracture is tightly bandaged and knitting by ZCity physiology.",
-        icon = icon,
+        icon = "",
         type = "bool",
         order = -7500,
-        color = { 255, 255, 255 },
     })
     return true
 end
