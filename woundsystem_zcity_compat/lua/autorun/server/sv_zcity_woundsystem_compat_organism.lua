@@ -3436,6 +3436,7 @@ hook.Add("PostEntityTakeDamage", "WSZC_AuthorityDamagePost", function(ent, dmgin
     local raw = WSZC.RawDamage[dmginfo]
     if took == false and not (cvOnBlocked and cvOnBlocked:GetBool()) then return end
     WSZC.InjectDamageShrapnel(ent, dmginfo, nil, raw)
+    WSZC.ApplyStandingFall(ent, dmginfo, raw)
     -- Do not clear RawDamage here: a nested ragdoll Post can run BEFORE the
     -- outer player hook returns.  Weak keys already prevent leaks, and the
     -- outer unresolved hit may still need the original unscaled damage.
@@ -4107,25 +4108,97 @@ end
 
 --- Vanilla ZCity explicitly zeroes dmgHurt/instaPain/immobilization for
 --- DMG_CRUSH + DMG_FALL.  In organism-authoritative mode WB.ApplyFall is a
---- deliberate no-op, so without this mirror a survivable standing landing can
---- produce neither muscle damage nor the expected temporary slowdown.
+--- deliberate no-op, so without this mirror a survivable standing landing
+--- produces neither muscle damage nor temporary movement slowdown.
 ---
---- Use C:U's own fall-speed/impact-force contract, but write ONLY the aggregate
---- muscle/pain/shock delta into the authoritative ZCity organism.  Do not run
---- C:U HandleDamage here: that would create a second health simulation and can
---- duplicate fractures/bleeding already produced by ZCity.  Ragdoll landings
---- stay on the existing velocityDamage/collision path.
+--- Trigger as soon as Garry's Mod starts counting fall damage (-10 HP at
+--- speed >= 526.5 u/s in default mp_falldamage 0, or damage > 0 in
+--- mp_falldamage 1).  Apply ~0.25+ blunt leg muscle trauma (which vanilla
+--- ZCity sv_pain decays at 1/240 per second -> ~60 seconds) and sustain an
+--- immobilization slowdown floor above ZCity's neutral 4.0 threshold across
+--- the same ~60-second recovery window.
+local GMOD_SAFE_FALL_SPEED = 526.5
+
+hook.Add("FinishMove", "WSZC_TrackStandingAirborne", function(ply)
+    if not (IsValid(ply) and ply:IsPlayer()) then return end
+    if not ply:OnGround() and not IsValid(ply.FakeRagdoll) then
+        ply._wszcStandingAirborneAt = CurTime and CurTime() or 0
+    end
+end)
+
+hook.Add("OnPlayerHitGround", "WSZC_RecordStandingFall", function(ply, inWater, onFloater, speed)
+    if not (IsValid(ply) and ply:IsPlayer()) then return end
+    if inWater then
+        ply._wszcStandingLandingTime = nil
+        ply._wszcStandingLandingSpeed = 0
+        ply._wszcStandingLandingFloater = false
+        return
+    end
+    local now = CurTime and CurTime() or 0
+    local wasStandingAirborne = not IsValid(ply.FakeRagdoll)
+        or (type(ply._wszcStandingAirborneAt) == "number" and (now - ply._wszcStandingAirborneAt) <= 0.15)
+    if wasStandingAirborne then
+        ply._wszcStandingLandingTime = now
+        ply._wszcStandingLandingSpeed = tonumber(speed) or 0
+        ply._wszcStandingLandingFloater = onFloater == true
+    end
+end)
+
+function WSZC.TickFallSlowdown(owner, org, dt, prePainTick)
+    if type(org) ~= "table" then return end
+    local untilTime = tonumber(org.wszc_fall_slow_until)
+    if not untilTime then return end
+
+    local now = CurTime and CurTime() or 0
+    local lleg = (org.llegamputated ~= true) and (tonumber(org.lleg) or 0) or 0
+    local rleg = (org.rlegamputated ~= true) and (tonumber(org.rleg) or 0) or 0
+    local maxLeg = math.max(lleg, rleg)
+
+    if org.alive == false or now >= untilTime or maxLeg <= 0.005 then
+        org.wszc_fall_slow_until = nil
+        org.wszc_fall_slow_dur = nil
+        org.wszc_fall_slow_peak = nil
+        org.wszc_fall_bruise_ref = nil
+        return
+    end
+
+    local dur = math.max(tonumber(org.wszc_fall_slow_dur) or 60, 1)
+    local timeFrac = math.Clamp((untilTime - now) / dur, 0, 1)
+    local ref = math.max(tonumber(org.wszc_fall_bruise_ref) or 0.25, 0.05)
+    local legFrac = math.Clamp(maxLeg / ref, 0, 1)
+    local frac = math.min(timeFrac, legFrac)
+
+    local analgesiaRelief = 1 / (1 + math.max(tonumber(org.analgesia) or 0, 0) * 1.5
+        + math.max(tonumber(org.painkiller) or 0, 0) * 0.5)
+    local peak = math.max(tonumber(org.wszc_fall_slow_peak) or 7.5, 4.5)
+    -- In ZCity sh_inertia.lua:388, speed mult = Clamp(5 / (immobilization + 1), 0.45, 1),
+    -- so values > 4.0 produce active slowdown and 4.0 restores 100% normal speed.
+    local floorImm = (4.0 + (peak - 4.0) * frac) * analgesiaRelief
+    if floorImm > 4.0 then
+        local targetImm = floorImm + (prePainTick and math.min((tonumber(dt) or 0) * 2.4, 1.0) or 0)
+        if (tonumber(org.immobilization) or 0) < targetImm then
+            org.immobilization = math.min(targetImm, 30)
+        end
+    end
+end
+
 WSZC.FallHandled = WSZC.FallHandled or setmetatable({}, { __mode = "k" })
 function WSZC.ApplyStandingFall(ply, dmginfo, rawDamage)
     if not (Authority() and IsValid(ply) and ply:IsPlayer() and dmginfo) then return false end
     if type(dmginfo.IsFallDamage) ~= "function" or not dmginfo:IsFallDamage() then return false end
     if WSZC.FallHandled[dmginfo] then return false end
-    if not ply:Alive() or IsValid(ply.FakeRagdoll) then return false end
+    if not ply:Alive() then return false end
+
+    local now = CurTime and CurTime() or 0
+    local landedStandingNow = type(ply._wszcStandingLandingTime) == "number"
+        and (now - ply._wszcStandingLandingTime) >= -0.01
+        and (now - ply._wszcStandingLandingTime) <= 0.15
+    if IsValid(ply.FakeRagdoll) and not landedStandingNow then return false end
+
     local org = ply.organism
     if type(org) ~= "table" or org.alive == false or org.godmode then return false end
     if ply.Health and ply:Health() <= 0 then return false end
 
-    WSZC.FallHandled[dmginfo] = true
     local h = H()
     local damage = tonumber(rawDamage)
     if damage == nil and dmginfo.GetDamage then
@@ -4133,55 +4206,69 @@ function WSZC.ApplyStandingFall(ply, dmginfo, rawDamage)
         if ok then damage = tonumber(value) end
     end
     damage = damage or 0
+    if damage <= 0 then return false end
 
-    local speed
+    local speed = 0
     if h and type(h.GetRecentFallSpeed) == "function" then
         local ok, value = pcall(h.GetRecentFallSpeed, ply, damage)
-        if ok then speed = tonumber(value) end
+        if ok then speed = math.max(speed, tonumber(value) or 0) end
     end
-    speed = speed or (damage > 0 and (damage * 3.96 + 526.5) or 0)
-
-    local body = h and h.GetBody and h.GetBody(ply) or nil
-    local jump = type(body) == "table" and (tonumber(body.jumpSpeed) or 6.5) or 6.5
-    local force
-    if h and type(h.FallSpeedToImpactForce) == "function" then
-        local ok, value = pcall(h.FallSpeedToImpactForce, speed)
-        if ok then force = tonumber(value) end
+    if landedStandingNow then
+        speed = math.max(speed, tonumber(ply._wszcStandingLandingSpeed) or 0)
     end
-    force = force or math.max((speed - 420) / 60, 0)
-    if ply._woundSystemLastFallOnFloater then force = force * 0.5 end
-    if force <= jump then return false end
+    if speed <= 0 then
+        speed = damage * 3.96 + GMOD_SAFE_FALL_SPEED
+    end
+    if speed < GMOD_SAFE_FALL_SPEED and damage < 5 then return false end
 
-    -- Native C:U hits both feet and adds both shins above jumpSpeed * 1.8.
-    -- Three C:U limb segments share one ZCity leg scalar.  Aggregate first so
-    -- the same scalar is never accidentally applied once per PushShadow limb.
-    local segmentsPerLeg = force > jump * 1.8 and 2 or 1
+    WSZC.FallHandled[dmginfo] = true
+
+    local onFloater = (ply._woundSystemLastFallOnFloater == true)
+        or (landedStandingNow and ply._wszcStandingLandingFloater == true)
+    local floaterScale = onFloater and 0.5 or 1.0
+    local excess = math.max(speed - GMOD_SAFE_FALL_SPEED, 0)
+
+    -- Vanilla ZCity sv_pain decays non-fractured org.lleg / org.rleg (< 1) at
+    -- 1/240 per second, so 0.25 heals naturally in 0.25 * 240 = 60 seconds
+    -- (~1 minute) while tinting the legs red on WoundView.  Cap non-fracturing
+    -- bruise below 1.0 so a small fall never creates a permanent bone fracture.
+    local legDelta = math.Clamp(0.25 + excess / 900, 0.25, 0.75) * floaterScale
     local affectedSides = 0
     for _, side in ipairs({
         { damage = "lleg", amputated = "llegamputated" },
         { damage = "rleg", amputated = "rlegamputated" },
     }) do
         if org[side.amputated] ~= true then
-            local delta = force * 0.33 * segmentsPerLeg / 100
-            org[side.damage] = math.Clamp((tonumber(org[side.damage]) or 0) + delta, 0, 1)
+            local prev = tonumber(org[side.damage]) or 0
+            if prev >= 1 then
+                org[side.damage] = 1
+            else
+                org[side.damage] = math.Clamp(math.min(prev + legDelta, 0.95), 0, 0.95)
+            end
             affectedSides = affectedSides + 1
         end
     end
     if affectedSides == 0 then return false end
 
-    local segments = segmentsPerLeg * affectedSides
-    local muscleDamage = force * 0.33 * segments
-    org.painadd = math.max((tonumber(org.painadd) or 0) + force * 0.4 * segments * 0.25, 0)
-    org.shock = math.Clamp((tonumber(org.shock) or 0) + force * 0.05 * segments * 0.7, 0, 70)
+    local slowDuration = math.Clamp(60 + excess / 15, 60, 90) * floaterScale
+    local peakImm = math.Clamp((7.5 + excess / 50) * (onFloater and 0.75 or 1.0), 5.5, 16.0)
+
+    org.painadd = math.max((tonumber(org.painadd) or 0) + math.Clamp(4 + excess * 0.04, 4, 24) * floaterScale, 0)
+    org.shock = math.Clamp((tonumber(org.shock) or 0) + math.Clamp(1 + excess * 0.015, 1, 12) * floaterScale, 0, 70)
     if type(org.adrenaline) == "number" then
-        org.adrenaline = math.Clamp(org.adrenaline + force * 0.075 * segments * 0.02, 0, 2)
+        org.adrenaline = math.Clamp(org.adrenaline + math.Clamp(0.02 + excess * 0.0003, 0.02, 0.25), 0, 2)
     end
-    -- This is the temporary component.  ZCity's sv_pain/organism thinkers
-    -- decay immobilization naturally; persistent slowdown comes from the leg
-    -- muscle damage above.  Cap at the same native damage-hook maximum (30).
-    org.immobilization = math.min((tonumber(org.immobilization) or 0)
-        + math.min(muscleDamage * 1.5, 30), 30)
-    org.lasthit = CurTime and CurTime() or 0
+
+    org.immobilization = math.min(math.max(tonumber(org.immobilization) or 0, peakImm), 30)
+    org.wszc_fall_slow_until = math.max(tonumber(org.wszc_fall_slow_until) or 0, now + slowDuration)
+    org.wszc_fall_slow_dur = math.max(tonumber(org.wszc_fall_slow_dur) or 0, slowDuration)
+    org.wszc_fall_slow_peak = math.max(tonumber(org.wszc_fall_slow_peak) or 0, peakImm)
+    org.wszc_fall_bruise_ref = math.max(
+        (org.llegamputated ~= true and (tonumber(org.lleg) or 0) or 0),
+        (org.rlegamputated ~= true and (tonumber(org.rleg) or 0) or 0),
+        0.05
+    )
+    org.lasthit = now
     -- Even with the HUD shadow disabled, never let the old C:U movement
     -- override bypass the freshly applied vanilla immobilization/leg damage.
     org.wsmovemult, org._wbSentMove, org._wbNextMoveSend = nil, nil, nil
@@ -4194,8 +4281,8 @@ function WSZC.ApplyStandingFall(ply, dmginfo, rawDamage)
         local ok, err = pcall(PushShadow, ply, org)
         if not ok then Warn("standing fall shadow failed: " .. tostring(err)) end
     end
-    Debug("standing fall: speed=%.2f force=%.2f segments=%d immobilization=%.2f",
-        speed, force, segments, tonumber(org.immobilization) or 0)
+    Debug("standing fall: speed=%.2f damage=%.2f legDelta=%.3f slowDur=%.1fs peakImm=%.2f",
+        speed, damage, legDelta, slowDuration, peakImm)
     return true
 end
 
@@ -5341,6 +5428,8 @@ function WSZC.ClearAllShrapnel(ply, org)
         org.pain, org.avgpain, org.painadd = 0, 0, 0
         org.shock, org.hurt, org.hurtadd = 0, 0, 0
         org.immobilization, org.disorientation = 0, 0
+        org.wszc_fall_slow_until, org.wszc_fall_slow_dur = nil, nil
+        org.wszc_fall_slow_peak, org.wszc_fall_bruise_ref = nil, nil
         org.wsmovemult, org._wbSentMove, org._wbNextMoveSend = nil, nil, nil
         org.dmgstack, org.LodgedEntities = {}, nil
         for _, flag in ipairs({ "arteria", "rarmartery", "larmartery",
@@ -5912,7 +6001,11 @@ local function InstallVanillaHooks()
     WSZC.InstallSpawnContextGuard()
     -- Org Think "Main": without this wrapper the hook returns early through
     -- WB.Think() and every vanilla ZCity organ module (and Organs+) is skipped.
-    WrapHook("Org Think", "Main")
+    WrapHook("Org Think", "Main", function(owner, org, dt)
+        WSZC.TickFallSlowdown(owner, org, dt, true)
+    end, function(owner, org, dt)
+        WSZC.TickFallSlowdown(owner, org, dt, false)
+    end)
     -- ZCity hit handling: prevents forwarding to WB.ApplyDamage and lets the
     -- vanilla organ/hitbox/bleed code run.
     -- `pre` captures the unscaled damage: takeRagdollDamage() calls
@@ -6005,6 +6098,7 @@ function WSZC.InstallOrganismMode()
         WSZC.TickTourniquets(owner, org, dt)
         WSZC.TickZCityBones(owner, org, dt)
         WSZC.TickSplints(owner, org, dt)
+        WSZC.TickFallSlowdown(owner, org, dt)
         WSZC.TickTimedBodyEffects(owner, dt)
         if cvShadow and cvShadow:GetBool() then
             local ok, err = pcall(PushShadow, owner, org)

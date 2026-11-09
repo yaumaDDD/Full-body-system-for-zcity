@@ -1864,6 +1864,80 @@ return WSZC.ApplyStandingFall(p, dmg, 100) == false
 ''')
     check("R87 fatal fall receives no post-mortem standing-leg mirror", fatal_fall)
 
+    small_fall_minute = lua.execute(r'''
+local prevCurTime = CurTime
+local simNow = 1000
+CurTime = function() return simNow end
+
+local ply = MakePlayer()
+local org = ply.organism
+org.lleg, org.rleg, org.immobilization = 0, 0, 0
+org.painadd, org.shock, org.adrenaline, org.analgesia, org.painkiller = 0, 0, 0, 0, 0
+org.alive = true
+for _, id in ipairs({ "foot_L", "foot_R", "crus_L", "crus_R", "thigh_L", "thigh_R" }) do
+    ply._limbs[id] = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+end
+
+-- Exact GMod small-height -10 HP fall (speed ~540 u/s, default mp_falldamage 0 -> 10 HP)
+WoundSystem.Health.GetRecentFallSpeed = function() return 540 end
+local dmg10 = { IsFallDamage = function() return true end, GetDamage = function() return 10 end }
+local okLanding = WSZC.ApplyStandingFall(ply, dmg10, 10)
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, org)
+
+local speedMultAt0 = math.Clamp(5 / ((org.immobilization or 0) + 1), 0.45, 1)
+local initialOK = okLanding == true
+    and org.lleg >= 0.25 and org.lleg < 1.0
+    and org.rleg >= 0.25 and org.rleg < 1.0
+    and ply._limbs.foot_L.muscle <= 75 and ply._limbs.foot_R.muscle <= 75
+    and speedMultAt0 < 0.65
+
+-- Simulate vanilla ZCity sv_pain + WSZC.TickFallSlowdown for 45s (must STILL have slowdown + muscle damage)
+for step = 1, 45 do
+    simNow = simNow + 1
+    org.immobilization = math.max((org.immobilization or 0) - 2, 0)
+    org.lleg = math.max((org.lleg or 0) - (1 / 240), 0)
+    org.rleg = math.max((org.rleg or 0) - (1 / 240), 0)
+    WSZC.TickFallSlowdown(ply, org, 1, false)
+end
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, org)
+local speedMultAt45 = math.Clamp(5 / ((org.immobilization or 0) + 1), 0.45, 1)
+local midMinuteOK = org.lleg > 0.05 and org.rleg > 0.05
+    and ply._limbs.foot_L.muscle < 95
+    and org.immobilization > 4.0 and speedMultAt45 < 0.95
+
+-- Advance past ~65s: both muscle bruise and slowdown recover naturally to 100%
+for step = 1, 22 do
+    simNow = simNow + 1
+    org.immobilization = math.max((org.immobilization or 0) - 2, 0)
+    org.lleg = math.max((org.lleg or 0) - (1 / 240), 0)
+    org.rleg = math.max((org.rleg or 0) - (1 / 240), 0)
+    WSZC.TickFallSlowdown(ply, org, 1, false)
+end
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, org)
+local speedMultAt67 = math.Clamp(5 / ((org.immobilization or 0) + 1), 0.45, 1)
+local recoveredOK = org.lleg == 0 and org.rleg == 0
+    and ply._limbs.foot_L.muscle == 100 and ply._limbs.foot_R.muscle == 100
+    and speedMultAt67 == 1 and org.wszc_fall_slow_until == nil
+
+-- Also verify speed > 600 where ZCity fallStun creates FakeRagdoll on the same OnPlayerHitGround tick
+local stunned = MakePlayer()
+stunned.organism.lleg, stunned.organism.rleg, stunned.organism.immobilization = 0, 0, 0
+stunned.organism.alive = true
+stunned._wszcStandingLandingTime = simNow
+stunned._wszcStandingLandingSpeed = 620
+stunned.FakeRagdoll = {} -- created on landing tick by ZCity fallStun
+local stunHandled = WSZC.ApplyStandingFall(stunned, { IsFallDamage = function() return true end, GetDamage = function() return 10 end }, 10)
+local stunOK = stunHandled == true and stunned.organism.lleg >= 0.25 and stunned.organism.immobilization > 4
+
+CurTime = prevCurTime
+return initialOK and midMinuteOK and recoveredOK, stunOK
+''')
+    check("R96 small -10 HP fall deals ~1-minute leg muscle damage and sustained slowdown", small_fall_minute[0])
+    check("R97 same-tick ZCity fallStun landing (>600 speed) still applies 1-minute fall bruise", small_fall_minute[1])
+
     genuine_life = lua.execute(r'''
 if type(WSZC.InstallSpawnContextGuard) ~= "function" then return false, false end
 local function InjuredPlayer()
