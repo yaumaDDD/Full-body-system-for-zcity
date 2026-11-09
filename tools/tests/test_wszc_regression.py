@@ -484,7 +484,8 @@ check('S51 separate remote radial option; self inspection remains intact',
       and '_WSZCRemoteInspect = true' in remote_client_s
       and 'target ~= ply' in remote_client_s
       and 'hg.RagdollOwner' in remote_client_s
-      and 'hg.eyeTrace, ply, RANGE' in remote_client_s
+      and 'pcall(hg.eyeTrace, ply)' in remote_client_s
+      and 'util.TraceHull' not in remote_client_s
       and 'IsValid(MENUPANELHUYHUY) and ValidPatient(ply, Remote.focusTarget)' in remote_client_s
       and 'for _, key in ipairs({ "FakeRagdoll", "WoundSystemUnconsciousRagdoll" })' in remote_client_s
       and 'local function PatientEntity(target)' in remote_client_s

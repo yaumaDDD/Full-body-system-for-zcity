@@ -133,39 +133,35 @@ local function FindPatient()
     local ply = LocalPlayer()
     if not IsValid(ply) or not ply:Alive() then return nil end
 
-    -- Player:GetEyeTrace() does not use ZCity's fake/ragdoll camera anchor.
-    -- The radial menu and every medical SWEP use hg.eyeTrace(), so inspect the
-    -- same entity the player actually sees under the ZCity crosshair.
+    -- Match ZCity's Identifier HUD exactly: its default hg.eyeTrace(ply)
+    -- is a 60-unit line from the ZCity camera/neck, not a 256-unit hull.
+    -- Do not fall back to a different ray if ZCity returned a valid miss.
+    local trace, traced, fallbackTrace = nil, false, false
     if hg and hg.eyeTrace then
-        local ok, trace = pcall(hg.eyeTrace, ply, RANGE)
-        local target = ok and PlayerFromEntity(trace and trace.Entity or nil) or nil
+        local ok, result = pcall(hg.eyeTrace, ply)
+        if ok and type(result) == "table" then trace, traced = result, true end
+    end
+    if not traced and ply.GetEyeTrace then
+        local ok, result = pcall(ply.GetEyeTrace, ply)
+        if ok then trace, fallbackTrace = result, true end
+    end
+    local ent = trace and trace.Entity or nil
+    local hitBody = trace and trace.Hit and IsValid(ent)
+        and ((ent.IsPlayer and ent:IsPlayer()) or (ent.IsRagdoll and ent:IsRagdoll()))
+    if hitBody and fallbackTrace then
+        -- Engine fallback traces are usually much longer than Identifier's
+        -- 60 units; check the actual hit point (or body centre as a fallback).
+        local from = ply.EyePos and ply:EyePos() or ply:GetPos()
+        local to = trace.HitPos or (ent.WorldSpaceCenter and ent:WorldSpaceCenter())
+            or (ent.GetPos and ent:GetPos())
+        if not to or from:Distance(to) > 60 then hitBody = false end
+    end
+    if hitBody and ent.PlayerClassName ~= "sc_infiltrator" then
+        local hidden = ent.GetNetVar and ent:GetNetVar("disappearance", nil)
+        local target = not hidden and PlayerFromEntity(ent) or nil
         if ValidPatient(ply, target) then
             Remote.focusTarget = target
             return target
-        end
-    end
-    local trace = ply:GetEyeTrace()
-    local target = PlayerFromEntity(trace and trace.Entity or nil)
-    if ValidPatient(ply, target) then
-        Remote.focusTarget = target
-        return target
-    end
-
-    -- Lying ZCity ragdolls have thin limb hitboxes; a narrow hull trace along
-    -- the medic's aim ray catches patients slightly beside the center pixel.
-    if util and util.TraceHull and Vector and ply.EyePos and ply.GetAimVector then
-        local startPos = ply:EyePos()
-        local hullTrace = util.TraceHull({
-            start = startPos,
-            endpos = startPos + ply:GetAimVector() * RANGE,
-            mins = Vector(-10, -10, -10),
-            maxs = Vector(10, 10, 10),
-            filter = ply,
-        })
-        local hullTarget = PlayerFromEntity(hullTrace and hullTrace.Entity or nil)
-        if ValidPatient(ply, hullTarget) then
-            Remote.focusTarget = hullTarget
-            return hullTarget
         end
     end
 

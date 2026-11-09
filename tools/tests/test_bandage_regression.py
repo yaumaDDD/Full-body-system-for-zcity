@@ -595,6 +595,48 @@ return capped, aftercareFree
     check("R20 nearly empty ZCity bandage cannot overheal beyond its last severity unit", native_edge[0])
     check("R21 native zero-severity aftercare completes without spending a clean item", native_edge[1])
 
+    aftercare_progress = lua.execute(r'''
+WSZC.MinigameSessions = {}
+local patient = BandagePatientFactory()
+patient.organism.wszc_shrapnel_aftercare = {
+    hand_R = { awaitingBandage = true, age = 247, baseSeverity = 0.3 },
+}
+patient.organism.wounds = {
+    { 4, Vector(), Angle(), "ValveBiped.Bip01_R_Hand", 0,
+      wszcShrapnelExtraction = "WSZC_SHRAPNEL_EXTRACTION", wszcLimb = "hand_R" },
+    { 5, Vector(), Angle(), "ValveBiped.Bip01_R_Hand", 0 },
+}
+local swep = NativeBandageSwepFactory(40)
+local session = NativeBandageSessionFactory(222, patient, swep, 40, 100)
+local previousBleed = WSZC.RealGetBandageBleeding(patient, "hand_R")
+local monotonic, tickPreservesWork = true, true
+for i = 1, 45 do
+    if not WSZC.MinigameSessions[session.owner] then break end
+    sent, readQueue = {}, { 222, 20 }
+    receivers["WSZC_BandageInput"](0, session.owner)
+    local afterWrap = WSZC.RealGetBandageBleeding(patient, "hand_R")
+    WSZC.RealTickShrapnelAftercare(patient, patient.organism, 0.5)
+    local afterTick = WSZC.RealGetBandageBleeding(patient, "hand_R")
+    if afterTick > afterWrap + 0.0001 then tickPreservesWork = false end
+    if afterWrap > previousBleed + 0.0001 then monotonic = false end
+    previousBleed = afterTick
+end
+local completed = previousBleed == 0 and not WSZC.ShrapnelAftercarePending(patient, "hand_R")
+    and WSZC.MinigameSessions[session.owner] == nil
+    and math.abs(swep.modeValues[1] - 31) < 0.001
+-- Even outside a minigame, irritation must add only this tick, not restore
+-- all severity already removed since the initial extraction.
+local partial = BandagePatientFactory()
+partial.organism.wszc_shrapnel_aftercare = { hand_R = { awaitingBandage = true, age = 10, baseSeverity = 0.3 } }
+partial.organism.wounds = { { 0.15, Vector(), Angle(), "ValveBiped.Bip01_R_Hand", 0,
+    wszcShrapnelExtraction = "WSZC_SHRAPNEL_EXTRACTION", wszcLimb = "hand_R" } }
+WSZC.RealTickShrapnelAftercare(partial, partial.organism, 0.5)
+local outside = math.abs(partial.organism.wounds[1][1] - 0.1575) < 0.0001
+return tickPreservesWork and monotonic and completed, outside
+''')
+    check("R30 incremental server wraps survive aftercare ticks and close actual wounds", aftercare_progress[0])
+    check("R31 aftercare adds only new irritation without restoring prior wound severity", aftercare_progress[1])
+
     unwrap = lua.execute(r'''
 WSZC.MinigameSessions = {}
 WSZC.Ready = true
@@ -1030,6 +1072,54 @@ return WSZC.RealGetBandageBleeding(patient, "hand_R") == 0
     and NativeCloseReason == "completed" and closePacket and slotClose
 '''.replace('CLIENT_DEGREES', '{ ' + lua_degrees + ' }'))
     check("R25 client packets really close the wound, spend four units and complete/close server session", end_to_end)
+
+    uneven_turns = lua.execute(r'''
+local mg, think = WSZCBandageMinigame, hook._t.WSZC_BandageInput
+local clock = 300
+CurTime = function() return clock end
+WSZC.MinigameHUDOpen = true
+local function place(angle)
+    local rad = math.rad(angle)
+    local x, y = 500 + math.sin(rad) * 442, 500 - math.cos(rad) * 442
+    gui.MousePos = function() return x, y end
+end
+local function open(mode, id)
+    mouseDown = false; place(0)
+    mg.OpenFromServer({ sessionId = id, limbId = "hand_R", mode = mode, slotIdx = 6 })
+    think(); mouseDown = true; think()
+end
+open("gauze", 301)
+for _, angle in ipairs({ 27, 67, 104, 153, 208, 267, 315, 345, 5, 27, 67, 104, 153, 208, 267, 315, 345, 5 }) do
+    clock = clock + 0.02; place(angle); think()
+end
+local twoTurns = mg.totalDegreesWrapped >= 720 and mg.wrapCredited >= 720
+local beforeReverse = mg.totalDegreesWrapped
+for _, angle in ipairs({ 345, 315, 345, 5 }) do
+    clock = clock + 0.02; place(angle); think()
+end
+local noOscillationCredit = mg.totalDegreesWrapped == beforeReverse
+-- A delayed packet with >360 degrees must not be truncated by the server.
+ClientWire = {}; mg.unsentDegrees = 740; mg.lastSentAt = clock - 1
+clock = clock + 0.01; think()
+local batches, sum, valid = 0, 0, true
+for _, packet in ipairs(ClientWire) do
+    if packet.name == "WSZC_BandageInput" then
+        local degrees = packet.writes[2][2]
+        batches, sum = batches + 1, sum + degrees
+        if degrees > 360 then valid = false end
+    end
+end
+open("unwrap", 302)
+for _, angle in ipairs({ -30, -75, -130, -175, -220, -275, -315, -345, -365 }) do
+    clock = clock + 0.02; place(angle); think()
+end
+return twoTurns, noOscillationCredit, valid and sum == 740 and batches == 3,
+    mg.totalDegreesUnwrapped >= 360
+''')
+    check("R32 uneven fast circles and a skipped seam retain two full turns", uneven_turns[0])
+    check("R33 rocking backwards and forwards cannot duplicate wrap credit", uneven_turns[1])
+    check("R34 delayed multi-turn packets are split rather than truncated", uneven_turns[2])
+    check("R35 reverse unwrap also survives fast uneven angles", uneven_turns[3])
 
     no_debug = server_lua.execute(r'''
 WSZC.MinigameSessions = {}

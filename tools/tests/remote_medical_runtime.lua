@@ -703,16 +703,21 @@ else
         function p:EyePos() return Vec(self.x) end
         function p:WorldSpaceCenter() return Vec(self.x) end
         function p:Nick() return self.name end
-        function p:GetEyeTrace() return { Entity = self.traceEntity } end
+        function p:GetEyeTrace() return { Entity = self.traceEntity, Hit = self.traceEntity ~= nil } end
         function p:GetNWEntity() return NULL end
         return p
     end
     op, patient, patient2 = Player("medic", 0), Player("patient", 20), Player("patient2", 30)
     LocalPlayer = function() return op end
     player = { GetAll = function() return { op, patient, patient2 } end }
-    local ragdoll = { valid = true, IsPlayer = function() return false end }
+    local ragdoll = { valid = true, IsPlayer = function() return false end, IsRagdoll = function() return true end }
     hg = { radialOptions = {}, RagdollOwner = function(ent) return ent == ragdoll and patient or nil end }
-    hg.eyeTrace = function(ply) return { Entity = ply.hgTraceEntity or ply.traceEntity } end
+    hg.eyeTrace = function(ply, distance)
+        local ent = ply.hgTraceEntity or ply.traceEntity
+        -- ZCity Identifier uses the default 60-unit line, not a 256-unit hull.
+        if ent and ent.x and math.abs(ent.x - ply.x) > (distance or 60) then ent = nil end
+        return { Entity = ent, Hit = ent ~= nil }
+    end
 
     CreateClientConVar = function() return { GetBool = function() return true end } end
     GetConVar = function() return { GetBool = function() return true end } end
@@ -930,7 +935,7 @@ else
 
     Test("C14 reverse FakeRagdoll lookup and body range expose treatment on a live ragdoll", function()
         Reset()
-        local body = { valid = true, x = 35, IsPlayer = function() return false end,
+        local body = { valid = true, x = 35, IsPlayer = function() return false end, IsRagdoll = function() return true end,
             GetNWEntity = function() return NULL end }
         function body:GetPos() return Vec(self.x) end
         function body:WorldSpaceCenter() return Vec(self.x) end
@@ -967,6 +972,37 @@ else
         hooks.RadialMenuPressedZCity_WoundBridge_RemoteInspectFocus_WSZC()
         MENUPANELHUYHUY = nil
         Assert(WSZC.RemoteMedical.FindPatient() == nil)
+    end)
+
+    Test("C18 radial selector uses the Identifier line and distance, never the nearby hull", function()
+        Reset()
+        local hullCalls = 0
+        util = { TraceHull = function() hullCalls = hullCalls + 1; return { Entity = patient } end }
+        op.traceEntity = nil
+        Assert(WSZC.RemoteMedical.FindPatient() == nil)
+        op.traceEntity, patient.x = patient, 61
+        Assert(WSZC.RemoteMedical.FindPatient() == nil, "no button beyond the name trace")
+        patient.x = 59
+        Equal(WSZC.RemoteMedical.FindPatient(), patient)
+        local previousTrace = hg.eyeTrace
+        hg.eyeTrace = function() return { Hit = false, Entity = nil } end
+        Assert(WSZC.RemoteMedical.FindPatient() == nil, "do not override the actual ZCity miss with engine ray")
+        hg.eyeTrace = nil
+        patient.x = 61
+        Assert(WSZC.RemoteMedical.FindPatient() == nil, "fallback eye trace must not extend the 60-unit radius")
+        patient.x = 59
+        Equal(WSZC.RemoteMedical.FindPatient(), patient)
+        hg.eyeTrace = previousTrace
+        local prop = { valid = true, IsPlayer = function() return false end,
+            IsRagdoll = function() return false end, GetOwner = function() return patient end }
+        op.traceEntity = prop
+        Assert(WSZC.RemoteMedical.FindPatient() == nil, "an owned prop is not a player name")
+        op.traceEntity = patient
+        patient.GetNetVar = function() return true end
+        Assert(WSZC.RemoteMedical.FindPatient() == nil, "hidden players have no identifier")
+        patient.GetNetVar = nil
+        Assert(hullCalls == 0)
+        util = nil
     end)
 
     Test("C16 Q radial option removes popup before open and opens unconscious patient WoundView", function()

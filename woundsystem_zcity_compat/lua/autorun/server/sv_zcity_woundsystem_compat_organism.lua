@@ -1069,9 +1069,13 @@ function WSZC.TickShrapnelAftercare(ply, org, dt)
             -- wound, later ticks must not resurrect it just because another
             -- ordinary wound still needs bandaging.  Pain/age and the required
             -- FINAL dressing continue until FinishShrapnelAftercare().
-            if wound and (tonumber(wound[1]) or 0) > 0 then
-                wound[1] = math.min(6, math.max(tonumber(wound[1]) or 0,
-                    (tonumber(entry.baseSeverity) or 0.3) + entry.age * 0.015))
+            if wound and (tonumber(wound[1]) or 0) > 0
+                and not (WSZC.ShrapnelBandageInProgress
+                    and WSZC.ShrapnelBandageInProgress(ply, limbId)) then
+                -- Add only this tick's irritation. Reapplying baseSeverity +
+                -- total age used to restore each partial wrap on the next tick,
+                -- making the server's real STOP percentage fall back to zero.
+                wound[1] = math.min(6, (tonumber(wound[1]) or 0) + dt * 0.015)
             end
             if wound then wound[5] = CurTime and CurTime() or wound[5] end
 
