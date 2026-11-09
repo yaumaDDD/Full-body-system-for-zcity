@@ -149,6 +149,17 @@ def main():
     print('archives:', len(entries), 'files', dict(sources),
           '| skipped duplicate loose PNGs:', len(loose))
 
+    # Preserve the native bandaged-fracture silhouette but invert black/white:
+    # a black symbol with a white outline remains legible on the dark doll.
+    from PIL import Image
+    with Image.open(io.BytesIO(entries['casunknown-images/icons/splinticon.png'])) as im:
+        im = im.convert('RGBA')
+        im.putdata([(255-r, 255-g, 255-b, a) if a else (0, 0, 0, 0)
+                    for r, g, b, a in im.getdata()])
+        out = OUT / 'wszc/unitmenu/status/fracture_bandaged.png'
+        out.parent.mkdir(parents=True, exist_ok=True)
+        im.save(out)
+
     # Generated WSZC art already exists on disk but is deliberately NOT part of
     # the two source archives (or their 614-entry checksum manifest).
     generated = {
@@ -156,7 +167,7 @@ def main():
         for folder in ('wszc/unitmenu', 'wszc/minigame')
         for p in (OUT / folder).rglob('*') if p.is_file()
     }
-    assert len(generated) == 39, ('34 limb + 3 status + 2 hand PNGs', len(generated))
+    assert len(generated) == 40, ('34 limb + 4 status + 2 hand PNGs', len(generated))
 
     # ------------------------------------------------------------------ aliases
     refs = referenced_paths(collect_lua_sources())
@@ -241,7 +252,7 @@ def main():
     print('packed', len(entries), 'materials', dict(exts))
     actual_materials = [p for p in OUT.rglob('*') if p.is_file()]
     limb_pngs = [p for p in (OUT / 'wszc/unitmenu/limbs').glob('*.png')]
-    assert len(actual_materials) == 653, ('complete material count', len(actual_materials))
+    assert len(actual_materials) == 654, ('complete material count', len(actual_materials))
     assert len(limb_pngs) == 34, ('17 fill + 17 edge sprites', len(limb_pngs))
     print('ALL_LUA_UI_MATERIALS_RESOLVED', len(refs), 'referenced paths')
 

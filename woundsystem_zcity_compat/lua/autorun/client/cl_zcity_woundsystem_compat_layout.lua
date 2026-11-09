@@ -864,7 +864,6 @@ WSZC.InstallCUHudDrawWrappers = InstallDrawWrappers
 -- are not part of this removal and keep their existing behaviour.
 local disinfectedFilterFns = setmetatable({}, { __mode = "k" })
 local disinfectedFilterWrappers = setmetatable({}, { __mode = "k" })
-local fractureColorWrappers = setmetatable({}, { __mode = "k" })
 
 local HIDDEN_NATIVE_STATUS_KEYS = {
     disinfected = true, injection = true,
@@ -931,7 +930,6 @@ local function PatchDisinfectedIcon(fn)
         if disinfectedFilterFns[candidate] then return true end
 
         local icons, addIndex, addHudIcon = inheritedIcons, nil, nil
-        local colorIndex, statusColor
         for i = 1, 96 do
             local name, value = debug.getupvalue(candidate, i)
             if not name then break end
@@ -939,50 +937,18 @@ local function PatchDisinfectedIcon(fn)
                 icons = value
             elseif name == "AddHudIcon" and type(value) == "function" then
                 addIndex, addHudIcon = i, value
-            elseif name == "GetStatusIconColor" and type(value) == "function" then
-                colorIndex, statusColor = i, value
             end
         end
 
         if addHudIcon then
-            if statusColor and not fractureColorWrappers[statusColor] then
-                local nativeColor = statusColor
-                local function markFractureBandage(data, ...)
-                    local color = nativeColor(data, ...)
-                    if type(color) == "table" and type(data) == "table"
-                        and data.id == (WSZC.FRACTURE_BANDAGED_STATUS_ID or "WSZC_FRACTURE_BANDAGED") then
-                        color._WSZCFractureBandaged = true
-                    end
-                    return color
-                end
-                fractureColorWrappers[markFractureBandage] = true
-                debug.setupvalue(candidate, colorIndex, markFractureBandage)
-            end
             if disinfectedFilterWrappers[addHudIcon] then
                 disinfectedFilterFns[candidate] = true
                 return true
             end
             local nativeIcons = icons
-            local wrapped = function(items, mat, color, scale, ...)
+            local wrapped = function(items, mat, ...)
                 if WSZC.IsHiddenNativeStatusIcon(mat, nativeIcons) then return end
-                if type(color) == "table" and color._WSZCFractureBandaged
-                    and type(items) == "table" then
-                    -- C:U adds the red fracture first, then custom statuses to
-                    -- the SAME limb's scratch list.  Replace that one item;
-                    -- don't hide other injuries or alter the real bone state.
-                    for _, item in ipairs(items) do
-                        local oldMat = type(item) == "table" and item.mat or nil
-                        local name = NormalizeStatusMaterialName(MaterialName(oldMat))
-                        local fracture = oldMat ~= nil and nativeIcons
-                            and nativeIcons.fracture ~= nil and oldMat == nativeIcons.fracture
-                        if fracture or name == "wszc/unitmenu/status/fracture"
-                            or name == "casunknown-images/icons/fracturedbone" then
-                            item.mat, item.color, item.scale = mat, color, scale or 1
-                            return
-                        end
-                    end
-                end
-                return addHudIcon(items, mat, color, scale, ...)
+                return addHudIcon(items, mat, ...)
             end
             disinfectedFilterWrappers[wrapped] = true
             debug.setupvalue(candidate, addIndex, wrapped)
@@ -1015,6 +981,40 @@ function WSZC.InstallDisinfectedIconFilter()
     return PatchDisinfectedIcon(fn)
 end
 
+-- C:U draws its red fracture directly from state.broken, independently of
+-- the custom bandaged status.  During this HUD draw only, hide that one native
+-- icon when the authoritative bandage marker exists; keep the real state and
+-- all medical logic unchanged.  Restore on errors too.
+local function FractureHudProjection()
+    local client = WoundSystemClientState
+    local limbs = type(client) == "table" and client.PlayerLimbs or nil
+    local saved = {}
+    if type(limbs) ~= "table" then return saved end
+    local id = WSZC.FRACTURE_BANDAGED_STATUS_ID or "WSZC_FRACTURE_BANDAGED"
+    for _, state in pairs(limbs) do
+        local statuses = type(state) == "table" and state.customStatuses or nil
+        if type(statuses) == "table" and statuses[id] == true then
+            if state.broken == true then
+                saved[#saved + 1] = { state = state, broken = true }
+                state.broken = false
+            else
+                -- A delayed network update must not leave a black marker on a
+                -- healed limb; the server will shortly clear the stale status.
+                saved[#saved + 1] = { statuses = statuses, id = id, value = true }
+                statuses[id] = nil
+            end
+        end
+    end
+    return saved
+end
+
+local function RestoreFractureHudProjection(saved)
+    for _, entry in ipairs(saved) do
+        if entry.state then entry.state.broken = entry.broken end
+        if entry.statuses then entry.statuses[entry.id] = entry.value end
+    end
+end
+
 local function InstallHudFilter()
     local hooks = hook.GetTable and hook.GetTable() or nil
     local hud = type(hooks) == "table" and hooks.HUDPaint or nil
@@ -1038,7 +1038,9 @@ local function InstallHudFilter()
         end
         -- Keep native texture sampling: forcing LINEAR here blurred the whole
         -- WoundView.  This wrapper must not alter either render filter stack.
+        local projection = FractureHudProjection()
         local ok, a, b, c = pcall(fn, ...)
+        RestoreFractureHudProjection(projection)
         WSZC.CUHudFiltered = prevFiltered
         WSZC.CUStatusIconFiltered = prevStatusFiltered
         if not ok then error(a, 0) end

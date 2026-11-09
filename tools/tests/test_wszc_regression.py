@@ -13,7 +13,7 @@ build directory:
     notifications / AED status labels / death text / icons all survive,
   * runtime behaviour of the HUD filter, full-screen minigames, hand pivot and
     cursor hiding (lupa / LuaRuntime; skipped if lupa is unavailable),
-  * both ZIPs, the 653-material mirror and MANIFEST sha256.
+  * both ZIPs, the 654-material mirror and MANIFEST sha256.
 
 Usage: python3 tools/tests/test_wszc_regression.py
 """
@@ -439,9 +439,9 @@ check('S56b pelvis is a real 17th client/server limb with bone-routed wounds',
 packer_s = (ROOT / 'tools/pack_ui_materials.py').read_text(encoding='utf-8')
 check('S57 packer regenerates the 17-part doll and keeps generated/source counts separate',
       "subprocess.run(doll_cmd, cwd=ROOT, check=True)" in packer_s
-      and "len(generated) == 39" in packer_s
+      and "len(generated) == 40" in packer_s
       and "wanted in entries or wanted in generated" in packer_s
-      and "len(actual_materials) == 653" in packer_s
+      and "len(actual_materials) == 654" in packer_s
       and "len(limb_pngs) == 34" in packer_s
       and 'HEAD_SPLIT_FRAC' in generator_s
       and 'HEAD_SOURCE_LAYOUT' not in generator_s
@@ -869,7 +869,15 @@ try:
           all(im.size == (512, 1260) for im in hand_frames)
           and all(px[3] > 200 and px[0] > px[1] > px[2] for px in grip_pixels))
     mats = [p for p in (CONN / 'materials').rglob('*') if p.is_file()]
-    check('S21 connector ships 653 UI materials', len(mats) == 653)
+    check('S21 connector ships 654 UI materials', len(mats) == 654)
+    original_icon = Image.open(CONN / 'materials/casunknown-images/icons/splinticon.png').convert('RGBA')
+    black_icon = Image.open(CONN / 'materials/wszc/unitmenu/status/fracture_bandaged.png').convert('RGBA')
+    original_pixels, black_pixels = list(original_icon.getdata()), list(black_icon.getdata())
+    check('S21b bandaged fracture has a black symbol with a white outline, not a solid black blob',
+          black_icon.size == original_icon.size
+          and all(new == ((255-r, 255-g, 255-b, a) if a else (0, 0, 0, 0))
+                  for (r, g, b, a), new in zip(original_pixels, black_pixels))
+          and (0, 0, 0, 255) in black_pixels and (255, 255, 255, 255) in black_pixels)
     checksums = (CONN / 'MATERIALS.sha256').read_text(encoding='utf-8').splitlines()
     check('S22 MATERIALS.sha256 has 614 source entries',
           len([l for l in checksums if l.strip() and not l.startswith('#')]) == 614)
@@ -885,12 +893,12 @@ def validate_zips():
         assert z.testzip() is None
         full = {i.filename: z.read(i.filename) for i in z.infolist()}
     conn_files = {p.relative_to(CONN).as_posix(): p.read_bytes() for p in CONN.rglob('*') if p.is_file()}
-    assert len(conn_files) == len(compat) == 753
+    assert len(conn_files) == len(compat) == 754
     assert all(compat['woundsystem_zcity_compat/' + r] == d for r, d in conn_files.items())
     mirror = {n[len('garrysmod/addons/casualties_unknown_health_system_beta/materials/'):]: d
               for n, d in full.items()
               if n.startswith('garrysmod/addons/casualties_unknown_health_system_beta/materials/')}
-    assert len(mirror) == 653
+    assert len(mirror) == 654
     assert all(mirror[r[len('materials/'):]] == d for r, d in conn_files.items() if r.startswith('materials/'))
     assert json.loads(compat['woundsystem_zcity_compat/addon.json'])
     external_bridge = full['garrysmod/addons/z_city/lua/homigrad/woundbridge/sv_woundbridge.lua']
@@ -924,7 +932,7 @@ def validate_zips():
     # +4 neck/pelvis PNGs in the connector and +4 in the C:U material mirror.
     # Six fonts/shaders moved C:U -> connector without changing the old total.
     # The isolated embedded runtime adds 75 Lua files + one provenance manifest.
-    assert len(full) == 2856
+    assert len(full) == 2858
     declared_total = re.search(r'Всего файлов в архиве:\s*(\d+)', manifest)
     assert declared_total and int(declared_total.group(1)) == len(full)
     return True
@@ -2417,52 +2425,95 @@ local function NativeWoundView()
 end
 hook.Add("HUDPaint", "WoundDollAndPanel", NativeWoundView)
 FractureTestRender = NativeWoundView
-WSZC.InstallDisinfectedIconFilter()
+WSZC.InstallCUHudFilter()
+function DrawFractureTest(state)
+    FractureTestState = state
+    WoundSystemClientState = { PlayerLimbs = { forearm_R = state } }
+    hook._t.HUDPaint.WoundDollAndPanel()
+end
 ''')
     fracture_icons = lua.execute(r'''
 local status = WoundSystem.Statuses.Stored.WSZC_FRACTURE_BANDAGED
-local black = status.color[1] == 0 and status.color[2] == 0 and status.color[3] == 0
-status.color = { 130, 235, 165 }
+local black = status.icon == "wszc/unitmenu/status/fracture_bandaged.png"
+    and status.color[1] == 255 and status.color[2] == 255 and status.color[3] == 255
+status.icon, status.color = "casunknown-images/icons/splinticon.png", { 0, 0, 0 }
 WSZC.InstallFractureBandagedStatus()
-black = black and status.color[1] == 0 and status.color[2] == 0 and status.color[3] == 0
+black = black and status.icon == "wszc/unitmenu/status/fracture_bandaged.png"
+    and status.color[1] == 255 and status.color[2] == 255 and status.color[3] == 255
 
 FractureTestState = { broken = true, customStatuses = {} }
-FractureTestRender()
+DrawFractureTest(FractureTestState)
 local untreated = #FractureTestItems == 1
     and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/fracture.png"
     and FractureTestItems[1].color.r == 255
 FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED = true
 FractureTestState.customStatuses.OTHER = true
 FractureTestState.dislocated = true
-FractureTestRender()
+DrawFractureTest(FractureTestState)
 local treated = #FractureTestItems == 3
-    and FractureTestItems[1].mat:GetName() == "casunknown-images/icons/splinticon.png"
-    and FractureTestItems[1].color.r == 0 and FractureTestItems[1].color.g == 0
-    and FractureTestItems[1].color.b == 0 and FractureTestItems[1].color.a == 210
-    and FractureTestItems[2].mat:GetName() == "wszc/unitmenu/status/dislocation.png"
+    and FractureTestItems[2].mat:GetName() == "wszc/unitmenu/status/fracture_bandaged.png"
+    and FractureTestItems[2].color.r == 255 and FractureTestItems[2].color.g == 255
+    and FractureTestItems[2].color.b == 255 and FractureTestItems[2].color.a == 210
+    and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/dislocation.png"
     and FractureTestItems[3].mat:GetName() == "casunknown-images/icons/shrapnel.png"
     and FractureTestState.broken and FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED
 -- The ordinary removable SPLINTED status is not a bandage treatment and must
 -- never replace the fracture, even though it uses the same material.
 FractureTestState = { broken = true, customStatuses = { SPLINTED = true } }
-FractureTestRender()
+DrawFractureTest(FractureTestState)
 local splintNotBandage = #FractureTestItems == 2
     and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/fracture.png"
     and FractureTestItems[2].mat:GetName() == "casunknown-images/icons/splinticon.png"
     and FractureTestItems[2].color.r == 255
 -- A new fracture after the server clears the treatment marker is red again.
 FractureTestState = { broken = true, customStatuses = {} }
-FractureTestRender()
+DrawFractureTest(FractureTestState)
 local rebreak = #FractureTestItems == 1
     and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/fracture.png"
 FractureTestState.broken = false
-FractureTestRender()
+FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED = true -- stale net packet
+DrawFractureTest(FractureTestState)
 local healed = #FractureTestItems == 0
-return black and untreated, treated, splintNotBandage and rebreak and healed
+    and FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED == true
+-- Even if the native HUD errors, the live medical state must be restored.
+local original = { broken = true, customStatuses = { WSZC_FRACTURE_BANDAGED = true } }
+WoundSystemClientState = { PlayerLimbs = { forearm_R = original } }
+hook.Add("HUDPaint", "WoundDollAndPanel", function() error("native HUD test") end)
+WSZC.InstallCUHudFilter()
+local ok = pcall(hook._t.HUDPaint.WoundDollAndPanel)
+local restored = not ok and original.broken == true and original.customStatuses.WSZC_FRACTURE_BANDAGED == true
+return black and untreated, treated, splintNotBandage and rebreak and healed and restored
 ''')
-    check('R51 untreated fracture is red; bandaged fracture status is black including reload', fracture_icons[0])
+    check('R51 untreated fracture stays red; bandaged icon asset survives reload', fracture_icons[0])
     check('R52 bandaged fracture replaces red icon without hiding other injury icons', fracture_icons[1])
-    check('R53 splints do not impersonate bandaging; healing and rebreak remain correct', fracture_icons[2])
+    check('R53 splints, healed states, rebreak and HUD errors preserve medical state', fracture_icons[2])
+
+    independent_hud = lua.execute(r'''
+-- Another C:U build may inline icon rendering or disable debug upvalue access.
+-- Suppression must still work without AddHudIcon / GetStatusIconColor wrappers.
+local priorDebug = debug
+debug = nil
+local state = { broken = true, customStatuses = { WSZC_FRACTURE_BANDAGED = true } }
+local other = { broken = true, customStatuses = {} }
+WoundSystemClientState = { PlayerLimbs = { forearm_R = state, crus_L = other } }
+local red, black, otherRed = false, false, false
+hook.Add("HUDPaint", "WoundDollAndPanel", function()
+    red = state.broken
+    black = state.customStatuses.WSZC_FRACTURE_BANDAGED == true
+    otherRed = other.broken
+end)
+local installed = WSZC.InstallCUHudFilter()
+hook._t.HUDPaint.WoundDollAndPanel()
+local treated = installed and not red and black and otherRed and state.broken == true
+    and other.broken == true and state.customStatuses.WSZC_FRACTURE_BANDAGED == true
+state.broken = false
+hook._t.HUDPaint.WoundDollAndPanel()
+local healed = not red and not black and otherRed and state.broken == false
+    and other.broken == true and state.customStatuses.WSZC_FRACTURE_BANDAGED == true
+debug = priorDebug
+return treated and healed
+''')
+    check('R54 red icon hidden after bandaging even when native renderer is inlined and debug is unavailable', independent_hud)
 
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)

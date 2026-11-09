@@ -608,24 +608,24 @@ function WSZC.InstallFractureBandagedStatus()
         return false
     end
     local id = WSZC.FRACTURE_BANDAGED_STATUS_ID
+    local icon = "wszc/unitmenu/status/fracture_bandaged.png"
     local existing = type(statuses.Stored) == "table" and statuses.Stored[id] or nil
     if existing then
-        -- Refresh the presentation even when a previous connector version has
-        -- already registered the status during a client/server Lua reload.
+        existing.icon = icon
         local color = existing.color
-        if type(color) ~= "table" or (color.r or color[1]) ~= 0
-            or (color.g or color[2]) ~= 0 or (color.b or color[3]) ~= 0 then
-            existing.color = { 0, 0, 0 }
+        if type(color) ~= "table" or (color.r or color[1]) ~= 255
+            or (color.g or color[2]) ~= 255 or (color.b or color[3]) ~= 255 then
+            existing.color = { 255, 255, 255 }
         end
         return true
     end
     statuses.Register(id, {
         title = "Fracture immobilized",
         desc = "The fracture is tightly bandaged and knitting by ZCity physiology.",
-        icon = "casunknown-images/icons/splinticon.png",
+        icon = icon,
         type = "bool",
         order = -7500,
-        color = { 0, 0, 0 },
+        color = { 255, 255, 255 },
     })
     return true
 end
