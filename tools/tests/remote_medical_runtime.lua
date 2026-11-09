@@ -660,6 +660,17 @@ if MODE == "server" then
         WSZC.CloseRemoteMedical(op, "test")
         net.Receivers = saved
     end)
+    Test("M22 patient reset cancels remote sessions without closing inspection", function()
+        Reset()
+        Open(patient)
+        Action(patient, "WoundSystem_ShrapnelStart", { "hand_R", 0 })
+        Assert(WSZC.CUSessions.Shrapnel[patient])
+        WSZC.MinigameSessions[op] = { target = patient, owner = op, kind = "bandage", id = 123 }
+        WSZC.CancelRemotePatientTreatment(patient, "reset")
+        Assert(not WSZC.MinigameSessions[op], "operator treatment survives patient's reset")
+        Assert(not WSZC.CUSessions.Shrapnel[patient], "native treatment survives patient's reset")
+        Assert(WSZC.RemoteMedicalSessions[op], "inspection must stay open for updated state")
+    end)
 else
     CLIENT, SERVER = true, false
     local now = 100

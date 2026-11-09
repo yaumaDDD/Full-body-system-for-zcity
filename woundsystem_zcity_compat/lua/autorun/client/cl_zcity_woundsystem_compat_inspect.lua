@@ -349,11 +349,14 @@ local ZCITY_MED_BAR_DEFS = {
 local function WeaponModeRemaining(wep, modeIdx, defMax)
     if not IsValid(wep) then return 0 end
     modeIdx = modeIdx or 1
-    local mv = wep.modeValues
-    if type(mv) ~= "table" and wep.GetNetVar then
+    -- ZCity may leave a clientside default table on the SWEP.  The replicated
+    -- server value wins so pills and availability reflect the real remaining item.
+    local mv
+    if wep.GetNetVar then
         local ok, netMv = pcall(wep.GetNetVar, wep, "modeValues")
         if ok and type(netMv) == "table" then mv = netMv end
     end
+    if type(mv) ~= "table" then mv = wep.modeValues end
     if type(mv) == "table" and mv[modeIdx] ~= nil then
         return math.max(tonumber(mv[modeIdx]) or 0, 0)
     end
@@ -493,7 +496,12 @@ local function BuildLimbContextActions(ply, limbId, state)
     end
     local statuses = type(state.customStatuses) == "table" and state.customStatuses or {}
     local bleed = tonumber(state.bleed) or 0
-    local arterial = statuses.WSZC_ARTERIAL_BLEEDING ~= nil and statuses.WSZC_ARTERIAL_BLEEDING ~= false
+    local arteryAmount = math.max(tonumber(statuses.WSZC_ARTERIAL_BLEEDING) or 0, 0)
+    local arterial = arteryAmount > 0
+    -- state.bleed includes both wound types; a bandage cannot treat an artery.
+    -- At the 100 cap the exact ordinary component is unknowable here, so keep
+    -- the action available rather than hiding a potentially real wound.
+    local ordinaryBleed = not arterial or bleed >= 99.9 or bleed > arteryAmount + 0.1
     local hasTourniquet = statuses.TOURNIQUET ~= nil and statuses.TOURNIQUET ~= false
 
     if EXTREMITY_LIMBS[limbId] and not hasTourniquet and (bleed > 0 or arterial)
@@ -507,7 +515,7 @@ local function BuildLimbContextActions(ply, limbId, state)
     end
 
     local bestBandage = BestOperatorBandageCharge(ply)
-    if bestBandage > 0.05 and bleed > 0 and state.isBandaged ~= true then
+    if bestBandage > 0.05 and bleed > 0 and ordinaryBleed then
         actions[#actions + 1] = {
             kind = "bandage_wound",
             label = "ПЕРЕВЯЗАТЬ РАНУ",
@@ -525,12 +533,13 @@ local function BuildLimbContextActions(ply, limbId, state)
             label = enough and "ПЕРЕБИНТОВАТЬ ПЕРЕЛОМ"
                 or ("ПЕРЕЛОМ: МАЛО БИНТА (" .. tostring(RoundVal(bestBandage)) .. "/" .. tostring(need) .. ")"),
             color = enough and ColVal(110, 220, 255, 255) or ColVal(150, 160, 165, 190),
-            enabled = enough or bestBandage >= 5,
+            enabled = enough,
         }
     end
 
     return actions
 end
+WSZC.BuildLimbContextActions = BuildLimbContextActions
 
 function WSZC.InstallLimbActionButtons()
     local original = _G.WoundSystemDrawLimbActionPoint

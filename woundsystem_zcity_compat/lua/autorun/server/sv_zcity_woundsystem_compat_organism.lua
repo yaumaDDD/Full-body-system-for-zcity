@@ -1346,7 +1346,7 @@ end
 --- also select a damage-only shadow bleed for which org.wounds has no entry.
 --- Both cases produce a session/progress UI with no treatable target.  A real
 --- partially dressed wound must remain eligible until it is actually closed.
-function WSZC.BestBandageLimb(ply, spec, preferred)
+function WSZC.BestBandageLimb(ply, spec, preferred, strict)
     local h = H()
     local limbs = h and h.GetLimbs and h.GetLimbs(ply) or nil
     local org = IsValid(ply) and ply.organism or nil
@@ -1355,7 +1355,8 @@ function WSZC.BestBandageLimb(ply, spec, preferred)
     local bestId, bestScore
     local preferredSite = preferred and AuthoritativeWoundLimb(org, preferred, limbs) or nil
     for limbId, state in pairs(limbs) do
-        if type(state) == "table" and not state.dismembered then
+        if type(state) == "table" and not state.dismembered
+            and (not strict or limbId == preferredSite) then
             local bleed = math.max(tonumber(NormalBleedingOnLimb(ply, org, limbId)) or 0, 0)
             local aftercare = org.wszc_shrapnel_aftercare
                 and org.wszc_shrapnel_aftercare[limbId] ~= nil or false
@@ -2768,12 +2769,13 @@ function WSZC.CanBandageZCityFracture(ply, limbId)
     return not WSZC.IsZCityFractureBandaged(ply, limbId)
 end
 
-function WSZC.BestZCityFractureLimb(ply, preferred)
+function WSZC.BestZCityFractureLimb(ply, preferred, strict)
     if not IsValid(ply) or type(ply.organism) ~= "table" then return nil end
     local prefAnchor = preferred and LIMB_TO_FRACTURE_ANCHOR[NormalizeLimb(preferred) or ""] or nil
     if prefAnchor and WSZC.CanBandageZCityFracture(ply, prefAnchor) then
         return prefAnchor
     end
+    if strict then return nil end
     for _, limbId in ipairs(FRACTURE_ANCHOR_ORDER) do
         if WSZC.CanBandageZCityFracture(ply, limbId) then
             return limbId
@@ -4809,17 +4811,18 @@ function WSZC.ZCitySwepHeal(swep, ent, mode, bone, opts)
             or NormalizeLimb(LimbFromBoneName(BoneNameOf(ent, bone))))
     local forceFracture = type(opts) == "table" and opts.forceFracture == true
     local forceWound = type(opts) == "table" and opts.forceWound == true
+    local strictLimb = type(opts) == "table" and opts.strictLimb == true and preferredOpt ~= nil
 
     if spec.kind == "bandage" then
         local limbId = nil
         if not forceFracture then
-            limbId = WSZC.BestBandageLimb(target, { kind = "bandage" }, aimed)
+            limbId = WSZC.BestBandageLimb(target, { kind = "bandage" }, aimed, strictLimb)
         end
         local fractureMode, fractureCost = false, 0
         if not limbId and not forceWound then
             fractureCost = WSZC.ZCityFractureBandageCost(owner)
             if avail >= fractureCost - 0.0001 then
-                limbId = WSZC.BestZCityFractureLimb(target, aimed)
+                limbId = WSZC.BestZCityFractureLimb(target, aimed, strictLimb)
                 if limbId then fractureMode = true end
             end
         end
@@ -4889,7 +4892,7 @@ function WSZC.ZCitySwepHeal(swep, ent, mode, bone, opts)
                     if IsValid(swep) then swep._wbMgCooldown = (CurTime and CurTime() or 0) + 0.6 end
                     local interrupted = reason == "dead" or reason == "respawn"
                         or reason == "disabled" or reason == "invalid_limb"
-                        or reason == "replaced" or reason == "target_gone"
+                        or reason == "replaced" or reason == "target_gone" or reason == "zcity_compat_reset"
                     if appliedLive <= 0.01 and (tonumber(session and session.deferredUsed) or 0) <= 0.01 then
                         if not interrupted and IsValid(ply) and ply.PrintMessage then
                             pcall(ply.PrintMessage, ply, HUD_PRINTCENTER or 2, "Not completed - nothing was applied")
@@ -5018,6 +5021,7 @@ function WSZC.ZCitySwepHeal(swep, ent, mode, bone, opts)
                     local interrupted = reason == "dead" or reason == "respawn"
                         or reason == "disabled" or reason == "needle_break"
                         or reason == "invalid_limb" or reason == "replaced" or reason == "target_gone"
+                        or reason == "zcity_compat_reset"
                     if appliedLive <= 0.01 then
                         if not interrupted and IsValid(ply) and ply.PrintMessage then
                             pcall(ply.PrintMessage, ply, HUD_PRINTCENTER or 2, "Not completed - nothing was applied")
@@ -5490,11 +5494,11 @@ function WSZC.TreatFromWoundView(operator, target, limbId, actionKind, weaponCla
         local okCls, cls = pcall(swep.GetClass, swep)
         if okCls and cls == "weapon_wszc_bandage" and WSZC.UseStandaloneBandage then
             return WSZC.UseStandaloneBandage(swep, target, {
-                preferredLimb = limbId, forceWound = true,
+                preferredLimb = limbId, forceWound = true, strictLimb = limbId ~= nil,
             }) == true
         end
         local res = WSZC.ZCitySwepHeal(swep, targetEnt, mIdx, nil, {
-            preferredLimb = limbId, forceWound = true, skipHoldGate = true, modeOverride = mIdx,
+            preferredLimb = limbId, forceWound = true, strictLimb = limbId ~= nil, skipHoldGate = true, modeOverride = mIdx,
         })
         return res ~= nil
     elseif actionKind == "bandage_fracture" then
@@ -5504,11 +5508,11 @@ function WSZC.TreatFromWoundView(operator, target, limbId, actionKind, weaponCla
         local okCls, cls = pcall(swep.GetClass, swep)
         if okCls and cls == "weapon_wszc_bandage" and WSZC.UseStandaloneBandage then
             return WSZC.UseStandaloneBandage(swep, target, {
-                preferredLimb = limbId, forceFracture = true,
+                preferredLimb = limbId, forceFracture = true, strictLimb = limbId ~= nil,
             }) == true
         end
         local res = WSZC.ZCitySwepHeal(swep, targetEnt, mIdx, nil, {
-            preferredLimb = limbId, forceFracture = true, skipHoldGate = true, modeOverride = mIdx,
+            preferredLimb = limbId, forceFracture = true, strictLimb = limbId ~= nil, skipHoldGate = true, modeOverride = mIdx,
         })
         return res ~= nil
     elseif actionKind == "tourniquet" then
@@ -5521,7 +5525,7 @@ function WSZC.TreatFromWoundView(operator, target, limbId, actionKind, weaponCla
         local swep = FindOperatorWeaponByClass(operator, weaponClass)
         if not IsValid(swep) then return false end
         if weaponClass == "weapon_wszc_bandage" and WSZC.UseStandaloneBandage then
-            return WSZC.UseStandaloneBandage(swep, target, { preferredLimb = limbId }) == true
+            return WSZC.UseStandaloneBandage(swep, target, { preferredLimb = limbId, strictLimb = limbId ~= nil }) == true
         elseif weaponClass == "weapon_bloodbag" then
             return TransfuseBloodBagDose(swep, target)
         end
@@ -5529,7 +5533,7 @@ function WSZC.TreatFromWoundView(operator, target, limbId, actionKind, weaponCla
             return false
         end
         local res = WSZC.ZCitySwepHeal(swep, targetEnt, modeIdx, nil, {
-            preferredLimb = limbId, skipHoldGate = true, modeOverride = modeIdx,
+            preferredLimb = limbId, strictLimb = limbId ~= nil, skipHoldGate = true, modeOverride = modeIdx,
         })
         return res ~= nil
     end
@@ -5816,6 +5820,13 @@ function WSZC.ClearAllShrapnel(ply, org)
         -- Fractured() reads that derived field, so leaving it behind brings
         -- the red thorax fracture icon straight back on the next shadow pass.
         org.brokenribs = 0
+        for _, key in ipairs({ "larm", "rarm", "lleg", "rleg", "skull", "chest", "pelvis", "spine1", "spine2", "spine3" }) do
+            org[key] = 0
+        end
+        for _, key in ipairs({ "larmdislocation", "rarmdislocation", "llegdislocation", "rlegdislocation",
+            "larmamputated", "rarmamputated", "llegamputated", "rlegamputated", "headamputated" }) do
+            org[key] = false
+        end
         org.bandagedskull = nil
         org.internalBleedHeal = 0
         org.pain, org.avgpain, org.painadd = 0, 0, 0
@@ -5837,6 +5848,9 @@ function WSZC.ClearAllShrapnel(ply, org)
         ply._WSZCBandagedFractures = nil
         ply._WSZCNextTourniquetSync = nil
         ply._WSZCNextSplintSync = nil
+        if WSZC.CancelRemotePatientTreatment then
+            pcall(WSZC.CancelRemotePatientTreatment, ply, "zcity_compat_reset")
+        end
         if WSZC.StopAllMinigames then WSZC.StopAllMinigames(ply, "zcity_compat_reset", true) end
         local h = H()
         if h and h.ResetPlayer then pcall(h.ResetPlayer, ply)
@@ -5846,7 +5860,8 @@ function WSZC.ClearAllShrapnel(ply, org)
             for limbId, state in pairs(limbs) do
                 if type(state) == "table" then
                     state.shrapnel, state.bleed, state.pain = 0, 0, 0
-                    state.broken, state.dislocated = false, false
+                    state.broken, state.dislocated, state.dismembered = false, false, false
+                    state.skin, state.muscle, state.muscleStrength, state.boneHealTimer = 100, 100, 1, 0
                     state.isBandaged, state.wszcBandagedShrapnel = false, false
                     state.tourniqueted, state.blockedBleeding = false, false
                     state.tourniquetPain, state.tourniquetDurability = 0, nil
@@ -5856,6 +5871,9 @@ function WSZC.ClearAllShrapnel(ply, org)
                         state.customStatuses.SPLINTED = nil
                         state.customStatuses.TOURNIQUET = nil
                         state.customStatuses.WSZC_FRACTURE_BANDAGED = nil
+                        state.customStatuses.WSZC_ARTERIAL_BLEEDING = nil
+                        state.customStatuses.WSZC_INTERNAL_BLEEDING = nil
+                        state.customStatuses.WSZC_AMPUTATION = nil
                     end
                     state.bandageSlowAmount = 0
                     state.infection, state.infectionSpeed = 0, 0
@@ -6017,6 +6035,9 @@ function WSZC.InstallResetStructureGuard()
         local ragdollSnap = fakeUpSpawn and SnapshotRagdollOrganism(org) or nil
         CarryShrapnelShadow(owner, org)
         local a, b, c = originalClear(org, ...)
+        if explicit and IsValid(owner) then
+            owner._WSZCExplicitClearCount = (owner._WSZCExplicitClearCount or 0) + 1
+        end
         if ragdollSnap then RestoreRagdollOrganism(org, ragdollSnap) end
 
         if explicit then
@@ -6025,6 +6046,9 @@ function WSZC.InstallResetStructureGuard()
             -- snapshot and no tagged wound is allowed to survive it.
             WSZC.ClearAllShrapnel(owner, org)
             RestoreZCityStructure(org, snap, false, true)
+            if IsValid(owner) and WSZC.NotifyRemotePatientUpdated then
+                pcall(WSZC.NotifyRemotePatientUpdated, owner)
+            end
             return a, b, c
         end
 
@@ -6081,6 +6105,10 @@ function WSZC.InstallResetStructureGuard()
             end
             ply = ply or OwnerOf(ent, true)
             local org = IsValid(ply) and ply.organism or nil
+            if IsValid(ply) and WSZC.CancelRemotePatientTreatment then
+                pcall(WSZC.CancelRemotePatientTreatment, ply, "zcity_compat_reset")
+            end
+            local clearCount = IsValid(ply) and (ply._WSZCExplicitClearCount or 0) or 0
             if IsValid(ply) then ply._WSZCExplicitReset = true end
             WSZC._ExplicitResetDepth = (WSZC._ExplicitResetDepth or 0) + 1
             CarryShrapnelShadow(ply, org)
@@ -6103,7 +6131,8 @@ function WSZC.InstallResetStructureGuard()
                 -- H.ResetPlayer / third-party hooks may replace the organism
                 -- or C:U limb tables.  Never clean a stale pre-reset table.
                 local currentOrg = IsValid(ply) and ply.organism or org
-                if (not ok or res == false) and type(currentOrg) == "table" then
+                local clearWasCalled = IsValid(ply) and (ply._WSZCExplicitClearCount or 0) > clearCount
+                if (not ok or res == false or not clearWasCalled) and type(currentOrg) == "table" then
                     -- WB.GetPlayer rejects dead players and WB.IsEnabled() can
                     -- be false on mixed builds.  Use the stock native fallback.
                     local clearOK, clearErr = xpcall(function()
@@ -6113,12 +6142,13 @@ function WSZC.InstallResetStructureGuard()
                     if not clearOK then Warn("hg.organism.Clear reset fallback failed: " .. tostring(clearErr)) end
                 end
                 WSZC.ClearAllShrapnel(ply, currentOrg)
-                if snap and type(currentOrg) == "table" then RestoreZCityStructure(currentOrg, snap) end
+                if snap and type(currentOrg) == "table" then RestoreZCityStructure(currentOrg, snap, false, true) end
                 ClearMovementPenalties(currentOrg)
                 if IsValid(ply) and type(currentOrg) == "table" then
                     ply.fullsend = true
                     if hg.send_organism then pcall(hg.send_organism, currentOrg, ply) end
                     if hg.send_bareinfo then pcall(hg.send_bareinfo, currentOrg) end
+                    if WSZC.NotifyRemotePatientUpdated then pcall(WSZC.NotifyRemotePatientUpdated, ply) end
                 end
                 return true
             end, traceback)

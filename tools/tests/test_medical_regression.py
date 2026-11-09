@@ -1445,6 +1445,31 @@ return fracSessionOk and remoteFracApplied and directClickOpened and remoteTqOk 
 ''')
     check("R44 TreatFromWoundView, hold-gate bypass, and CanTreatWithSwep work for remote & self fracture/tourniquet/medicine", treat_from_woundview)
 
+    strict_target = lua.execute(r'''
+MinigameEnabled = true
+local medic, patient = MakePlayer(), MakePlayer()
+local bandage = MakeSwep(medic, "weapon_bandage_sh", 40)
+bandage.modeValuesdef = { { 40, true } }
+medic.GetActiveWeapon = function() return bandage end
+medic.GetWeapons = function() return { bandage } end
+WSZC.RemoteMedicalSessions = { [medic] = { target = patient } }
+WSZC.RemoteMedicalValidPair = function(op, tgt) return op == medic and tgt == patient end
+patient.organism.wounds = { { 4, Vector(), Angle(), "ValveBiped.Bip01_R_Hand", 0 } }
+patient.organism.rarm = 1
+local wrongWound = WSZC.TreatFromWoundView(medic, patient, "hand_L", "bandage_wound", "", 1)
+local noWrongWoundSession = WSZC.MinigameSessions[medic] == nil and bandage.modeValues[1] == 40
+local wrongFracture = WSZC.TreatFromWoundView(medic, patient, "forearm_L", "bandage_fracture", "", 1)
+local noWrongFractureSession = WSZC.MinigameSessions[medic] == nil and patient.organism.rarm == 1
+local rightWound = WSZC.TreatFromWoundView(medic, patient, "hand_R", "bandage_wound", "", 1)
+local session = WSZC.MinigameSessions[medic]
+local matched = session and session.target == patient and session.limbId == "hand_R" and session.mode ~= "fracture"
+if session then WSZC.StopMinigame(medic, "test") end
+WSZC.RemoteMedicalSessions = nil
+MinigameEnabled = false
+return noWrongWoundSession and noWrongFractureSession and rightWound and matched
+''')
+    check("R45 selected limb cannot silently redirect wound or fracture treatment", strict_target)
+
 failed = [name for name, ok in results if not ok]
 print(f"TEST_OK {len(results) - len(failed)} / {len(results)}")
 if failed:

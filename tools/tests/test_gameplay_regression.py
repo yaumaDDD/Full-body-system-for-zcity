@@ -1600,7 +1600,8 @@ assert(WSZC.InstallArterialBleedingStatus())
 local state = { customStatuses = { WSZC_ARTERIAL_BLEEDING = 12 } }
 local active = WoundSystem.Statuses.GetActive(state)
 local ok = #active == 1 and active[1].id == "WSZC_ARTERIAL_BLEEDING"
-    and active[1].data.icon == "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png"
+    and active[1].data.icon == "casunknown-images/icons/strongbleed.png"
+    and active[1].data.color[1] == 255 and active[1].data.color[2] == 55
     and active[1].data.type == "number" and active[1].data.order == -8000
 state.customStatuses.WSZC_ARTERIAL_BLEEDING = 0
 return ok and #WoundSystem.Statuses.GetActive(state) == 0
@@ -1827,7 +1828,7 @@ local state = ply._limbs.forearm_R
 local active = WoundSystem.Statuses.GetActive(state)
 local present = state.customStatuses[id] == 12 and state.bleed > 12
     and #active == 1 and active[1].id == id
-    and active[1].data.icon == "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png"
+    and active[1].data.icon == "casunknown-images/icons/strongbleed.png"
     and (not ply._limbs.hand_R.customStatuses
         or ply._limbs.hand_R.customStatuses[id] == nil)
 
@@ -2250,6 +2251,45 @@ WSZC._LegacyFixDislocationCommandWrapper = previousWrapper
 return blockedBridge and blockedCommand and fallbackBridge and fallbackCommand
 ''')
     check("R93 ready gate blocks radial bridge/command; unsupported state preserves fallback", legacy_block)
+
+    reset_regression = lua.execute(r'''
+local ply = MakePlayer()
+local org = ply.organism
+org.blood, org.pain, org.rarm, org.chest, org.brokenribs = 900, 90, 1, 1, 3
+org.rarmdislocation, org.rarmamputated = true, true
+org.otrub, org.unconscious, org.fake, org.needfake = true, true, true, true
+ply.FakeRagdoll = { valid = true, organism = org }
+ply._limbs.forearm_R.broken, ply._limbs.forearm_R.dismembered = true, true
+ply._limbs.forearm_R.muscle, ply._limbs.forearm_R.skin = 1, 1
+ply._limbs.forearm_R.customStatuses = { WSZC_ARTERIAL_BLEEDING = 10 }
+-- Simulate a late replacement bridge which returns success without calling
+-- organism.Clear. WB.Sync projects authoritative fractures back to the UI.
+local previousReset, previousSync = hg.WoundBridge.ResetOrganism, hg.WoundBridge.Sync
+local updates, cancellations = 0, 0
+local previousNotify, previousCancel = WSZC.NotifyRemotePatientUpdated, WSZC.CancelRemotePatientTreatment
+WSZC.NotifyRemotePatientUpdated = function(target) if target == ply then updates = updates + 1 end end
+WSZC.CancelRemotePatientTreatment = function(target) if target == ply then cancellations = cancellations + 1 end end
+hg.WoundBridge.ResetOrganism = function() return true end
+hg.WoundBridge.Sync = function(target, source)
+    target._limbs.forearm_R.broken = (tonumber(source.rarm) or 0) >= 1
+    target._limbs.thorax.broken = (tonumber(source.brokenribs) or 0) > 0
+end
+WSZC.InstallResetStructureGuard()
+local result = hg.WoundBridge.ResetOrganism(ply)
+hg.WoundBridge.Sync(ply, org)
+local clean = result and org.blood == 5000 and org.pain == 0 and org.rarm == 0
+    and org.chest == 0 and org.brokenribs == 0 and not org.rarmdislocation
+    and not org.rarmamputated and not org.otrub and not org.unconscious
+    and org.fake and org.needfake and ply.FakeRagdoll.organism == org
+    and not ply._limbs.forearm_R.broken and not ply._limbs.thorax.broken
+    and not ply._limbs.forearm_R.dismembered and ply._limbs.forearm_R.muscle == 100
+    and not ply._limbs.forearm_R.customStatuses.WSZC_ARTERIAL_BLEEDING
+    and updates > 0 and cancellations > 0
+hg.WoundBridge.ResetOrganism, hg.WoundBridge.Sync = previousReset, previousSync
+WSZC.NotifyRemotePatientUpdated, WSZC.CancelRemotePatientTreatment = previousNotify, previousCancel
+return clean
+''')
+    check("R99 successful bridge without Clear still resets organism and survives sync", reset_regression)
 
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))

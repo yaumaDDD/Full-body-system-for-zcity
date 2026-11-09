@@ -835,16 +835,17 @@ function WSZC.UseStandaloneBandage(swep, target, opts)
     local preferred = type(opts) == "table" and opts.preferredLimb or nil
     local forceFracture = type(opts) == "table" and opts.forceFracture == true
     local forceWound = type(opts) == "table" and opts.forceWound == true
+    local strictLimb = type(opts) == "table" and opts.strictLimb == true and preferred ~= nil
 
     local limbId = nil
     if not forceFracture and WSZC.BestBandageLimb then
-        limbId = WSZC.BestBandageLimb(target, STANDALONE_BANDAGE_SPEC, preferred)
+        limbId = WSZC.BestBandageLimb(target, STANDALONE_BANDAGE_SPEC, preferred, strictLimb)
     end
     local fractureMode, fractureCost = false, 0
     if not limbId and not forceWound and WSZC.BestZCityFractureLimb and WSZC.ZCityFractureBandageCost then
         fractureCost = WSZC.ZCityFractureBandageCost(owner)
         if remaining >= fractureCost - 0.0001 then
-            limbId = WSZC.BestZCityFractureLimb(target, preferred)
+            limbId = WSZC.BestZCityFractureLimb(target, preferred, strictLimb)
             if limbId then fractureMode = true end
         end
     end

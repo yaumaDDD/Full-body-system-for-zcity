@@ -2182,6 +2182,32 @@ timer = { Simple = function() end }
 hg = { radialOptions = {} }
 ''')
     radial_lua.execute(inspect_s)
+    context_actions = radial_lua.execute(r'''
+IsValid = function(v) return v ~= nil and v.valid ~= false end
+local bandage = { valid = true, modeValues = { 40 },
+    GetClass = function() return "weapon_bandage_sh" end,
+    GetNetVar = function() return { 0 } end }
+local medic = { GetWeapons = function() return { bandage } end }
+local function action(state, kind)
+    for _, item in ipairs(WSZC.BuildLimbContextActions(medic, "forearm_R", state)) do
+        if item.kind == kind then return item end
+    end
+end
+local empty = action({ bleed = 5 }, "bandage_wound") == nil
+bandage.GetNetVar = function() return { 10 } end
+local arteryOnly = action({ bleed = 20, customStatuses = { WSZC_ARTERIAL_BLEEDING = 20 } }, "bandage_wound") == nil
+local partial = action({ bleed = 5, isBandaged = true }, "bandage_wound") ~= nil
+local fracture = action({ broken = true }, "bandage_fracture")
+local doctor = { Profession = "doctor", GetWeapons = medic.GetWeapons }
+local doctorAction
+for _, item in ipairs(WSZC.BuildLimbContextActions(doctor, "forearm_R", { broken = true })) do
+    if item.kind == "bandage_fracture" then doctorAction = item end
+end
+return empty and arteryOnly and partial and fracture and fracture.enabled == false
+    and doctorAction and doctorAction.enabled == true
+''')
+    check('R47 WoundView respects actual supply, artery-only wounds and partial dressings', context_actions)
+
     radial_filter = radial_lua.execute(r'''
 WSZC.LegacyRadialMedicineBlocked = function() return Blocked end
 local function legacy(label) return { function() end, label } end

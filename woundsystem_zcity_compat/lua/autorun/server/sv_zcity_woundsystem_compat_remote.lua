@@ -510,6 +510,22 @@ CloseRemote = function(operator, reason)
 end
 WSZC.CloseRemoteMedical = CloseRemote
 
+-- A patient's explicit reset invalidates every treatment targeting them, not
+-- just sessions keyed by that patient. Keep inspections open so they receive
+-- the freshly reset snapshot, while closing operator-owned overlays/sessions.
+function WSZC.CancelRemotePatientTreatment(target, reason)
+    if not IsValid(target) then return end
+    reason = reason or "zcity_compat_reset"
+    for _, kind in ipairs({ "Shrapnel", "Dislocation", "Aed" }) do
+        if MetaFor(target, kind) then CloseNativeMeta(target, kind, reason) end
+    end
+    for operator, session in pairs(WSZC.MinigameSessions or {}) do
+        if operator ~= target and session.target == target and WSZC.StopMinigame then
+            pcall(WSZC.StopMinigame, operator, reason)
+        end
+    end
+end
+
 local EXPECTED = {
     WoundSystem_UseMedicalItem = { "number", "string", "string" },
     WoundSystem_RemoveLimbStatus = { "string", "string" },

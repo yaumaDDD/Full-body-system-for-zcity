@@ -589,10 +589,10 @@ function WSZC.InstallArterialBleedingStatus()
     statuses.Register(id, {
         title = "Arterial bleeding",
         desc = "An artery is open. Apply a tourniquet; an ordinary bandage cannot close it.",
-        icon = "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png",
+        icon = "casunknown-images/icons/strongbleed.png",
         type = "number",
         order = -8000,
-        color = { 255, 255, 255 },
+        color = { 255, 55, 55 },
         networkDecimals = 2,
     })
     return true
