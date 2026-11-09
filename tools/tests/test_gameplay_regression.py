@@ -2902,6 +2902,103 @@ return untouched, rag.scales.forearm_R == 0 and rag.scales.hand_R == 0
     check("R114 bridge Fake/death server visual calls leave ZCity and Gore bones untouched", server_result[0])
     check("R115 legacy server visual path remains active", server_result[1])
 
+if LuaRuntime is not None:
+    spawn_reset = lua.execute(r'''
+local spawn = hook._t.PlayerSpawn and hook._t.PlayerSpawn.WSZC_OrganismSpawn
+if not spawn then return false, false, false, false end
+-- Install real WSZC wrappers around a source-shaped native Clear, including
+-- omissions like jaw/Organs+, rather than the earlier suites' test stubs.
+hg.organism = {Clear = function(org)
+    org.brain, org.heart, org.blood, org.painkiller = 0, 0, 5000, 0
+    org.wounds, org.arterialwounds = {}, {}
+    org._nativeResetCount = (org._nativeResetCount or 0) + 1
+end}
+hg.WoundBridge = {GetPlayer = function(ent) return ent end,
+    RestoreRagdoll = function() end,
+    ResetOrganism = function(ent) hg.organism.Clear(ent.organism); return true end}
+WSZC.InstallResetStructureGuard()
+local oldSimple = timer.Simple
+local queued = {}
+timer.Simple = function(delay, callback) queued[#queued + 1] = callback end
+local p = MakePlayer()
+-- Reproduce stale ragdoll markers and injury/treatment values surviving a
+-- genuine PlayerSpawn before ZCity's later gameevent Player Spawn callback.
+p._WSZCSpawnKind = "ragdoll"
+p._WSZCRagdollTransitionUntil = CurTime() + 5
+p.organism.wszc_shrapnel = {hand_R=3}
+p._limbs.hand_R.shrapnel, p._limbs.hand_R.isBandaged = 3, true
+p._limbs.hand_R.infection, p._limbs.hand_R.broken = 60, true
+p.organism.brain, p.organism.heart, p.organism.jaw = 0.8, 0.6, 0.7
+p.organism.spleen, p.organism.kidneys, p.organism.internalToxins = 0.9, 0.7, 20
+p.organism.lungsL, p.organism.lungsR = {1, 1}, {0.5, 1}
+p.organism.blood, p.organism.painkiller, p.organism.internalBleed = 900, 3, 12
+p.organism.torsoamputated = true
+p.bandaged_limbs, p.tourniquets = {old=true}, {{1}}
+OverrideSpawn = nil
+spawn(p)
+local immediate = p._WSZCSpawnKind == "genuine" and p.organism.brain == 0
+    and p.organism.blood == 5000 and p.organism.heart == 0 and p.organism.jaw == 0
+    and p.organism.spleen == 0 and p.organism.kidneys == 0 and p.organism.internalToxins == 0
+    and p.organism.lungsL[1] == 0 and p.organism.lungsR[2] == 0
+    and p.organism.painkiller == 0 and not p.organism.torsoamputated
+    and next(p.bandaged_limbs) == nil and next(p.tourniquets) == nil
+-- Another PlayerSpawn hook restores old C:U data into the same table.
+p._limbs.hand_R.shrapnel, p._limbs.hand_R.infection = 3, 60
+p._limbs.hand_R.isBandaged = true
+for _, callback in ipairs(queued) do callback() end
+local delayed = p._WSZCSpawnNativeClearSequence == p._WSZCSpawnSequence
+    and p._limbs.hand_R.shrapnel == 0 and p._limbs.hand_R.infection == 0
+    and not p._limbs.hand_R.isBandaged and p.organism.brain == 0
+    and p.organism.blood == 5000
+-- FakeUp's internal PlayerSpawn must not heal or clear any medication.
+queued = {}
+local fake = MakePlayer()
+fake.organism.brain, fake.organism.painkiller = 0.4, 2
+fake.organism.wszc_shrapnel = {hand_R=3}
+fake._limbs.hand_R.shrapnel = 3
+OverrideSpawn = true
+spawn(fake)
+OverrideSpawn = nil
+local fakeSafe = fake.organism.brain == 0.4 and fake.organism.painkiller == 2
+    and fake.organism.wszc_shrapnel.hand_R == 3 and fake._limbs.hand_R.shrapnel == 3
+    and #queued == 0
+-- A reset invalidates callbacks scheduled by the previous ragdoll transition.
+queued = {}
+local previousRestore, previousBones = WSZC.RestoreShrapnel, WSZC.RestoreBones
+local restores = 0
+WSZC.RestoreShrapnel = function() restores = restores + 1 end
+WSZC.RestoreBones = function() restores = restores + 1 end
+WSZC.RestoreShrapnelSoon(fake)
+WSZC.ClearAllShrapnel(fake, fake.organism)
+for _, callback in ipairs(queued) do callback() end
+local staleTimers = restores == 0
+WSZC.RestoreShrapnel, WSZC.RestoreBones = previousRestore, previousBones
+timer.Simple = oldSimple
+return immediate, delayed, fakeSafe, staleTimers
+''')
+    check("R116 PlayerSpawn identifies new life despite stale ragdoll marker and clears native organs/treatments", spawn_reset[0])
+    check("R117 delayed respawn invokes missing native Clear and cleans late C:U persistence", spawn_reset[1])
+    check("R118 FakeUp PlayerSpawn does not reset injuries or treatment", spawn_reset[2])
+    check("R119 explicit reset invalidates pending ragdoll restoration callbacks", spawn_reset[3])
+
+    reset_organs = lua.execute(r'''
+local p = MakePlayer()
+p.organism.brain, p.organism.heart, p.organism.jaw = 0.8, 0.7, 0.6
+p.organism.liver, p.organism.spleen, p.organism.kidneys = 0.9, 0.8, 0.7
+p.organism.pancreas, p.organism.bladder, p.organism.l_eye = 0.6, 0.5, 0.4
+p.organism.analgesia, p.organism.naloxone, p.organism.needle = 3, 2, 1
+p.organism.lungsL, p.organism.lungsR = {1, 1}, {1, 1}
+p._limbs.hand_R.infection, p._limbs.hand_R.isBandaged = 50, true
+hg.WoundBridge.ResetOrganism(p)
+return p.organism.brain == 0 and p.organism.heart == 0 and p.organism.jaw == 0
+    and p.organism.liver == 0 and p.organism.spleen == 0 and p.organism.kidneys == 0
+    and p.organism.pancreas == 0 and p.organism.bladder == 0 and p.organism.l_eye == 0
+    and p.organism.analgesia == 0 and p.organism.naloxone == 0 and p.organism.needle == 0
+    and p.organism.lungsL[2] == 0 and p.organism.lungsR[1] == 0
+    and p._limbs.hand_R.infection == 0 and not p._limbs.hand_R.isBandaged
+''')
+    check("R120 explicit native bridge reset clears organs and medical treatments", reset_organs)
+
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))
 sys.exit(0 if passed == len(results) else 1)
