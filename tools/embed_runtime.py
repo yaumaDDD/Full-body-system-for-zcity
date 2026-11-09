@@ -82,6 +82,25 @@ if WoundSystem._WSZCEmbedded then
 end
 '''
 
+CU_VISUAL_AUTHORITY_GUARD = r'''-- ZCity and Gore V2 render amputations from the organism.  The mirrored C:U
+-- limb flags are for the wound UI, not a second writer of world bone scales.
+local function ZCityOwnsDismembermentVisuals()
+    return WSZC and WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+end
+
+local function ReleaseCUVisuals()
+    -- Only undo entities C:U actually touched, e.g. on a live switch from
+    -- legacy C:U authority; otherwise leave all ZCity entities alone.
+    for entIndex in pairs(Visuals.AppliedSignatures) do
+        RestoreEntityVisuals(Entity(entIndex))
+    end
+    table.Empty(Visuals.States)
+    table.Empty(Visuals.BodygroupDefaults)
+    table.Empty(Visuals.AppliedSignatures)
+end
+
+'''
+
 ZCITY_NO_DEBUG_EXPORTS = r'''
 
 -- WSZC embedded no-debug contract.  External ZCity is never modified.
@@ -149,7 +168,25 @@ def collect() -> tuple[dict[str, bytes], list[tuple[str, str, str]]]:
                     b"WoundSystem._WSZCEmbedded = true\n\n"
                 ) + transformed
             if rel == "woundsystem/server/sv_health.lua":
+                anchor = b"function WoundSystem.ApplyDismembermentVisuals(ent, limbsState)\r\n"
+                assert transformed.count(anchor) == 1
+                transformed = transformed.replace(anchor, anchor + (
+                    b"    -- The C:U limb states are only a HUD shadow in organism mode.  ZCity's\n"
+                    b"    -- GoreCalc (including Gore V2) owns ragdoll bones and stump rendering.\n"
+                    b"    if WSZC and WSZC.OrganismAuthority and WSZC.OrganismAuthority() then return end\n"
+                ), 1)
                 transformed += CU_NO_DEBUG_EXPORTS.replace("\n", "\r\n").encode("utf-8")
+            if rel == "woundsystem/client/cl_dismemberment_visuals.lua":
+                anchor = b"local function ResetPlayerVisuals(ply)"
+                assert transformed.count(anchor) == 1
+                transformed = transformed.replace(anchor, CU_VISUAL_AUTHORITY_GUARD.encode("utf-8") + anchor, 1)
+                for anchor in (
+                    b'net.Receive("WoundSystem_DismemberVisuals", function()\n',
+                    b'net.Receive("WoundSystem_ResetDismemberVisuals", function()\n',
+                    b'hook.Add("Think", "WoundSystem_DismembermentVisualsThink", function()\n',
+                ):
+                    assert transformed.count(anchor) == 1
+                    transformed = transformed.replace(anchor, anchor + b"    if ZCityOwnsDismembermentVisuals() then ReleaseCUVisuals() return end\n", 1)
             files[(CU_DEST / rel).relative_to(CONN).as_posix()] = transformed
             provenance.append((name, sha(original), sha(transformed)))
     with ZipFile(ZCITY_ZIP) as source:

@@ -4302,6 +4302,9 @@ Const.NonDismemberableCoreLimbs = {
 }
 
 function WoundSystem.ApplyDismembermentVisuals(ent, limbsState)
+    -- The C:U limb states are only a HUD shadow in organism mode.  ZCity's
+    -- GoreCalc (including Gore V2) owns ragdoll bones and stump rendering.
+    if WSZC and WSZC.OrganismAuthority and WSZC.OrganismAuthority() then return end
     if not IsValid(ent) or not limbsState then return end
 
     for limbName, _ in pairs(Const.LimbToBones) do

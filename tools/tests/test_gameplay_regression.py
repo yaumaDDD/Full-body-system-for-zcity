@@ -2800,6 +2800,108 @@ return remains, normal and legacy
     check("R103 waking with cervical injury never forces standing or clears fake state", wake[0])
     check("R104 normal recovery and non-authority wake retain previous behavior", wake[1])
 
+# Exercise the actual shipped visual receiver/Think and server function.  A
+# Gore-style matrix renderer requires an unscaled distal bone; a C:U zero-scale
+# shadow makes that matrix non-invertible before Gore can process it.
+if LuaRuntime is not None:
+    visual = LuaRuntime(unpack_returned_tuples=True)
+    visual.execute(r'''
+WSZC = { OrganismAuthority = function() return authority end }
+authority = true
+WoundSystem = {}
+hook = { callbacks = {}, Add = function(event, id, fn) hook.callbacks[id] = fn end,
+         Remove = function() end }
+net = { receivers = {}, Receive = function(id, fn) net.receivers[id] = fn end }
+function IsValid(e) return e ~= nil and e.valid == true end
+function isfunction(v) return type(v) == "function" end
+function Vector(x,y,z) return {x=x,y=y,z=z} end
+function GetConVar() return nil end
+function CurTime() return 1 end
+function table.Empty(t) for k in pairs(t) do t[k] = nil end end
+local entities = {}
+function Entity(i) return entities[i] end
+local rag = {valid=true, index=2, scales={}, writes=0}
+local ply = {valid=true, index=1, scales={}, writes=0}
+entities[1], entities[2] = ply, rag
+for _, ent in ipairs({ply, rag}) do
+    function ent:EntIndex() return self.index end
+    function ent:LookupBone(name)
+        if name == "ValveBiped.Bip01_R_Forearm" then return 1 end
+        if name == "ValveBiped.Bip01_R_Hand" then return 2 end
+    end
+    function ent:ManipulateBoneScale(bone, scale)
+        self.scales[bone] = scale.x
+        self.writes = self.writes + 1
+    end
+end
+function ply:GetNWEntity(key) if key == "WoundSystemUnconsciousRagdoll" then return rag end end
+function rag:GetNWEntity() return ply end
+function rag:GetNWBool() return false end
+player = {GetAll = function() return {ply} end}
+ents = {FindByClass = function() return {} end}
+function net.ReadEntity() return ply end
+function net.ReadUInt() return 2 end
+local step = 0
+function net.ReadString() step = step + 1; return step == 1 and "forearm_R" or "hand_R" end
+function net.ReadBool() return true end
+function NewMessage() step = 0; net.receivers.WoundSystem_DismemberVisuals() end
+function ReadReset() net.receivers.WoundSystem_ResetDismemberVisuals() end
+function Rag() return rag end
+function PlayerEnt() return ply end
+''')
+    visual_s = (CONN / "lua/wszc_vendor/cu/woundsystem/client/cl_dismemberment_visuals.lua").read_text()
+    visual.execute(visual_s)
+    client_result = visual.execute(r'''
+NewMessage()
+hook.callbacks.WoundSystem_DismembermentVisualsThink()
+ReadReset()
+local authoritative = Rag().writes == 0 and PlayerEnt().writes == 0
+-- In legacy mode, the very same net message still hides the distal bones.
+authority = false
+NewMessage()
+local legacy = Rag().scales[1] == 0 and Rag().scales[2] == 0
+-- Switching modes releases only previously C:U-owned modifications once.
+authority = true
+NewMessage()
+local released = Rag().scales[1] == 1 and Rag().scales[2] == 1
+local writes = Rag().writes
+NewMessage(); ReadReset(); hook.callbacks.WoundSystem_DismembermentVisualsThink()
+local stable = Rag().writes == writes
+return authoritative, legacy, released and stable
+''')
+    check("R111 organism-mode client messages and Think never scale Gore ragdoll bones", client_result[0])
+    check("R112 legacy client still applies its own amputation visuals", client_result[1])
+    check("R113 switching from legacy releases C:U visuals once", client_result[2])
+
+    server_visual = LuaRuntime(unpack_returned_tuples=True)
+    server_visual.execute(r'''
+authority = true
+WSZC = {OrganismAuthority = function() return authority end}
+WoundSystem = {}
+Const = {LimbToBones = {forearm_R = true, hand_R = true}}
+Fn = {ForEachDismembermentBone = function(e, limb, cb) cb(limb) end,
+      SetLimbBodygroupState = function(e, limb, hide) e.groups = e.groups + 1 end}
+function IsValid(e) return e ~= nil end
+function Vector(x,y,z) return {x=x,y=y,z=z} end
+rag = {writes=0, groups=0, scales={}}
+function rag:ManipulateBoneScale(bone, scale)
+    self.writes = self.writes + 1; self.scales[bone] = scale.x
+end
+''')
+    health_s = (CONN / "lua/wszc_vendor/cu/woundsystem/server/sv_health.lua").read_text()
+    visual_fn = health_s.split("function WoundSystem.ApplyDismembermentVisuals(ent, limbsState)", 1)[1].split("\nfunction WoundSystem.Dismember(", 1)[0]
+    server_visual.execute("function WoundSystem.ApplyDismembermentVisuals(ent, limbsState)" + visual_fn)
+    server_result = server_visual.execute(r'''
+local limbs = {forearm_R={dismembered=true}, hand_R={dismembered=true}}
+WoundSystem.ApplyDismembermentVisuals(rag, limbs)
+local untouched = rag.writes == 0 and rag.groups == 0 and limbs.forearm_R.dismembered
+authority = false
+WoundSystem.ApplyDismembermentVisuals(rag, limbs)
+return untouched, rag.scales.forearm_R == 0 and rag.scales.hand_R == 0
+''')
+    check("R114 bridge Fake/death server visual calls leave ZCity and Gore bones untouched", server_result[0])
+    check("R115 legacy server visual path remains active", server_result[1])
+
 passed = sum(1 for _, ok in results if ok)
 print("TEST_OK %d / %d" % (passed, len(results)))
 sys.exit(0 if passed == len(results) else 1)
