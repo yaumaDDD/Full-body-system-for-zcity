@@ -1965,6 +1965,81 @@ return staleCleared, retried, positive, stopped
     check("even small positive ZCity internal bleeding remains visible", internal_resync[2])
     check("zero internal bleeding force-clears the abdomen marker", internal_resync[3])
 
+    # Use the actual C:U icon chooser and status wire to distinguish an ordinary
+    # abdomen hit from genuine organism-wide internal bleeding.  Both can be
+    # present simultaneously and neither may suppress the other.
+    gui_s = (CONN / "lua/wszc_vendor/cu/woundsystem/client/cl_health_gui.lua").read_text(encoding="utf-8")
+    rate_s = 'local function ClientLimbBleedRate(state)' + gui_s.split('local function ClientLimbBleedRate(state)', 1)[1].split('WoundSystemHealthHUDOpen =', 1)[0]
+    icon_s = 'local function BleedPhaseColor(rate, alpha)' + gui_s.split('local function BleedPhaseColor(rate, alpha)', 1)[1].split('WoundSystemActionButtonPos =', 1)[0]
+    lua.execute('''
+local Icons = { smallbleed = "normal", midbleed = "normal", strongbleed = "normal",
+    extremebleed = "normal", smallbleed_bandaged = "bandaged", midbleed_bandaged = "bandaged",
+    strongbleed_bandaged = "bandaged", extremebleed_bandaged = "bandaged" }
+local function ClientBleedingSpeedMultiplier() return 1 end
+local function Color(r, g, b, a) return { r, g, b, a } end
+local function LerpColor(t, a, b) return a end
+''' + rate_s + icon_s + '\nTestActualBleedHudIcon = GetBleedHudIcon\n')
+    bleed_paths = lua.execute(r'''
+local ply = MakePlayer()
+local id = WSZC.INTERNAL_BLEEDING_STATUS_ID
+ply._limbs.abdomen = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100 }
+ply.organism.wounds = {
+    { 2, Vector(), Angle(), "ValveBiped.Bip01_Spine1", 0 },
+    { 2, Vector(), Angle(), "ValveBiped.Bip01_R_Forearm", 0 },
+}
+ply.organism.bleed, ply.organism.internalBleed = 4, 0
+local function sync()
+    ply._WSZCShadowNext = 0
+    WSZC.SyncOrganismShadow(ply, ply.organism)
+end
+local function wireCopy(state)
+    local wire, i = {}, 0
+    local function push(v) wire[#wire + 1] = v end
+    local function pop() i = i + 1; return wire[i] end
+    local old = net
+    net = { WriteUInt = push, WriteString = push, WriteFloat = push, WriteBool = push,
+        ReadUInt = pop, ReadString = pop, ReadFloat = pop, ReadBool = pop }
+    SERVER, CLIENT = true, false
+    WoundSystem.Statuses.WriteNet(state)
+    local result = { bleed = state.bleed }
+    SERVER, CLIENT = false, true
+    WoundSystem.Statuses.ReadNet(result)
+    SERVER, CLIENT, net = true, false, old
+    return result
+end
+sync()
+local abdomen, arm = wireCopy(ply._limbs.abdomen), wireCopy(ply._limbs.forearm_R)
+local ordinary = TestActualBleedHudIcon(abdomen, 255) == "normal"
+    and TestActualBleedHudIcon(arm, 255) == "normal"
+    and abdomen.bleed == arm.bleed and not WoundSystem.Statuses.Has(abdomen, id)
+ply.organism.internalBleed = 1.25
+sync()
+abdomen, arm = wireCopy(ply._limbs.abdomen), wireCopy(ply._limbs.forearm_R)
+local both = TestActualBleedHudIcon(abdomen, 255) == "normal"
+    and WoundSystem.Statuses.GetValue(abdomen, id) == 1.25
+    and not WoundSystem.Statuses.Has(arm, id)
+ply.organism.wounds, ply.organism.bleed = {}, 0
+sync()
+abdomen = wireCopy(ply._limbs.abdomen)
+local internalOnly = TestActualBleedHudIcon(abdomen, 255) == nil
+    and WoundSystem.Statuses.Has(abdomen, id)
+ply.organism.internalBleed = 0
+sync()
+abdomen = wireCopy(ply._limbs.abdomen)
+local neither = TestActualBleedHudIcon(abdomen, 255) == nil
+    and not WoundSystem.Statuses.Has(abdomen, id)
+ply._limbs.abdomen.customStatuses[id] = 0
+ply.organism.internalBleed = 0.001
+sync()
+local positiveAfterZero = WoundSystem.Statuses.Has(wireCopy(ply._limbs.abdomen), id)
+return ordinary, both, internalOnly, neither, positiveAfterZero
+''')
+    check("ordinary abdomen and arm wounds use the same native bleed icon, not the internal icon", bleed_paths[0])
+    check("real internal and ordinary abdomen bleeding display independently together", bleed_paths[1])
+    check("internal bleeding alone does not create an external wound icon", bleed_paths[2])
+    check("both icons clear when their independent ZCity sources stop", bleed_paths[3])
+    check("a stale zero status cannot hide small positive internal bleeding", bleed_paths[4])
+
     arterial_bleeding_shadow = lua.execute(r'''
 assert(WSZC.InstallArterialBleedingStatus())
 local ply = MakePlayer()

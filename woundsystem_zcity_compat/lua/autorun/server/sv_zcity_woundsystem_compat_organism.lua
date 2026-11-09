@@ -444,7 +444,10 @@ function WSZC.SyncInternalBleedingShadow(org, limbs)
             local statuses = type(state.customStatuses) == "table" and state.customStatuses or nil
             local current = statuses and statuses[id] or nil
             if limbId == "abdomen" and registered and amount > 0 then
-                if type(current) ~= "number" or math.abs(current - amount) > 0.01 then
+                -- A zero/invalid stale value is invisible to the native status
+                -- renderer even when the positive amount differs by < 0.01.
+                if type(current) ~= "number" or current ~= current or current <= 0
+                    or current == math.huge or math.abs(current - amount) > 0.01 then
                     state.customStatuses = statuses or {}
                     state.customStatuses[id] = amount
                     dirty[limbId] = true
