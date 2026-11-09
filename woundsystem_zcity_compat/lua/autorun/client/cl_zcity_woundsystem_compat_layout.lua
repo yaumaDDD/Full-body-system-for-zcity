@@ -1923,6 +1923,25 @@ local nativeHandInstalled, handSwap, handHide = false, false, false
 local materialTrackerInstalled = false
 local origSetMaterial, origRectRotated, origTexturedRect, origSetDrawColor
 
+-- The upstream minigame defaults to alien-yellow blood unless its unrelated
+-- global blood-color convar is set to red. ZCity uses human blood: substitute
+-- only the shard sprite, for both the embedded and external C:U runtimes.
+local redShrapnelMaterials = {}
+local function RedShrapnelMaterial(name)
+    local game = WoundSystemShrapnelMinigame
+    if type(game) ~= "table" or game.active ~= true or type(name) ~= "string" then return nil end
+    local lower = name:lower():gsub("\\", "/"):gsub("%.png$", "")
+    local stem = lower:match("casunknown%-images/shrapnelminigame/(shrapnelpiece)$")
+        or lower:match("casunknown%-images/shrapnelminigame/(shrapnelpiece_padded)$")
+    if not stem or type(Material) ~= "function" then return nil end
+    if not redShrapnelMaterials[stem] then
+        local mat = Material("casunknown-images/shrapnelminigame/" .. stem .. "_red.png")
+        if not mat or (mat.IsError and mat:IsError()) then return nil end
+        redShrapnelMaterials[stem] = mat
+    end
+    return redShrapnelMaterials[stem]
+end
+
 --- Installed unconditionally (not only when handanim is enabled): the HUD
 --- filter needs the current material to decide whether a draw call belongs to
 --- the doll or to the scanner.  C:U's SetGuiMaterial() calls surface.SetMaterial
@@ -1942,6 +1961,11 @@ function WSZC.InstallMaterialTracker()
                 mat = repl
                 WSZC._DrawMaterialName = MaterialName(mat)
             end
+        end
+        local redPiece = RedShrapnelMaterial(WSZC._DrawMaterialName)
+        if redPiece then
+            mat = redPiece
+            WSZC._DrawMaterialName = MaterialName(mat)
         end
         return origSetMaterial(mat)
     end

@@ -918,6 +918,14 @@ def validate_zips():
     assert 'hook.Remove("PostDrawHUD", "WSZC_UnitmenuLimbTooltip")' in shipped_layout
     assert 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/neck_fill.png' in compat
     assert 'woundsystem_zcity_compat/materials/wszc/unitmenu/limbs/pelvis_fill.png' in compat
+    # The mini-game uses the existing red shard art, not a recolored/renamed
+    # replacement; it must be available to both standalone and full packs.
+    with zipfile.ZipFile(ROOT / 'для того чтобы все работало вместе материалы для UI.zip') as art:
+        for shard in ('shrapnelpiece_red.png', 'shrapnelpiece_padded_red.png'):
+            rel = 'casunknown-images/shrapnelminigame/' + shard
+            source = next(n for n in art.namelist() if n.endswith('/' + rel))
+            assert compat['woundsystem_zcity_compat/materials/' + rel] == art.read(source)
+            assert mirror[rel] == art.read(source)
     assert 'wszc/unitmenu/limbs/neck_edge.png' in mirror
     assert 'wszc/unitmenu/limbs/pelvis_edge.png' in mirror
     assert 'INSTALL_RU.md' not in full and 'zc_woundsystem_compat_fullscreen_native' in full['ZCity_binds.md'].decode('utf-8')
@@ -1583,6 +1591,35 @@ end)()
     draw.SimpleText("ANALYZING...", "WoundSystemAEDStatus", 10, 20, Color(255,255,255))
     local outside = #textCalls == 1 and textCalls[1].f == "WoundSystemAEDStatus"
     return inside and outside
+end)()
+''')
+
+    rt('shrapnel minigame replaces only the extracted shard with the red asset', '''
+(function()
+    WSZC.InstallMaterialTracker()
+    WoundSystemShrapnelMinigame = { active = true }
+    local root = "casunknown-images/shrapnelminigame/"
+    surfaceCalls = {}
+    surface.SetMaterial(Material(root .. "shrapnelpiece.png"))
+    local normal = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece_red.png"
+        and WSZC._DrawMaterialName == root .. "shrapnelpiece_red.png"
+    local redPadded = Material(root .. "shrapnelpiece_padded_red.png")
+    redPadded.IsError = function() return true end
+    surface.SetMaterial(Material(root .. "shrapnelpiece_padded.png"))
+    local fallback = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece_padded.png"
+    redPadded.IsError = function() return false end
+    surface.SetMaterial(Material(root .. "shrapnelpiece_padded.png"))
+    local padded = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece_padded_red.png"
+    surface.SetMaterial(Material(root .. "shrapnelpiece_red.png"))
+    local alreadyRed = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece_red.png"
+    surface.SetMaterial(Material(root .. "minigameShrapnel.png"))
+    local wound = surfaceCalls[#surfaceCalls].m:GetName() == root .. "minigameShrapnel.png"
+    surface.SetMaterial(Material("casunknown-images/icons/shrapnel.png"))
+    local hud = surfaceCalls[#surfaceCalls].m:GetName() == "casunknown-images/icons/shrapnel.png"
+    WoundSystemShrapnelMinigame.active = false
+    surface.SetMaterial(Material(root .. "shrapnelpiece.png"))
+    local outside = surfaceCalls[#surfaceCalls].m:GetName() == root .. "shrapnelpiece.png"
+    return normal and fallback and padded and alreadyRed and wound and hud and outside
 end)()
 ''')
 
