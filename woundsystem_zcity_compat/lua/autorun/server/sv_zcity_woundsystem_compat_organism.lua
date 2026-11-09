@@ -431,29 +431,33 @@ WSZC.SyncAmputationShadow = SyncAmputationShadow
 -- into state.bleed (which would create a fake external haemorrhage) and do not
 -- duplicate the marker on pelvis.
 function WSZC.SyncInternalBleedingShadow(org, limbs)
-    if type(org) ~= "table" or type(limbs) ~= "table" then return false end
-    if not (WSZC.InstallInternalBleedingStatus and WSZC.InstallInternalBleedingStatus()) then
-        return false
-    end
+    local dirty = {}
+    if type(org) ~= "table" or type(limbs) ~= "table" then return dirty end
+    local registered = WSZC.InstallInternalBleedingStatus and WSZC.InstallInternalBleedingStatus()
+    local id = WSZC.INTERNAL_BLEEDING_STATUS_ID or "WSZC_INTERNAL_BLEEDING"
+    local amount = tonumber(org.internalBleed) or 0
+    if amount ~= amount or amount == math.huge or amount == -math.huge then amount = 0 end
+    amount = math.max(0, amount)
 
-    local state = limbs.abdomen
-    if type(state) ~= "table" then return false end
-    local id = WSZC.INTERNAL_BLEEDING_STATUS_ID
-    local amount = math.max(0, tonumber(org.internalBleed) or 0)
-    local current = state.customStatuses and state.customStatuses[id] or nil
-
-    if amount <= 0 then
-        if current == nil then return false end
-        state.customStatuses[id] = nil
-        return true
+    for limbId, state in pairs(limbs) do
+        if type(state) == "table" then
+            local statuses = type(state.customStatuses) == "table" and state.customStatuses or nil
+            local current = statuses and statuses[id] or nil
+            if limbId == "abdomen" and registered and amount > 0 then
+                if type(current) ~= "number" or math.abs(current - amount) > 0.01 then
+                    state.customStatuses = statuses or {}
+                    state.customStatuses[id] = amount
+                    dirty[limbId] = true
+                end
+            elseif current ~= nil then
+                -- Discard stale connector markers, including old markers on
+                -- other limbs; never infer bleeding from external wounds.
+                statuses[id] = nil
+                dirty[limbId] = true
+            end
+        end
     end
-
-    state.customStatuses = state.customStatuses or {}
-    if type(current) == "number" and math.abs(current - amount) <= 0.01 then
-        return false
-    end
-    state.customStatuses[id] = amount
-    return true
+    return dirty
 end
 
 -- Owner (2026-11-05): "переломы должны создавать только в одной точке тоесть
@@ -2956,7 +2960,11 @@ function WSZC.RestoreBones(ply)
     -- native amputation anatomy together with fractures/dislocations on every
     -- ragdoll transition instead of waiting for the next 4 Hz shadow pass.
     SyncAmputationShadow(org, limbs)
-    if WSZC.SyncInternalBleedingShadow then WSZC.SyncInternalBleedingShadow(org, limbs) end
+    if WSZC.SyncInternalBleedingShadow then
+        local changed = WSZC.SyncInternalBleedingShadow(org, limbs)
+        ply._WSZCInternalBleedPending = ply._WSZCInternalBleedPending or {}
+        for limbId in pairs(changed) do ply._WSZCInternalBleedPending[limbId] = true end
+    end
     if WSZC.SyncArterialBleedingShadow then WSZC.SyncArterialBleedingShadow(ply, org, limbs) end
     if WSZC.SyncFractureBandagedShadow then WSZC.SyncFractureBandagedShadow(ply, org, limbs) end
     ply._WSZCExpectedDislocation = ply._WSZCExpectedDislocation or {}
@@ -3696,6 +3704,11 @@ local function PushShadow(ply, org)
     ply._WSZCShadowNext = now + 0.25 -- 4 Hz is plenty for a HUD
     local amputationDirty = SyncAmputationShadow(org, limbs)
     local internalBleedingDirty = WSZC.SyncInternalBleedingShadow(org, limbs)
+    local internalPending = ply._WSZCInternalBleedPending or {}
+    for limbId in pairs(internalBleedingDirty) do internalPending[limbId] = true end
+    -- A replaced server limb table may be clean while the client still has an
+    -- earlier marker. Send the actual new abdomen state even without a delta.
+    if newLimbTable and type(limbs.abdomen) == "table" then internalPending.abdomen = true end
     local arterialBleedingDirty = WSZC.SyncArterialBleedingShadow
         and WSZC.SyncArterialBleedingShadow(ply, org, limbs) or {}
     local fractureBandagedDirty = WSZC.SyncFractureBandagedShadow
@@ -3860,9 +3873,13 @@ local function PushShadow(ply, org)
         for limbId in pairs(amputationDirty) do dirtyLimbs[limbId] = true end
         for limbId in pairs(arterialBleedingDirty) do dirtyLimbs[limbId] = true end
         for limbId in pairs(fractureBandagedDirty) do dirtyLimbs[limbId] = true end
-        if internalBleedingDirty then dirtyLimbs.abdomen = true end
-        for limbId in pairs(dirtyLimbs) do pcall(h.SendLimbUpdate, ply, limbId, false) end
+        for limbId in pairs(internalPending) do dirtyLimbs[limbId] = true end
+        for limbId in pairs(dirtyLimbs) do
+            local ok = pcall(h.SendLimbUpdate, ply, limbId, internalPending[limbId] == true)
+            if ok then internalPending[limbId] = nil end
+        end
     end
+    ply._WSZCInternalBleedPending = next(internalPending) and internalPending or nil
 end
 WSZC.SyncOrganismShadow = PushShadow -- diagnostics / source-faithful regressions
 

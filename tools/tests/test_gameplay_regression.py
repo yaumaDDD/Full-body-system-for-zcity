@@ -1924,6 +1924,47 @@ return ply._body.internalBleeding == 0
 ''')
     check("R97 external bleeding clears stale internal-bleed presentation without changing organism", external_only)
 
+    internal_resync = lua.execute(r'''
+local ply = MakePlayer()
+local id = WSZC.INTERNAL_BLEEDING_STATUS_ID
+local h = WoundSystem.Health
+local oldSend = h.SendLimbUpdate
+local sent, failOnce = {}, true
+h.SendLimbUpdate = function(target, limb, force)
+    if limb == "abdomen" and failOnce then error("simulated send failure") end
+    sent[limb] = { force = force, value = target._limbs[limb].customStatuses
+        and target._limbs[limb].customStatuses[id] }
+end
+ply.organism.internalBleed = 0
+ply._limbs.abdomen = { shrapnel = 0, bleed = 0, pain = 0, muscle = 100, skin = 100,
+    customStatuses = { [id] = 5, KEEP = true } }
+ply._limbs.forearm_R.customStatuses = { [id] = 5, KEEP = true }
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local staleCleared = ply._limbs.forearm_R.customStatuses[id] == nil
+    and ply._limbs.forearm_R.customStatuses.KEEP and sent.forearm_R.force
+    and sent.forearm_R.value == nil and ply._WSZCInternalBleedPending.abdomen
+failOnce = false
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local retried = sent.abdomen.force and sent.abdomen.value == nil
+    and ply._WSZCInternalBleedPending == nil
+ply.organism.internalBleed = 0.001
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local positive = ply._limbs.abdomen.customStatuses[id] == 0.001
+    and sent.abdomen.force and sent.abdomen.value == 0.001
+ply.organism.internalBleed = 0
+ply._WSZCShadowNext = 0
+WSZC.SyncOrganismShadow(ply, ply.organism)
+local stopped = ply._limbs.abdomen.customStatuses[id] == nil and sent.abdomen.value == nil
+h.SendLimbUpdate = oldSend
+return staleCleared, retried, positive, stopped
+''')
+    check("internal-bleed stale markers on other limbs are removed and force-sent", internal_resync[0])
+    check("failed internal-bleed updates are retried", internal_resync[1])
+    check("even small positive ZCity internal bleeding remains visible", internal_resync[2])
+    check("zero internal bleeding force-clears the abdomen marker", internal_resync[3])
+
     arterial_bleeding_shadow = lua.execute(r'''
 assert(WSZC.InstallArterialBleedingStatus())
 local ply = MakePlayer()
