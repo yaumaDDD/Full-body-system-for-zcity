@@ -729,9 +729,33 @@ local cvUnitmenuDoll -- declared below with the other doll convars
 local drawWrappersInstalled = false
 local localeWrapped = false
 local directWrappers = setmetatable({}, { __mode = "k" })
+local actionPointWrappers = setmetatable({}, { __mode = "k" })
+
+-- C:U's uiPoint and label form one large instruction banner. Hide only the
+-- drawing during its action-point call: run its original hit testing and net
+-- requests unchanged. Restore the draw functions even if the action errors.
+function WSZC.InstallActionPointVisualFilter()
+    local original = _G.WoundSystemDrawLimbActionPoint
+    if type(original) ~= "function" then return false end
+    if actionPointWrappers[original] then return true end
+    local function filtered(...)
+        if type(surface) ~= "table" or type(draw) ~= "table" then return original(...) end
+        local savedRect, savedText = surface.DrawTexturedRect, draw.SimpleText
+        surface.DrawTexturedRect = function() end
+        draw.SimpleText = function() end
+        local ok, a, b, c = pcall(original, ...)
+        surface.DrawTexturedRect, draw.SimpleText = savedRect, savedText
+        if not ok then error(a, 0) end
+        return a, b, c
+    end
+    actionPointWrappers[filtered] = true
+    _G.WoundSystemDrawLimbActionPoint = filtered
+    return true
+end
 
 local function InstallDrawWrappers()
     if type(draw) ~= "table" or type(surface) ~= "table" then return false end
+    WSZC.InstallActionPointVisualFilter()
 
     -- Do NOT gate this on a C:U global (the previous build required
     -- WoundSystemQueueLocaleTooltip): on some C:U builds that helper is not
@@ -868,8 +892,8 @@ local function InstallDrawWrappers()
         local origDirect = WoundSystemQueueDirectTooltip
         local function filteredDirect(key, ...)
             -- Hide only the hover descriptions of WoundView action points
-            -- (shrapnel, dislocation, tourniquet and splint).  The point,
-            -- its label and click handling are still drawn by C:U.
+            -- (shrapnel, dislocation, tourniquet and splint). Click handling
+            -- remains in C:U; the banner is hidden by the separate draw filter.
             if type(key) == "string" and string.sub(key, 1, 7) == "action_" then return false end
             if cvHideInventory:GetBool() and type(key) == "string"
                 and string.sub(key, 1, 5) == "slot_" then return end

@@ -1680,11 +1680,6 @@ function WSZC.TickTourniquets(ply, org, dt)
         end
         if MatureTourniquetCycle(cycle, now) then
             changed = true
-            if not cycle.notified and ply.PrintMessage then
-                cycle.notified = true
-                pcall(ply.PrintMessage, ply, HUD_PRINTCENTER or 2,
-                    "Tourniquet: 3 minutes passed - remove and reuse it")
-            end
         end
     end
     return changed
@@ -2162,15 +2157,6 @@ end
 
 WSZC.EnsureLodgedWound = EnsureLodgedWound
 
-local function NotifyMedical(ply, text)
-    if not IsValid(ply) then return end
-    if ply.Notify then
-        pcall(ply.Notify, ply, text, 45, "bandage", 0)
-    elseif ply.PrintMessage then
-        pcall(ply.PrintMessage, ply, HUD_PRINTCENTER or 4, text)
-    end
-end
-
 --- Called ONLY after the reverse-bandage minigame completes.  Infection is
 --- deliberately retained: unwrap alone is not a cure, and its timer keeps
 --- running until extraction is followed by a complete re-bandage.
@@ -2222,7 +2208,6 @@ function WSZC.RemoveBandageForShrapnel(ply, limbId)
     if wound then wound[1] = math.max(tonumber(wound[1]) or 0, 2.5) end
     org.bleed = math.max(tonumber(org.bleed) or 0, 0.5)
     ply.fullsend = true
-    NotifyMedical(ply, "Bandage removed. Click REMOVE SHRAPNEL again.")
     return true
 end
 
@@ -2339,9 +2324,6 @@ function WSZC.TickBandagedShrapnel(ply, org, dt)
                     end
                     if entry.stage ~= "torso" and entry.stage ~= "brain" and entry.stage ~= "terminal" then
                         entry.stage = "torso"
-                        if limbId ~= "thorax" then
-                            NotifyMedical(ply, "Infection has spread to the torso. Extract the fragment and re-bandage.")
-                        end
                     end
                 else
                     if limbId ~= "thorax" then
@@ -2360,9 +2342,6 @@ function WSZC.TickBandagedShrapnel(ply, org, dt)
                     end
                     if entry.stage ~= "brain" and entry.stage ~= "terminal" then
                         entry.stage = "brain"
-                        if limbId ~= "head" then
-                            NotifyMedical(ply, "Infection has reached the brain. Complete extraction and re-bandaging immediately.")
-                        end
                     end
                 else
                     if limbId ~= "head" then
@@ -2383,10 +2362,6 @@ function WSZC.TickBandagedShrapnel(ply, org, dt)
                     -- death and ragdoll hooks therefore remain authoritative.
                     org.alive = false
                     if ply.Alive and ply:Alive() and ply.Kill then pcall(ply.Kill, ply) end
-                    if not entry.terminalNotified then
-                        entry.terminalNotified = true
-                        NotifyMedical(ply, "The covered shrapnel infection has become fatal.")
-                    end
                     changed = true
                 end
             else
@@ -2448,11 +2423,7 @@ function WSZC.InstallShrapnelBandageGuard()
             -- only 360 accepted reverse degrees may call RemoveBandage...().
             if sessions.Shrapnel[ply] then closeSession(ply, "unwrap_started") end
             local operator = WSZC.RemoteNativeOperator and WSZC.RemoteNativeOperator(ply) or ply
-            local started = WSZC.StartShrapnelUnwrap
-                and WSZC.StartShrapnelUnwrap(operator, limbId, ply)
-            if not started then
-                NotifyMedical(operator, "The reverse-bandage minigame is required before extraction.")
-            end
+            if WSZC.StartShrapnelUnwrap then WSZC.StartShrapnelUnwrap(operator, limbId, ply) end
             return -- no click unwrap, extraction session or tweezers cost
         end
 

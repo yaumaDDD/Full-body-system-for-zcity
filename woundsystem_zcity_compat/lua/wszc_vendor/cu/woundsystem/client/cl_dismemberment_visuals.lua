@@ -195,6 +195,23 @@ local function RestoreEntityVisuals(ent)
     Visuals.AppliedSignatures[ent:EntIndex()] = nil
 end
 
+-- ZCity and Gore V2 render amputations from the organism.  The mirrored C:U
+-- limb flags are for the wound UI, not a second writer of world bone scales.
+local function ZCityOwnsDismembermentVisuals()
+    return WSZC and WSZC.OrganismAuthority and WSZC.OrganismAuthority()
+end
+
+local function ReleaseCUVisuals()
+    -- Only undo entities C:U actually touched, e.g. on a live switch from
+    -- legacy C:U authority; otherwise leave all ZCity entities alone.
+    for entIndex in pairs(Visuals.AppliedSignatures) do
+        RestoreEntityVisuals(Entity(entIndex))
+    end
+    table.Empty(Visuals.States)
+    table.Empty(Visuals.BodygroupDefaults)
+    table.Empty(Visuals.AppliedSignatures)
+end
+
 local function ResetPlayerVisuals(ply)
     if not IsValid(ply) then return end
 
@@ -231,6 +248,7 @@ local function ReadCorpseVisualState(ragdoll)
 end
 
 net.Receive("WoundSystem_DismemberVisuals", function()
+    if ZCityOwnsDismembermentVisuals() then ReleaseCUVisuals() return end
     if not WoundSystemClientEnabled() then return end
 
     local ply = net.ReadEntity()
@@ -253,10 +271,12 @@ net.Receive("WoundSystem_DismemberVisuals", function()
 end)
 
 net.Receive("WoundSystem_ResetDismemberVisuals", function()
+    if ZCityOwnsDismembermentVisuals() then ReleaseCUVisuals() return end
     ResetPlayerVisuals(net.ReadEntity())
 end)
 
 hook.Add("Think", "WoundSystem_DismembermentVisualsThink", function()
+    if ZCityOwnsDismembermentVisuals() then ReleaseCUVisuals() return end
     if not WoundSystemClientEnabled() then
         for entIndex in pairs(Visuals.BodygroupDefaults) do
             RestoreEntityVisuals(Entity(entIndex))
