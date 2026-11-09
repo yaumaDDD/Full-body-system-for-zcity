@@ -864,6 +864,7 @@ WSZC.InstallCUHudDrawWrappers = InstallDrawWrappers
 -- are not part of this removal and keep their existing behaviour.
 local disinfectedFilterFns = setmetatable({}, { __mode = "k" })
 local disinfectedFilterWrappers = setmetatable({}, { __mode = "k" })
+local fractureColorWrappers = setmetatable({}, { __mode = "k" })
 
 local HIDDEN_NATIVE_STATUS_KEYS = {
     disinfected = true, injection = true,
@@ -930,6 +931,7 @@ local function PatchDisinfectedIcon(fn)
         if disinfectedFilterFns[candidate] then return true end
 
         local icons, addIndex, addHudIcon = inheritedIcons, nil, nil
+        local colorIndex, statusColor
         for i = 1, 96 do
             local name, value = debug.getupvalue(candidate, i)
             if not name then break end
@@ -937,18 +939,50 @@ local function PatchDisinfectedIcon(fn)
                 icons = value
             elseif name == "AddHudIcon" and type(value) == "function" then
                 addIndex, addHudIcon = i, value
+            elseif name == "GetStatusIconColor" and type(value) == "function" then
+                colorIndex, statusColor = i, value
             end
         end
 
         if addHudIcon then
+            if statusColor and not fractureColorWrappers[statusColor] then
+                local nativeColor = statusColor
+                local function markFractureBandage(data, ...)
+                    local color = nativeColor(data, ...)
+                    if type(color) == "table" and type(data) == "table"
+                        and data.id == (WSZC.FRACTURE_BANDAGED_STATUS_ID or "WSZC_FRACTURE_BANDAGED") then
+                        color._WSZCFractureBandaged = true
+                    end
+                    return color
+                end
+                fractureColorWrappers[markFractureBandage] = true
+                debug.setupvalue(candidate, colorIndex, markFractureBandage)
+            end
             if disinfectedFilterWrappers[addHudIcon] then
                 disinfectedFilterFns[candidate] = true
                 return true
             end
             local nativeIcons = icons
-            local wrapped = function(items, mat, ...)
+            local wrapped = function(items, mat, color, scale, ...)
                 if WSZC.IsHiddenNativeStatusIcon(mat, nativeIcons) then return end
-                return addHudIcon(items, mat, ...)
+                if type(color) == "table" and color._WSZCFractureBandaged
+                    and type(items) == "table" then
+                    -- C:U adds the red fracture first, then custom statuses to
+                    -- the SAME limb's scratch list.  Replace that one item;
+                    -- don't hide other injuries or alter the real bone state.
+                    for _, item in ipairs(items) do
+                        local oldMat = type(item) == "table" and item.mat or nil
+                        local name = NormalizeStatusMaterialName(MaterialName(oldMat))
+                        local fracture = oldMat ~= nil and nativeIcons
+                            and nativeIcons.fracture ~= nil and oldMat == nativeIcons.fracture
+                        if fracture or name == "wszc/unitmenu/status/fracture"
+                            or name == "casunknown-images/icons/fracturedbone" then
+                            item.mat, item.color, item.scale = mat, color, scale or 1
+                            return
+                        end
+                    end
+                end
+                return addHudIcon(items, mat, color, scale, ...)
             end
             disinfectedFilterWrappers[wrapped] = true
             debug.setupvalue(candidate, addIndex, wrapped)

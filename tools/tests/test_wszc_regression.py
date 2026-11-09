@@ -2374,6 +2374,96 @@ return blocked, usable, kept and stable and reload
     check('R49 native action labels, hover and clicks remain usable', action_tooltips[1])
     check('R50 unrelated tooltips survive; late load and reload keep filtering', action_tooltips[2])
 
+    # Use C:U's actual status registry, colour and scratch-list code; the
+    # WoundView closure follows the original ordering (fracture before status).
+    statuses_s = src('woundsystem_zcity_compat/lua/wszc_vendor/cu/woundsystem/shared/sh_limb_statuses.lua')
+    lua.execute(r'''
+WoundSystem = {}
+string.Trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+''')
+    lua.execute(statuses_s)
+    bandage_status_start = shared_s.index('WSZC.FRACTURE_BANDAGED_STATUS_ID =')
+    bandage_status_end = shared_s.index('-- Short-lived context flag:', bandage_status_start)
+    lua.execute(shared_s[bandage_status_start:bandage_status_end])
+    lua.execute(r'''
+WSZC.InstallFractureBandagedStatus()
+WoundSystem.Statuses.Register("SPLINTED", { icon = "casunknown-images/icons/splinticon.png", type = "bool", order = 35 })
+WoundSystem.Statuses.Register("OTHER", { icon = "casunknown-images/icons/shrapnel.png", type = "bool", order = 40 })
+''')
+    color_start = native_gui.index('local function GetStatusIconColor(')
+    color_end = native_gui.index('\nfunction WoundSystem.Client.GetBloodBagFillColor', color_start)
+    add_start = native_gui.index('local function AddHudIcon(')
+    add_end = native_gui.index('\nlocal function BleedPhaseColor', add_start)
+    lua.execute(r'''
+local Icons = {
+    fracture = Material("wszc/unitmenu/status/fracture.png"),
+    dislocate = Material("wszc/unitmenu/status/dislocation.png"),
+}
+''' + native_gui[color_start:color_end] + native_gui[add_start:add_end] + r'''
+local function NativeWoundView()
+    local state = FractureTestState
+    local iconItems = {}
+    if state.broken then
+        AddHudIcon(iconItems, Icons.fracture, Color(255, 0, 0, 210))
+    end
+    if state.dislocated then
+        AddHudIcon(iconItems, Icons.dislocate, Color(255, 0, 0, 210))
+    end
+    for _, status in ipairs(WoundSystem.Statuses.GetActive(state)) do
+        local mat = Material(status.data.icon)
+        AddHudIcon(iconItems, mat, GetStatusIconColor(status.data, 210, status.value))
+    end
+    FractureTestItems = iconItems
+end
+hook.Add("HUDPaint", "WoundDollAndPanel", NativeWoundView)
+FractureTestRender = NativeWoundView
+WSZC.InstallDisinfectedIconFilter()
+''')
+    fracture_icons = lua.execute(r'''
+local status = WoundSystem.Statuses.Stored.WSZC_FRACTURE_BANDAGED
+local black = status.color[1] == 0 and status.color[2] == 0 and status.color[3] == 0
+status.color = { 130, 235, 165 }
+WSZC.InstallFractureBandagedStatus()
+black = black and status.color[1] == 0 and status.color[2] == 0 and status.color[3] == 0
+
+FractureTestState = { broken = true, customStatuses = {} }
+FractureTestRender()
+local untreated = #FractureTestItems == 1
+    and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/fracture.png"
+    and FractureTestItems[1].color.r == 255
+FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED = true
+FractureTestState.customStatuses.OTHER = true
+FractureTestState.dislocated = true
+FractureTestRender()
+local treated = #FractureTestItems == 3
+    and FractureTestItems[1].mat:GetName() == "casunknown-images/icons/splinticon.png"
+    and FractureTestItems[1].color.r == 0 and FractureTestItems[1].color.g == 0
+    and FractureTestItems[1].color.b == 0 and FractureTestItems[1].color.a == 210
+    and FractureTestItems[2].mat:GetName() == "wszc/unitmenu/status/dislocation.png"
+    and FractureTestItems[3].mat:GetName() == "casunknown-images/icons/shrapnel.png"
+    and FractureTestState.broken and FractureTestState.customStatuses.WSZC_FRACTURE_BANDAGED
+-- The ordinary removable SPLINTED status is not a bandage treatment and must
+-- never replace the fracture, even though it uses the same material.
+FractureTestState = { broken = true, customStatuses = { SPLINTED = true } }
+FractureTestRender()
+local splintNotBandage = #FractureTestItems == 2
+    and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/fracture.png"
+    and FractureTestItems[2].mat:GetName() == "casunknown-images/icons/splinticon.png"
+    and FractureTestItems[2].color.r == 255
+-- A new fracture after the server clears the treatment marker is red again.
+FractureTestState = { broken = true, customStatuses = {} }
+FractureTestRender()
+local rebreak = #FractureTestItems == 1
+    and FractureTestItems[1].mat:GetName() == "wszc/unitmenu/status/fracture.png"
+FractureTestState.broken = false
+FractureTestRender()
+local healed = #FractureTestItems == 0
+return black and untreated, treated, splintNotBandage and rebreak and healed
+''')
+    check('R51 untreated fracture is red; bandaged fracture status is black including reload', fracture_icons[0])
+    check('R52 bandaged fracture replaces red icon without hiding other injury icons', fracture_icons[1])
+    check('R53 splints do not impersonate bandaging; healing and rebreak remain correct', fracture_icons[2])
+
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)
 passed = sum(1 for _, ok in results if ok)

@@ -1355,6 +1355,28 @@ return partialEligible and partialStabilized and partialBandagedNow and statusWr
 ''')
     check("R43 partial fractures (0.5..0.99), brokenribs, and WSZC_FRACTURE_BANDAGED lifecycle work end-to-end", fracture_all_tiers)
 
+    bandage_fracture_only = lua.execute(r'''
+local ply = MakePlayer()
+local org = ply.organism
+local state = Limbs[ply].forearm_R
+org.rarm = 1
+state.isBandaged = true -- wound dressing, not bone treatment
+WSZC.SyncFractureBandagedShadow(ply, org)
+local stillUntreated = not (state.customStatuses and state.customStatuses.WSZC_FRACTURE_BANDAGED)
+    and not WSZC.IsZCityFractureBandaged(ply, "forearm_R")
+local treated = WSZC.StabilizeZCityFracture(ply, "forearm_R", ply, nil)
+    and WSZC.IsZCityFractureBandaged(ply, "forearm_R")
+    and state.customStatuses.WSZC_FRACTURE_BANDAGED == true
+org.rarm = 1 -- actual new full fracture invalidates the old stabilization
+WSZC.TickZCityBones(ply, org, 0)
+WSZC.SyncFractureBandagedShadow(ply, org)
+local rebroken = not WSZC.IsZCityFractureBandaged(ply, "forearm_R")
+    and not state.customStatuses.WSZC_FRACTURE_BANDAGED
+    and WSZC.CanBandageZCityFracture(ply, "forearm_R")
+return stillUntreated and treated and rebroken
+''')
+    check("R58 only actual fracture bandaging sets treated status; new break removes it", bandage_fracture_only)
+
     treat_from_woundview = lua.execute(r'''
 -- Turn hg_healanims ON (hold gate active) and prove single-click fracture/wound minigames still open!
 local oldGetConVar = GetConVar
