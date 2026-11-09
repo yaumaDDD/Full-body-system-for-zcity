@@ -532,6 +532,50 @@ return transitionKept, explicitCleared, brainReset
             "irritation", "covered", "infection", "wounds", "bleed", "limbShrapnel",
             "limbBandaged", "limbInfection", "bandages", "tourniquets")})
 
+    fresh_after_reset = lua.execute(r'''
+local bone = "ValveBiped.Bip01_R_Hand"
+local ply = MakePlayer()
+local rag = { bandaged_limbs = {}, SetNetVar = function(self, key, val) self.net = self.net or {}; self.net[key] = val end }
+local current = { bandaged_limbs = {}, SetNetVar = rag.SetNetVar }
+ply.FakeRagdoll = rag
+hg.GetCurrentCharacter = function() return current end
+WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+WSZC.ApplyBandageToOrganism({ ply = ply, limbId = "hand_R", limb = ply._limbs.hand_R },
+    { effects = { bandageSlowAmount = 15 } }, 1)
+local formerlyCovered = WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and ply.bandaged_limbs[bone] and rag.bandaged_limbs[bone] and current.bandaged_limbs[bone]
+-- The native C:U reset may detach the old ragdoll before hg.organism.Clear.
+local originalReset = WoundSystem.Health.ResetPlayer
+WoundSystem.Health.ResetPlayer = function(target)
+    local ok = originalReset(target)
+    target.FakeRagdoll = nil
+    hg.GetCurrentCharacter = function(p) return p end
+    return ok
+end
+local success = hg.WoundBridge.ResetOrganism(ply)
+WoundSystem.Health.ResetPlayer = originalReset
+local clean = success and next(ply.bandaged_limbs) == nil and next(rag.bandaged_limbs) == nil
+    and next(current.bandaged_limbs) == nil and next(rag.net.bandaged_limbs) == nil
+    and next(current.net.bandaged_limbs) == nil and ply._limbs.hand_R.isBandaged == false
+    and not ply.organism.wszc_bandaged_shrapnel
+-- Simulate a later transition pulling the old representation back in.
+ply.FakeRagdoll = rag
+ply.bandaged_limbs = table.Copy(rag.bandaged_limbs)
+WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+local fresh = ply._limbs.hand_R.shrapnel == 3
+    and not WSZC.IsShrapnelBandaged(ply, "hand_R")
+    and WSZC.GetBandageBleeding(ply, "hand_R") > 0
+    and (not ply.organism.wszc_shrapnel_closed or not ply.organism.wszc_shrapnel_closed.hand_R)
+WSZC.SyncShrapnel(ply, ply.organism)
+WSZC.TickLodgedShrapnel(ply, ply.organism, 0.5)
+local stable = not WSZC.IsShrapnelBandaged(ply, "hand_R") and WSZC.GetBandageBleeding(ply, "hand_R") > 0
+hg.GetCurrentCharacter = nil
+return formerlyCovered, clean, fresh and stable
+''')
+    check("R107 real dressing reaches player, ragdoll and current character", fresh_after_reset[0])
+    check("R108 reset clears detached and current character dressing tables and netvars", fresh_after_reset[1])
+    check("R109 a new pellet after reset remains an uncovered bleeding wound", fresh_after_reset[2])
+
     death_reset = lua.execute(r'''
 local dead = MakePlayer()
 dead.Alive = function() return false end
@@ -2292,6 +2336,31 @@ WSZC.NotifyRemotePatientUpdated, WSZC.CancelRemotePatientTreatment = previousNot
 return clean
 ''')
     check("R99 successful bridge without Clear still resets organism and survives sync", reset_regression)
+
+    direct_reset = lua.execute(r'''
+local ply = MakePlayer()
+local bone = "ValveBiped.Bip01_R_Hand"
+local rag = { bandaged_limbs = { [bone] = true }, SetNetVar = function(self, key, value) self[key .. "Net"] = value end }
+ply.FakeRagdoll = rag
+ply.bandaged_limbs = { [bone] = true }
+ply._limbs.hand_R.isBandaged = true
+local oldClear = hg.organism.Clear
+hg.organism.Clear = function(org)
+    org.owner.FakeRagdoll = nil
+    org.wounds = {}; org.arterialwounds = {}
+end
+WSZC.InstallResetStructureGuard()
+WSZC._ExplicitResetDepth = 1
+hg.organism.Clear(ply.organism)
+WSZC._ExplicitResetDepth = 0
+local cleaned = next(rag.bandaged_limbs) == nil and next(rag.bandaged_limbsNet) == nil
+    and next(ply.bandaged_limbs) == nil and not ply._limbs.hand_R.isBandaged
+WSZC.AddShrapnel(ply, "hand_R", 1, "shotgun")
+local open = not WSZC.IsShrapnelBandaged(ply, "hand_R") and WSZC.GetBandageBleeding(ply, "hand_R") > 0
+hg.organism.Clear = oldClear
+return cleaned and open
+''')
+    check("R110 direct explicit organism clear retains old ragdoll reference for cleanup", direct_reset)
 
     # Execute the exact movement expressions from the shipped ZCity archive,
     # then compare them to the actual connector shadow at the same thresholds.

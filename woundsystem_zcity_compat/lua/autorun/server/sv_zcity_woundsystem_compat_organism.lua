@@ -5816,7 +5816,35 @@ local function IsExplicitReset(ply)
         or (IsValid(ply) and ply._WSZCExplicitReset == true)
 end
 
-function WSZC.ClearAllShrapnel(ply, org)
+-- Keep references to all physical representations BEFORE a reset can detach a
+-- ragdoll or replace the current character.  Old dressing tables on those
+-- entities must not be copied back to the player on a later fake transition.
+local function ResetMedicalEntities(ply, org, prior)
+    local entities, seen = {}, {}
+    local function add(ent)
+        if IsValid(ent) and not seen[ent] then
+            seen[ent] = true
+            entities[#entities + 1] = ent
+        end
+    end
+    if type(prior) == "table" then
+        for _, ent in ipairs(prior) do add(ent) end
+    end
+    add(ply)
+    if type(org) == "table" then add(org.owner) end
+    if IsValid(ply) then
+        add(ply.FakeRagdoll)
+        if ply.Alive and not ply:Alive() then add(ply.DeathRagdoll) end
+        if hg and hg.GetCurrentCharacter then
+            local ok, current = pcall(hg.GetCurrentCharacter, ply)
+            if ok then add(current) end
+        end
+    end
+    return entities
+end
+
+function WSZC.ClearAllShrapnel(ply, org, priorEntities)
+    local entities = ResetMedicalEntities(ply, org, priorEntities)
     if type(org) == "table" then
         RemoveLodgedWounds(org)
         for _, key in ipairs(SHRAPNEL_SHADOW_KEYS) do org[key] = nil end
@@ -5894,8 +5922,6 @@ function WSZC.ClearAllShrapnel(ply, org)
         -- Explicit reset also removes ZCity's own medical presentation.  A
         -- stale bandaged_limbs entry would otherwise keep rendering a dressing
         -- after every real wound and infection has already been cleared.
-        local owner = type(org) == "table" and org.owner or nil
-        local entities = { ply, owner, ply.FakeRagdoll }
         local seen = {}
         for _, ent in ipairs(entities) do
             if IsValid(ent) and not seen[ent] then
@@ -6040,6 +6066,7 @@ function WSZC.InstallResetStructureGuard()
             or org.otrub == true or org.fake == true)
         local preserveTransition = not explicit and not genuineSpawn and not deadOwner
         local snap = SnapshotZCityStructure(org, preserveTransition, explicit)
+        local priorEntities = (explicit or genuineSpawn) and ResetMedicalEntities(owner, org) or nil
         local ragdollSnap = fakeUpSpawn and SnapshotRagdollOrganism(org) or nil
         CarryShrapnelShadow(owner, org)
         local a, b, c = originalClear(org, ...)
@@ -6052,7 +6079,7 @@ function WSZC.InstallResetStructureGuard()
             -- This branch is ONLY hg_organism_clear / WB.ResetOrganism, never
             -- an ordinary Fake/FakeUp transition.  No carry table, no shrapnel
             -- snapshot and no tagged wound is allowed to survive it.
-            WSZC.ClearAllShrapnel(owner, org)
+            WSZC.ClearAllShrapnel(owner, org, priorEntities)
             RestoreZCityStructure(org, snap, false, true)
             if IsValid(owner) and WSZC.NotifyRemotePatientUpdated then
                 pcall(WSZC.NotifyRemotePatientUpdated, owner)
@@ -6079,7 +6106,7 @@ function WSZC.InstallResetStructureGuard()
                 -- organism tables into its death ragdoll before calling Clear,
                 -- so removing wound rows at death could also edit the corpse.
                 owner._WSZCSpawnCleanupAt = CurTime and CurTime() or 0
-                WSZC.ClearAllShrapnel(owner, org)
+                WSZC.ClearAllShrapnel(owner, org, priorEntities)
             end
             RestoreShrapnelShadow(org)
             -- A genuine standing spawn is a real clear, not a ragdoll
@@ -6117,6 +6144,7 @@ function WSZC.InstallResetStructureGuard()
                 pcall(WSZC.CancelRemotePatientTreatment, ply, "zcity_compat_reset")
             end
             local clearCount = IsValid(ply) and (ply._WSZCExplicitClearCount or 0) or 0
+            local priorEntities = ResetMedicalEntities(ply, org)
             if IsValid(ply) then ply._WSZCExplicitReset = true end
             WSZC._ExplicitResetDepth = (WSZC._ExplicitResetDepth or 0) + 1
             CarryShrapnelShadow(ply, org)
@@ -6149,7 +6177,7 @@ function WSZC.InstallResetStructureGuard()
                     end, traceback)
                     if not clearOK then Warn("hg.organism.Clear reset fallback failed: " .. tostring(clearErr)) end
                 end
-                WSZC.ClearAllShrapnel(ply, currentOrg)
+                WSZC.ClearAllShrapnel(ply, currentOrg, priorEntities)
                 if snap and type(currentOrg) == "table" then RestoreZCityStructure(currentOrg, snap, false, true) end
                 ClearMovementPenalties(currentOrg)
                 if IsValid(ply) and type(currentOrg) == "table" then
