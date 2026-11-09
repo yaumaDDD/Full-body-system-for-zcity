@@ -695,7 +695,8 @@ end)
 local savedHudFn, hudWrapper
 local cvUnitmenuDoll -- declared below with the other doll convars
 local drawWrappersInstalled = false
-local localeWrapped, directWrapped = false, false
+local localeWrapped = false
+local directWrappers = setmetatable({}, { __mode = "k" })
 
 local function InstallDrawWrappers()
     if type(draw) ~= "table" or type(surface) ~= "table" then return false end
@@ -819,8 +820,8 @@ local function InstallDrawWrappers()
     end
 
     -- These two globals belong to C:U and can arrive after us.  Retry them on
-    -- every installer tick with their own flags, so a late C:U load still gets
-    -- the tooltip filter without wrapping draw/surface twice.
+    -- every installer tick, so a late C:U load or a replacement direct-queue
+    -- function still gets the tooltip filter without wrapping draw/surface twice.
     if not localeWrapped and type(WoundSystemQueueLocaleTooltip) == "function" then
         local origLocale = WoundSystemQueueLocaleTooltip
         WoundSystemQueueLocaleTooltip = function(key, x, y, w, h, ...)
@@ -830,14 +831,23 @@ local function InstallDrawWrappers()
         localeWrapped = true
     end
 
-    if not directWrapped and type(WoundSystemQueueDirectTooltip) == "function" then
+    if type(WoundSystemQueueDirectTooltip) == "function"
+        and not directWrappers[WoundSystemQueueDirectTooltip] then
         local origDirect = WoundSystemQueueDirectTooltip
-        WoundSystemQueueDirectTooltip = function(key, ...)
+        local function filteredDirect(key, ...)
+            -- Hide only the hover descriptions of WoundView action points
+            -- (shrapnel, dislocation, tourniquet and splint).  The point,
+            -- its label and click handling are still drawn by C:U.
+            if type(key) == "string" and string.sub(key, 1, 7) == "action_" then return false end
             if cvHideInventory:GetBool() and type(key) == "string"
                 and string.sub(key, 1, 5) == "slot_" then return end
             return origDirect(key, ...)
         end
-        directWrapped = true
+        directWrappers[filteredDirect] = true
+        WoundSystemQueueDirectTooltip = filteredDirect
+        if WoundSystem and WoundSystem.Client and WoundSystem.Client.QueueDirectTooltip == origDirect then
+            WoundSystem.Client.QueueDirectTooltip = filteredDirect
+        end
     end
 
     return true
