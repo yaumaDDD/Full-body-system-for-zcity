@@ -584,8 +584,26 @@ net.Receive("WSZC_RemoteMedicalAction", function(_, operator)
         WSZC.RemoteMedicalReturnRecipient = operator
         InvokeNative(operator, target, action, payload, 0)
         WSZC.RemoteMedicalReturnRecipient = previousRecipient
+        SendState(operator, target)
     end
 end)
+
+function WSZC.NotifyRemotePatientUpdated(target, coalesce)
+    if not IsValid(target) then return end
+    local now = CurTime and CurTime() or 0
+    for operator, session in pairs(inspections) do
+        if session.target == target and ValidPair(operator, target) then
+            if coalesce and now < (session.nextFastState or 0) then
+                -- Let the watchdog flush the final coalesced tick shortly.
+                session.nextState = math.min(session.nextState or now, now + 0.08)
+            else
+                session.nextFastState = now + 0.08
+                session.nextState = now + STATE_INTERVAL
+                SendState(operator, target)
+            end
+        end
+    end
+end
 
 timer.Create("WSZC_RemoteMedicalWatchdog", 0.25, 0, function()
     local now = CurTime()
@@ -618,6 +636,7 @@ hook.Add("PlayerDisconnected", "WSZC_RemoteMedicalDisconnect", function(ply)
     end
 end)
 
+WSZC.RemoteMedicalSessions = inspections
 WSZC.RemoteMedicalValidPair = ValidPair
 WSZC.RemoteMedicalValidPayload = ValidPayload
 WSZC.RemoteMedicalConsumeSlot = ConsumeSlot

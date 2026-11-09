@@ -647,7 +647,15 @@ function WSZC.WoundViewEmptyClick(mx, my, s)
     -- the label drawn to its right.
     local ap = _G.WoundSystemActionButtonPos
     if type(ap) == "table" and type(ap.x) == "number" and type(ap.y) == "number" then
-        if Inside(ap.x - 60 * s, ap.y - 60 * s, 300 * s, 120 * s) then return false end
+        if Inside(ap.x - 60 * s, ap.y - 60 * s, 320 * s, 210 * s) then return false end
+    end
+    local treatRects = WSZC._ActiveTreatRects
+    if type(treatRects) == "table" then
+        for _, r in ipairs(treatRects) do
+            if type(r) == "table" and Inside(r.x - 8, r.y - 8, r.w + 16, r.h + 16) then
+                return false
+            end
+        end
     end
     return true
 end
@@ -839,9 +847,7 @@ WSZC.InstallCUHudDrawWrappers = InstallDrawWrappers
 
 -- Keep treatment state intact; filter ONLY presentation in native WoundView.
 -- Owner-marked icons: disinfect spray and injection.  Fracture/dislocation
--- stay visible: their red native injury colour is information, not a removal
--- mark.  Ordinary bleed icons are hidden: a separate native status with a
--- DIFFERENT material is projected from real org.arterialwounds on the server.
+-- and all bleeding icons (ordinary + arterial) stay visible.
 -- Infection, shrapnel, tourniquet/splint, amputation and internal-bleed status
 -- are not part of this removal and keep their existing behaviour.
 local disinfectedFilterFns = setmetatable({}, { __mode = "k" })
@@ -849,26 +855,12 @@ local disinfectedFilterWrappers = setmetatable({}, { __mode = "k" })
 
 local HIDDEN_NATIVE_STATUS_KEYS = {
     disinfected = true, injection = true,
-    smallbleed = true, smallbleed_bandaged = true,
-    midbleed = true, midbleed_bandaged = true,
-    strongbleed = true, strongbleed_bandaged = true,
-    extremebleed = true, extremebleed_bandaged = true,
 }
 
 local HIDDEN_NATIVE_STATUS_STEMS = {
     ["casunknown-images/icons/disinfected"] = true,
     ["casunknown-images/icons/injectionwound"] = true,
     ["casunknown-images/icons/injectionwound_red"] = true,
-    ["casunknown-images/icons/smallbleeding"] = true,
-    ["casunknown-images/icons/smallbleedingbandaged"] = true,
-    ["casunknown-images/icons/midbleeding"] = true,
-    ["casunknown-images/icons/midbleedingbandaged"] = true,
-    ["casunknown-images/icons/bleeding"] = true,
-    ["casunknown-images/icons/bleedingbandaged"] = true,
-    ["casunknown-images/icons/strongbleed"] = true,
-    ["casunknown-images/icons/strongbleedbandaged"] = true,
-    ["wszc/unitmenu/status/bleeding"] = true,
-    ["zcity_delta/unitmenu/status/bleeding"] = true,
 }
 
 local function NormalizeStatusMaterialName(raw)
@@ -1104,7 +1096,9 @@ hook.Add("Think", "WSZC_CUInventoryLayout", function()
     -- module has loaded.  The server syncs only this extra customStatus key;
     -- native Statuses.GetActive() draws it before every arterial bleed icon.
     if WSZC.InstallAmputationStatus then WSZC.InstallAmputationStatus() end
+    if WSZC.InstallInternalBleedingStatus then WSZC.InstallInternalBleedingStatus() end
     if WSZC.InstallArterialBleedingStatus then WSZC.InstallArterialBleedingStatus() end
+    if WSZC.InstallFractureBandagedStatus then WSZC.InstallFractureBandagedStatus() end
     WSZC.InstallMinigameTextFilter()
     -- Status filtering is independent of the optional scanner/inventory hide.
     InstallDrawWrappers()

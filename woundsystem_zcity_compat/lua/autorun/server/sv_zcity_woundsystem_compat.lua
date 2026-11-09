@@ -1337,6 +1337,7 @@ local function Attempt()
     if WSZC.RefreshNativeSessionRefs then WSZC.RefreshNativeSessionRefs(false) end
     if WSZC.InstallLegacyRadialMedicineBlock then WSZC.InstallLegacyRadialMedicineBlock() end
     if WSZC.InstallOrganismMode then WSZC.InstallOrganismMode() end
+    if WSZC.RefreshCapabilities then WSZC.RefreshCapabilities() end
 
     if WSZC.OrganismAuthority() then
         WSZC.Log("compatibility layer active (ply.organism owns health; C:U = HUD, minigames, shrapnel)")

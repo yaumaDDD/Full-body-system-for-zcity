@@ -550,6 +550,18 @@ if MODE == "server" then
         Equal(inventories[op][3].durability, 18)
         Assert(WSZC.MinigameSessions[op] == nil)
     end)
+
+    Test("M18 NotifyRemotePatientUpdated pushes immediate state to active medic session", function()
+        Reset()
+        incoming, incomingIndex = { patient }, 0
+        net.Receivers.WSZC_RemoteMedicalOpen(0, op)
+        sent = {}
+        now = now + 1
+        WSZC.NotifyRemotePatientUpdated(patient, false)
+        Equal(#sent, 1)
+        Equal(sent[1].message, "WSZC_RemoteMedicalState")
+        Equal(sent[1].recipient, op)
+    end)
 else
     CLIENT, SERVER = true, false
     local now = 100
@@ -846,6 +858,34 @@ else
         hooks.RadialMenuPressedZCity_WoundBridge_RemoteInspectFocus_WSZC()
         MENUPANELHUYHUY = nil
         Assert(WSZC.RemoteMedical.FindPatient() == nil)
+    end)
+
+    Test("C16 unconscious patient snapshot keeps medic conscious and immediate open skips timer delay", function()
+        Reset()
+        -- Guard OpenHealthHUD exactly like real C:U cl_health_gui.lua:2328
+        local origOpen = WoundSystem.OpenHealthHUD
+        WoundSystem.OpenHealthHUD = function()
+            if WoundSystemClientState.Cardio.unconscious then return end
+            origOpen()
+        end
+        outgoing = {}
+        Assert(WSZC.OpenRemotePatient(patient, true))
+        Equal(#outgoing, 1, "immediate open must transmit WSZC_RemoteMedicalOpen without waiting for timer")
+        Equal(outgoing[1].name, "WSZC_RemoteMedicalOpen")
+
+        local unconsciousCardio = {
+            bloodVolume = 38, consciousness = 0, unconscious = true,
+            skills = { STR = 3, RES = 4, INT = 5 },
+        }
+        SendState(patient, patientLimbs, unconsciousCardio)
+        Assert(WSZC.RemoteMedical.active, "remote session must open even when patient is unconscious")
+        Assert(WoundSystemHealthHUDOpen == true, "WoundView must open for an unconscious patient")
+        Equal(WoundSystemClientState.Cardio.unconscious, false, "medic Cardio.unconscious must stay false")
+        Equal(WSZC.RemoteMedical.patientUnconscious, true, "patientUnconscious must record patient state")
+
+        WSZC.RemoteMedical.Finish("done")
+        Equal(WSZC.RemoteMedical.patientUnconscious, false)
+        WoundSystem.OpenHealthHUD = origOpen
     end)
 end
 

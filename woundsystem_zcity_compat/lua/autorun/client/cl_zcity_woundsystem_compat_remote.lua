@@ -151,6 +151,24 @@ local function FindPatient()
         return target
     end
 
+    -- Lying ZCity ragdolls have thin limb hitboxes; a narrow hull trace along
+    -- the medic's aim ray catches patients slightly beside the center pixel.
+    if util and util.TraceHull and Vector and ply.EyePos and ply.GetAimVector then
+        local startPos = ply:EyePos()
+        local hullTrace = util.TraceHull({
+            start = startPos,
+            endpos = startPos + ply:GetAimVector() * RANGE,
+            mins = Vector(-10, -10, -10),
+            maxs = Vector(10, 10, 10),
+            filter = ply,
+        })
+        local hullTarget = PlayerFromEntity(hullTrace and hullTrace.Entity or nil)
+        if ValidPatient(ply, hullTarget) then
+            Remote.focusTarget = hullTarget
+            return hullTarget
+        end
+    end
+
     -- CreateRadialMenu rebuilds every option four times a second while the
     -- cursor is moving towards a sector. Keep the last genuinely traced body
     -- for that open menu instead of making a narrow ragdoll option vanish
@@ -298,23 +316,26 @@ end
 
 local function EnsurePanelWrappers()
     if not (WoundSystem and WoundSystem.OpenHealthHUD and WoundSystem.CloseHealthHUD) then return false end
-    if originalOpen and WoundSystem.OpenHealthHUD == Remote.wrappedOpen then return true end
-    originalOpen = WoundSystem.OpenHealthHUD
-    originalClose = WoundSystem.CloseHealthHUD
+    if originalOpen and WoundSystem.OpenHealthHUD == Remote.wrappedOpen
+        and WoundSystem.CloseHealthHUD == Remote.wrappedClose then return true end
+    local baseOpen = WoundSystem.OpenHealthHUD
+    local baseClose = WoundSystem.CloseHealthHUD
+    originalOpen = baseOpen
+    originalClose = baseClose
     Remote.wrappedOpen = function(...)
         if Remote.active and not Remote.internalOpen then Remote.Finish("self_open") end
-        return originalOpen(...)
+        return baseOpen(...)
     end
     Remote.wrappedClose = function(...)
         local wasRemote = Remote.active
         if wasRemote then
             -- Native CloseHealthHUD also closes minigames.  Keep capture active
             -- for that call so those close packets go to the remote server.
-            local results = { originalClose(...) }
+            local results = { baseClose(...) }
             Remote.Finish("panel_closed")
             return unpack(results)
         end
-        return originalClose(...)
+        return baseClose(...)
     end
     WoundSystem.OpenHealthHUD = Remote.wrappedOpen
     WoundSystem.CloseHealthHUD = Remote.wrappedClose
@@ -323,8 +344,21 @@ end
 
 local function ApplySnapshot(limbs, cardio, name, blood, happiness)
     local currentLimbs, currentCardio = SelfTables()
+    local selfUnconscious = false
+    if type(Remote.selfCardio) == "table" and Remote.selfCardio.unconscious ~= nil then
+        selfUnconscious = Remote.selfCardio.unconscious == true
+    elseif type(currentCardio) == "table" and currentCardio.unconscious ~= nil then
+        selfUnconscious = currentCardio.unconscious == true
+    end
     ReplaceContents(currentLimbs, limbs)
     ReplaceContents(currentCardio, cardio)
+    -- Keep the MEDIC's consciousness flag in WoundSystemClientState.Cardio so
+    -- OpenHealthHUD / ToggleHUDInput never abort or auto-close when inspecting
+    -- an unconscious/ragdolled patient.  Patient consciousness is tracked separately.
+    Remote.patientUnconscious = type(cardio) == "table" and cardio.unconscious == true or false
+    if type(currentCardio) == "table" then
+        currentCardio.unconscious = selfUnconscious
+    end
     ApplyStatsSnapshot(cardio)
     Remote.patientName = name or (IsValid(Remote.target) and Remote.target:Nick() or "player")
     Remote.blood = tonumber(blood) or 100
@@ -352,7 +386,7 @@ FinishRemote = function(reason)
     capture = nil
     if not Remote.active and not wasPending then return end
     local wasActive = Remote.active
-    Remote.active, Remote.target = false, nil
+    Remote.active, Remote.target, Remote.patientUnconscious = false, nil, false
     if originalNet.Start then
         originalNet.Start("WSZC_RemoteMedicalClose")
         originalNet.SendToServer()
@@ -393,7 +427,7 @@ net.Receive("WSZC_RemoteMedicalClose", function()
     local matchesPending = Remote.pending and (not IsValid(target) or Remote.pending == target)
     if not (matchesActive or matchesPending) then return end
     if Remote.active then
-        Remote.active, Remote.target, Remote.pending = false, nil, nil
+        Remote.active, Remote.target, Remote.pending, Remote.patientUnconscious = false, nil, nil, false
         capture = nil
         RestoreSelfState()
         if WoundSystemHealthHUDOpen and originalClose then originalClose() end
@@ -403,7 +437,7 @@ net.Receive("WSZC_RemoteMedicalClose", function()
     Remote.closedReason = reason
 end)
 
-function WSZC.OpenRemotePatient(target)
+function WSZC.OpenRemotePatient(target, immediate)
     if not Ready() then return false end
     local ply = LocalPlayer()
     target = target or FindPatient()
@@ -413,6 +447,12 @@ function WSZC.OpenRemotePatient(target)
     if Remote.active or Remote.pending then FinishRemote("replaced") end
     EnsurePanelWrappers()
     Remote.pending, Remote.pendingAt = target, CurTime()
+    if immediate or not (timer and timer.Simple) then
+        net.Start("WSZC_RemoteMedicalOpen")
+            net.WriteEntity(target)
+        net.SendToServer()
+        return true
+    end
     timer.Simple(OPEN_DELAY, function()
         if Remote.pending ~= target or not ValidPatient(LocalPlayer(), target) then return end
         net.Start("WSZC_RemoteMedicalOpen")

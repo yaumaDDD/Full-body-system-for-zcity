@@ -771,7 +771,7 @@ local function StandaloneBandageReject(owner, reason)
     return false
 end
 
-function WSZC.UseStandaloneBandage(swep, target)
+function WSZC.UseStandaloneBandage(swep, target, opts)
     local owner = IsValid(swep) and swep.GetOwner and swep:GetOwner() or nil
     if not (IsValid(owner) and owner:IsPlayer() and owner:Alive()) then
         return StandaloneBandageReject(owner, "invalid operator")
@@ -793,17 +793,23 @@ function WSZC.UseStandaloneBandage(swep, target)
     local remaining = math.max(tonumber(swep.modeValues[1]) or 0, 0)
     if remaining <= 0.0005 then return StandaloneBandageReject(owner, "bandage is empty") end
 
-    local limbId = WSZC.BestBandageLimb
-        and WSZC.BestBandageLimb(target, STANDALONE_BANDAGE_SPEC, nil) or nil
+    local preferred = type(opts) == "table" and opts.preferredLimb or nil
+    local forceFracture = type(opts) == "table" and opts.forceFracture == true
+    local forceWound = type(opts) == "table" and opts.forceWound == true
+
+    local limbId = nil
+    if not forceFracture and WSZC.BestBandageLimb then
+        limbId = WSZC.BestBandageLimb(target, STANDALONE_BANDAGE_SPEC, preferred)
+    end
     local fractureMode, fractureCost = false, 0
-    if not limbId and WSZC.BestZCityFractureLimb and WSZC.ZCityFractureBandageCost then
+    if not limbId and not forceWound and WSZC.BestZCityFractureLimb and WSZC.ZCityFractureBandageCost then
         fractureCost = WSZC.ZCityFractureBandageCost(owner)
         if remaining >= fractureCost - 0.0001 then
-            limbId = WSZC.BestZCityFractureLimb(target, nil)
+            limbId = WSZC.BestZCityFractureLimb(target, preferred)
             if limbId then fractureMode = true end
         end
     end
-    if not limbId then return StandaloneBandageReject(owner, "no ordinary bleeding wound") end
+    if not limbId then return StandaloneBandageReject(owner, "no treatable wound or fracture") end
 
     local items = WoundSystem and WoundSystem.Items
     local maxDur = (items and items.GetMax and items.GetMax("GAUZE")) or 100
@@ -823,8 +829,16 @@ function WSZC.UseStandaloneBandage(swep, target)
             appliedLive = math.max(tonumber(value) or 0, 0)
         end,
         onFractureComplete = fractureMode and function()
-            if WSZC.StabilizeZCityFracture then
-                WSZC.StabilizeZCityFracture(target, limbId, owner, swep)
+            if WSZC.StabilizeZCityFracture
+                and WSZC.StabilizeZCityFracture(target, limbId, owner, swep) then
+                appliedLive = math.max(appliedLive, 1)
+                if WSZC.SyncOrganismShadow and type(target.organism) == "table" then
+                    target._WSZCShadowNext = 0
+                    pcall(WSZC.SyncOrganismShadow, target, target.organism)
+                end
+                if WSZC.NotifyRemotePatientUpdated then
+                    pcall(WSZC.NotifyRemotePatientUpdated, target)
+                end
             end
         end or nil,
         onProgress = function(ply, session, durCost)
@@ -954,6 +968,9 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
         end
         if H and H.SendLimbUpdate then pcall(H.SendLimbUpdate, session.target, session.limbId, true) end
         if H and H.SendCardioUpdate then pcall(H.SendCardioUpdate, session.target) end
+        if WSZC.NotifyRemotePatientUpdated then
+            pcall(WSZC.NotifyRemotePatientUpdated, session.target, not finalAftercare)
+        end
     else
         local callOk, ok = pcall(H.ApplyItemToBody,
             session.target, session.itemId, session.limbId, applyAmount)

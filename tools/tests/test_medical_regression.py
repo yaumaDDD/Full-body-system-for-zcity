@@ -1298,6 +1298,135 @@ return true
                 transparent_ok = False
     check("R42 disinfected/injectionwound PNGs are 0-alpha while fracturedbone/dislocatedbone remain opaque", transparent_ok)
 
+    fracture_all_tiers = lua.execute(r'''
+local ply = MakePlayer()
+local org = ply.organism
+local medic = MakePlayer()
+local swep = MakeSwep(medic, "weapon_bigbandage_sh", 150)
+swep.modeValuesdef = { { 150, true } }
+
+-- 1) Partial leg fracture (0.65 < 1.0) shows fracture icon in WoundView and MUST be bandageable
+org.rleg = 0.65
+local partialEligible = WSZC.CanBandageZCityFracture(ply, "crus_R") == true
+    and WSZC.IsZCityFractureBandaged(ply, "crus_R") == false
+local partialStabilized = WSZC.StabilizeZCityFracture(ply, "crus_R", medic, swep) == true
+local partialBandagedNow = WSZC.IsZCityFractureBandaged(ply, "crus_R") == true
+    and WSZC.CanBandageZCityFracture(ply, "crus_R") == false
+WSZC.SyncFractureBandagedShadow(ply, org)
+local statusWritten = Limbs[ply].crus_R.customStatuses
+    and Limbs[ply].crus_R.customStatuses.WSZC_FRACTURE_BANDAGED == true
+-- Vanilla sv_pain.lua knits rleg (< 1) below 0.5; TickZCityBones then clears WSZC_FRACTURE_BANDAGED
+org.rleg = 0.49
+WSZC.TickZCityBones(ply, org, 0.5)
+WSZC.SyncFractureBandagedShadow(ply, org)
+local healedClean = WSZC.IsZCityFractureBandaged(ply, "crus_R") == false
+    and (not Limbs[ply].crus_R.customStatuses
+        or Limbs[ply].crus_R.customStatuses.WSZC_FRACTURE_BANDAGED == nil)
+
+-- 2) Rib fracture represented via org.brokenribs > 0 with org.chest == 0
+org.chest = 0
+org.brokenribs = 2
+local ribsEligible = WSZC.CanBandageZCityFracture(ply, "thorax") == true
+local ribsStabilized = WSZC.StabilizeZCityFracture(ply, "thorax", medic, swep) == true
+local ribsConverted = (org.chest or 0) > 0 and (org.chest or 0) < 1
+for _ = 1, 500 do WSZC.TickZCityBones(ply, org, 0.5) end
+local ribsHealed = (org.chest or 0) == 0 and (org.brokenribs or 0) == 0
+
+return partialEligible and partialStabilized and partialBandagedNow and statusWritten
+    and healedClean and ribsEligible and ribsStabilized and ribsConverted and ribsHealed
+''')
+    check("R43 partial fractures (0.5..0.99), brokenribs, and WSZC_FRACTURE_BANDAGED lifecycle work end-to-end", fracture_all_tiers)
+
+    treat_from_woundview = lua.execute(r'''
+-- Turn hg_healanims ON (hold gate active) and prove single-click fracture/wound minigames still open!
+local oldGetConVar = GetConVar
+GetConVar = function(name)
+    if name == "hg_healanims" then return { GetBool = function() return true end } end
+    return nil
+end
+MinigameEnabled = true
+
+local medic = MakePlayer()
+local patient = MakePlayer()
+local bandage = MakeSwep(medic, "weapon_bandage_sh", 40)
+bandage.modeValuesdef = { { 40, true } }
+local tq = MakeSwep(medic, "weapon_tourniquet", 1)
+tq.modeValuesdef = { { 1, true } }
+local pk = MakeSwep(medic, "weapon_painkillers", 1)
+pk.modeValuesdef = { { 1, true } }
+medic.GetActiveWeapon = function() return bandage end
+medic.GetWeapons = function() return { bandage, tq, pk } end
+
+-- Active remote session between medic and patient
+WSZC.RemoteMedicalSessions = { [medic] = { target = patient } }
+WSZC.RemoteMedicalValidPair = function(op, tgt) return op == medic and tgt == patient end
+
+-- 1) Single-click fracture treatment via TreatFromWoundView bypasses hold-gate, maps arm_L -> forearm_L anchor, and opens 4-turn fracture session
+patient.organism.rarm = 1.0
+patient.organism.larm = 1.0
+if WSZC.StopMinigame then WSZC.StopMinigame(medic, "test_reset") end
+local openedFrac = WSZC.TreatFromWoundView(medic, patient, "arm_L", "bandage_fracture", "", 1)
+local sess = WSZC.MinigameSessions and WSZC.MinigameSessions[medic] or nil
+local fracSessionOk = openedFrac == true
+    and sess ~= nil
+    and sess.owner == medic
+    and sess.mode == "fracture"
+    and sess.fractureRequired == 1440
+    and sess.limbId == "forearm_L"
+    and sess.target == patient
+if sess then
+    local sid = sess.id
+    net.ReadUInt = function() return sid end
+    net.ReadFloat = function() return 360 end
+    for _ = 1, 4 do
+        net.Receivers["WSZC_BandageInput"](0, medic)
+    end
+end
+local remoteFracApplied = math.abs(patient.organism.larm - 0.95) < 0.001
+    and patient.organism.rarm == 1.0
+    and WSZC.IsZCityFractureBandaged(patient, "forearm_L") == true
+    and math.abs(bandage.modeValues[1] - 15) < 0.001
+    and WSZC.MinigameSessions[medic] == nil
+
+-- 2) Physical single-click SwepHeal with hg_healanims=1 ALSO bypasses hold-gate when minigames are enabled
+local selfFracPly = MakePlayer()
+selfFracPly.organism.rleg = 1.0
+local selfBandage = MakeSwep(selfFracPly, "weapon_bandage_sh", 40)
+selfBandage.modeValuesdef = { { 40, true } }
+if WSZC.StopMinigame then WSZC.StopMinigame(selfFracPly, "test_reset") end
+WSZC.ZCitySwepHeal(selfBandage, selfFracPly, 1)
+local selfSess = WSZC.MinigameSessions and WSZC.MinigameSessions[selfFracPly] or nil
+local directClickOpened = selfSess ~= nil and selfSess.mode == "fracture"
+    and selfSess.fractureRequired == 1440
+if WSZC.StopMinigame then WSZC.StopMinigame(selfFracPly, "done") end
+
+-- 3) Tourniquet via TreatFromWoundView on patient's arterial leg
+patient.organism.rlegartery = 1
+patient.organism.arterialwounds = {
+    { 6, Vector(), Angle(), "ValveBiped.Bip01_R_Thigh", 0, nil, "rlegartery" },
+}
+local appliedTq = WSZC.TreatFromWoundView(medic, patient, "thigh_R", "tourniquet", "", 1)
+local remoteTqOk = appliedTq == true and #patient.organism.arterialwounds == 0 and tq.modeValues[1] == 0
+
+-- 4) Medicine SWEP pill (painkillers) via TreatFromWoundView on patient
+local beforeAnalgesia = tonumber(patient.organism.analgesiaAdd) or 0
+local appliedPk = WSZC.TreatFromWoundView(medic, patient, "thorax", "swep", "weapon_painkillers", 1)
+local remotePkOk = appliedPk == true and (tonumber(patient.organism.analgesiaAdd) or 0) > beforeAnalgesia
+
+-- 5) CanTreatWithSwep returns true for fracture-only target even when no wounds bleed
+local fractureOnlyPly = MakePlayer()
+fractureOnlyPly.organism.rarm = 0.8
+local freshBandage = MakeSwep(medic, "weapon_bandage_sh", 40)
+freshBandage.modeValuesdef = { { 40, true } }
+local canHealFracture = WSZC.CanTreatWithSwep(freshBandage, fractureOnlyPly, 1) == true
+
+GetConVar = oldGetConVar
+MinigameEnabled = false
+WSZC.RemoteMedicalSessions = nil
+return fracSessionOk and remoteFracApplied and directClickOpened and remoteTqOk and remotePkOk and canHealFracture
+''')
+    check("R44 TreatFromWoundView, hold-gate bypass, and CanTreatWithSwep work for remote & self fracture/tourniquet/medicine", treat_from_woundview)
+
 failed = [name for name, ok in results if not ok]
 print(f"TEST_OK {len(results) - len(failed)} / {len(results)}")
 if failed:

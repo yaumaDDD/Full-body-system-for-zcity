@@ -554,10 +554,9 @@ function WSZC.InstallInternalBleedingStatus()
     return true
 end
 
--- The ordinary C:U bleed icon is hidden in WoundView.  This DISTINCT material
--- and native status are reserved for a real ZCity arterial wound, so ordinary
--- state.bleed can remain available to bandage mechanics without painting a
--- misleading artery marker.  Only a tourniquet closes the represented wound.
+-- Distinct critical status reserved for a real ZCity arterial wound, shown
+-- alongside ordinary C:U bleeding icons so arterial vs ordinary bleeding stay
+-- visually distinct.  Only a tourniquet closes the represented arterial wound.
 WSZC.ARTERIAL_BLEEDING_STATUS_ID = "WSZC_ARTERIAL_BLEEDING"
 
 function WSZC.InstallArterialBleedingStatus()
@@ -575,6 +574,28 @@ function WSZC.InstallArterialBleedingStatus()
         order = -8000,
         color = { 255, 255, 255 },
         networkDecimals = 2,
+    })
+    return true
+end
+
+-- ZCity fracture immobilization indicator (bandaged fracture knitting faster by
+-- ZCity physiology, distinct from C:U's removable SPLINTED status).
+WSZC.FRACTURE_BANDAGED_STATUS_ID = "WSZC_FRACTURE_BANDAGED"
+
+function WSZC.InstallFractureBandagedStatus()
+    local statuses = WoundSystem and WoundSystem.Statuses
+    if not (type(statuses) == "table" and type(statuses.Register) == "function") then
+        return false
+    end
+    local id = WSZC.FRACTURE_BANDAGED_STATUS_ID
+    if type(statuses.Stored) == "table" and statuses.Stored[id] then return true end
+    statuses.Register(id, {
+        title = "Fracture immobilized",
+        desc = "The fracture is tightly bandaged and knitting by ZCity physiology.",
+        icon = "casunknown-images/icons/splinticon.png",
+        type = "bool",
+        order = -7500,
+        color = { 130, 235, 165 },
     })
     return true
 end

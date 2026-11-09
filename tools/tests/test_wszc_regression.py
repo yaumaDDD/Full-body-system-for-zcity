@@ -1950,7 +1950,7 @@ end)()
 end)()
 ''')
 
-    rt('R38 native HUD hides disinfect/injection + ordinary bleed but keeps fracture/dislocation/arterial', '''
+    rt('R38 native HUD hides disinfect/injection but keeps ordinary bleed/fracture/dislocation/arterial', '''
 (function()
     filterCalls = {}
     TEXFILTER = { LINEAR = 77 }
@@ -1989,17 +1989,19 @@ end)()
     local installedAgain = WSZC.InstallDisinfectedIconFilter()
     hook._t["HUDPaint"]["WoundDollAndPanel"]()
 
-    local count, infection, fracture, dislocation, arterialKept = 0, 0, 0, 0, 0
+    local count, infection, fracture, dislocation, bleedKept, arterialKept = 0, 0, 0, 0, 0, 0
     for _, mat in ipairs(NativeWoundViewIcons or {}) do
         count = count + 1
         if mat == Icons.infectionneutral then infection = infection + 1 end
         if mat == Icons.fracture then fracture = fracture + 1 end
         if mat == Icons.dislocate then dislocation = dislocation + 1 end
+        if mat == Icons.smallbleed then bleedKept = bleedKept + 1 end
         if mat == arterial then arterialKept = arterialKept + 1 end
     end
     local filters = table.concat(filterCalls, ",")
-    return installed and installedAgain and count == 4
-        and infection == 1 and fracture == 1 and dislocation == 1 and arterialKept == 1
+    return installed and installedAgain and count == 5
+        and infection == 1 and fracture == 1 and dislocation == 1
+        and bleedKept == 1 and arterialKept == 1
         and handState.disinfectTime == 120
         and handState.infection == 4
         and filters == "" -- no LINEAR smoothing / no filter-stack side effects
@@ -2008,7 +2010,7 @@ end)()
 
     # Live C:U keeps Icons in a local upvalue, not in _G.  Exercise that exact
     # load shape and put AddHudIcon one closure below WoundDollAndPanel.
-    rt('R42 local/nested Icons and exact paths hide processing/ordinary bleed but keep fracture/shrapnel/infection/arterial', '''
+    rt('R42 local/nested Icons and exact paths hide processing/injection but keep ordinary bleed/fracture/shrapnel/infection/arterial', '''
 (function()
     local nativeItems = {}
     local Icons = {
@@ -2031,33 +2033,35 @@ end)()
         and nativeItems[1] == Icons.shrapnel
         and nativeItems[2] == Icons.infection_up
 
-    -- No Icons upvalue/global at all: the exact C:U path is the final fallback.
+    -- No Icons upvalue/global at all: exact C:U paths keep ordinary bleeding + arterial.
     local pathItems = {}
     local function AddHudIcon(items, mat) table.insert(items, mat) end
     local fracture = Material("casunknown-images/icons/fracturedbone.png")
+    local ordinaryBleed = Material("wszc/unitmenu/status/bleeding_padded.png")
     local arterial = Material("zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png")
     local function PathNativeWoundView()
         AddHudIcon(pathItems, Material("casunknown-images/icons/disinfected.png"))
         AddHudIcon(pathItems, fracture)
-        AddHudIcon(pathItems, Material("wszc/unitmenu/status/bleeding_padded.png"))
+        AddHudIcon(pathItems, ordinaryBleed)
         AddHudIcon(pathItems, arterial)
     end
     hook.Add("HUDPaint", "WoundDollAndPanel", PathNativeWoundView)
     local pathInstalled = WSZC.InstallDisinfectedIconFilter()
     PathNativeWoundView()
-    return localIconsOK and pathInstalled and #pathItems == 2
-        and pathItems[1] == fracture and pathItems[2] == arterial
+    return localIconsOK and pathInstalled and #pathItems == 3
+        and pathItems[1] == fracture and pathItems[2] == ordinaryBleed and pathItems[3] == arterial
 end)()
 ''')
 
-    rt('R44 injection/ordinary bleed draw filter is WoundView-scoped and arterial is exempt', '''
+    rt('R44 injection draw filter is WoundView-scoped while ordinary bleed and arterial are visible', '''
 (function()
     local oldFlag = WSZC.CUStatusIconFiltered
     WSZC.CUStatusIconFiltered = true
     WSZC._DrawMaterialName = "casunknown-images/icons/injectionwound.png"
     local injectionHidden = WSZC.HiddenNativeStatusIconDraw()
     WSZC._DrawMaterialName = "wszc/unitmenu/status/bleeding.png"
-    local ordinaryBloodHidden = WSZC.HiddenNativeStatusIconDraw()
+    local ordinaryBloodKept = not WSZC.HiddenNativeStatusIconDraw()
+        and WSZC.IsDollDrawMaterial(WSZC._DrawMaterialName)
     WSZC._DrawMaterialName = "zcity_delta_moodles/48px-moodle_heavybleeding_2_critical.png"
     local arterialKept = not WSZC.HiddenNativeStatusIconDraw()
         and WSZC.IsDollDrawMaterial(WSZC._DrawMaterialName)
@@ -2065,7 +2069,7 @@ end)()
     WSZC._DrawMaterialName = "casunknown-images/icons/injectionwound.png"
     local outsideWoundViewKept = not WSZC.HiddenNativeStatusIconDraw()
     WSZC.CUStatusIconFiltered = oldFlag
-    return injectionHidden and ordinaryBloodHidden and arterialKept and outsideWoundViewKept
+    return injectionHidden and ordinaryBloodKept and arterialKept and outsideWoundViewKept
 end)()
 ''')
 
@@ -2254,6 +2258,88 @@ local closedCleanly = WSZC._InspectionWhileUnconscious == nil
 return nativeBlocked and restoredAfterOpen and stayedOpen and closedCleanly
 ''')
     check('R45 brain-injury unconscious inspection opens, survives Think and closes cleanly', unconscious_inspection)
+
+    key_and_limb_ui = radial_lua.execute(r'''
+local patient = { alive = true, Nick = function() return "Bob" end }
+local medic = {
+    alive = true,
+    Alive = function(self) return self.alive end,
+    GetNWBool = function() return false end,
+    SetNWBool = function() end,
+    GetWeapons = function()
+        return {
+            { GetClass = function() return "weapon_bandage_sh" end, modeValues = { 40 } },
+            { GetClass = function() return "weapon_tourniquet" end, modeValues = { 1 } },
+        }
+    end,
+}
+LocalPlayer = function() return medic end
+KEY_T = 30
+local tPressed = false
+input = {
+    IsKeyDown = function(code) return code == 30 and tPressed end,
+    IsMouseDown = function() return false end,
+}
+local remoteOpened, remoteImmediate = nil, nil
+WSZC.RemoteMedical = {
+    active = true,
+    target = patient,
+    FindPatient = function() return patient end,
+}
+WSZC.OpenRemotePatient = function(target, immediate)
+    remoteOpened, remoteImmediate = target, immediate
+    return true
+end
+WoundSystemHealthHUDOpen = false
+WSZC._LastInspectKeyDown = false
+WSZC.InstallUnconsciousInspectionBridge()
+tPressed = true
+hook.GetTable().Think.ToggleHUDInput()
+local keyOpenedRemote = (remoteOpened == patient and remoteImmediate == true)
+
+-- Contextual limb action pills dispatch WSZC_WoundViewTreat on click.
+local packets = {}
+local current = nil
+net = {
+    Start = function(name) current = { name = name, vals = {} }; packets[#packets + 1] = current end,
+    WriteEntity = function(v) current.vals[#current.vals + 1] = v end,
+    WriteString = function(v) current.vals[#current.vals + 1] = v end,
+    WriteUInt = function(v) current.vals[#current.vals + 1] = v end,
+    SendToServer = function() end,
+}
+surface = { SetDrawColor = function() end, DrawRect = function() end, DrawOutlinedRect = function() end, PlaySound = function() end }
+draw = { SimpleText = function() end }
+ScrW = function() return 1920 end
+ScrH = function() return 1080 end
+WoundSystemActionButtonPos = { x = 600, y = 400 }
+_G.WoundSystemDrawLimbActionPoint = function() end
+WSZC.InstallLimbActionButtons()
+
+local limbState = {
+    bleed = 5,
+    broken = true,
+    isBandaged = false,
+    customStatuses = { WSZC_ARTERIAL_BLEEDING = true },
+}
+-- Draw once to compute rectangles, then click the fracture pill (row 3: tourniquet, wound, fracture)
+_G.WoundSystemDrawLimbActionPoint("crus_R", limbState, { x = 560, y = 460 }, 400, 300, 1, 1.5, -1, -1, false, false, false)
+local rects = WSZC._ActiveLimbTreatRects
+local hasAllThree = type(rects) == "table" and #rects == 3
+local fracRect = hasAllThree and rects[3] or nil
+if fracRect then
+    _G.WoundSystemDrawLimbActionPoint(
+        "crus_R", limbState, { x = 560, y = 460 }, 400, 300, 1, 1.5,
+        fracRect.x + 15, fracRect.y + 10, true, false, false
+    )
+end
+local clickedFracture = #packets == 1
+    and packets[1].name == "WSZC_WoundViewTreat"
+    and packets[1].vals[1] == patient
+    and packets[1].vals[2] == "crus_R"
+    and packets[1].vals[3] == "bandage_fracture"
+return keyOpenedRemote and hasAllThree and clickedFracture
+''')
+    check('R46 T key opens remote patient immediately and WoundView limb pills trigger tourniquet/wound/fracture treatment', key_and_limb_ui)
 
 for name, ok in results:
     print(('PASS ' if ok else 'FAIL ') + name)
