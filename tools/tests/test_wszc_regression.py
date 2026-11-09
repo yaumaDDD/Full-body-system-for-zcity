@@ -105,10 +105,12 @@ check('S08 compact hand anchors the rotated pivot, aspect and native rotation',
       and 'UnitmenuHandRotatedCenter' not in layout_s)
 check('S09 every active minigame blanks world + overlay cursor, even without hand art',
       'function WSZC.BlankMinigameCursor()' in layout_s
-      and 'if not cvHideCursor:GetBool() then' in layout_s
+      and 'if not cvHideCursor:GetBool() then' not in layout_s
       and 'panel.SetCursor, panel, "arrow"' in layout_s
       and 'panel.SetCursor, panel, "blank"' in layout_s
-      and 'if active and cvHideCursor:GetBool() then' in layout_s
+      and 'if active then\n        return WSZC.BlankMinigameCursor()' in layout_s
+      and 'pcall(panel.MakePopup, panel)' in layout_s
+      and 'pcall(panel.SetMouseInputEnabled, panel, true)' in layout_s
       and 'SetMinigameOverlayCursors("blank")' in layout_s
       and 'SetMinigameOverlayCursors("arrow")' in layout_s
       and 'if active and cvHideCursor:GetBool() and WSZC.ShowMinigameHand() then' not in layout_s
@@ -1248,6 +1250,80 @@ end)()
     local restored = cursorValue == "arrow" and overlayCursor == "arrow"
     convars["zc_woundsystem_compat_hide_minigame_hand"]._v = "0"
     return hidden and restored
+end)()
+''')
+
+    rt('R12b real interactive overlay takes cursor from underlying WoundView and restores input', '''
+(function()
+    -- Archived settings cannot switch the arrow back on. The passive stock
+    -- overlay used to be skipped by VGUI hit testing, exposing the Q-menu's
+    -- arrow even though both world and overlay had SetCursor("blank").
+    convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "0"
+    local overlay = { cursor = "arrow", mouse = false, keyboard = false, popups = 0 }
+    function overlay:SetCursor(value) self.cursor = value end
+    function overlay:IsMouseInputEnabled() return self.mouse end
+    function overlay:SetMouseInputEnabled(value) self.mouse = value end
+    function overlay:SetKeyboardInputEnabled(value) self.keyboard = value end
+    function overlay:MakePopup() self.popups = self.popups + 1; self.mouse = true; self.keyboard = true end
+    WoundSystemShrapnelMinigame = { active = true, overlay = overlay }
+    WSZC.SyncMinigameCursor()
+    local active = overlay.popups == 1 and overlay.mouse and not overlay.keyboard
+        and overlay.cursor == "blank" and cursorValue == "blank"
+    WSZC.SyncMinigameCursor()
+    local stable = overlay.popups == 1 and overlay.cursor == "blank"
+    WoundSystemShrapnelMinigame.active = false
+    WSZC.SyncMinigameCursor()
+    local released = not overlay.mouse and overlay.cursor == "arrow" and cursorValue == "arrow"
+    convars["zc_woundsystem_compat_hide_minigame_cursor"]._v = "1"
+    return active and stable and released
+end)()
+''')
+
+    rt('R12c self-harm overlay keeps its own click handler and prior mouse input', '''
+(function()
+    local clicks = 0
+    local overlay = { mouse = true, keyboard = false }
+    function overlay:SetCursor(value) self.cursor = value end
+    function overlay:IsMouseInputEnabled() return self.mouse end
+    function overlay:SetMouseInputEnabled(value) self.mouse = value end
+    function overlay:SetKeyboardInputEnabled(value) self.keyboard = value end
+    function overlay:MakePopup() self.mouse = true; self.keyboard = true end
+    function overlay:OnMousePressed(code) clicks = clicks + 1 end
+    WoundSystemSelfHarmMinigame = { active = true, overlay = overlay }
+    WSZC.SyncMinigameCursor()
+    overlay:OnMousePressed(MOUSE_LEFT)
+    local active = clicks == 1 and overlay.mouse and not overlay.keyboard and overlay.cursor == "blank"
+    WoundSystemSelfHarmMinigame.active = false
+    WSZC.SyncMinigameCursor()
+    return active and overlay.mouse and overlay.cursor == "arrow"
+end)()
+''')
+
+    rt('R12d every shipped game makes its own fullscreen overlay the hidden cursor target', '''
+(function()
+    local names = {"WSZCBandageMinigame", "WSZCSyringeMinigame",
+        "WoundSystemDislocationMinigame", "WoundSystemShrapnelMinigame",
+        "WoundSystemAEDMinigame", "WoundSystemBandageMinigame",
+        "WoundSystemSyringeMinigame", "WoundSystemSelfHarmMinigame"}
+    local all = true
+    for _, name in ipairs(names) do
+        local old = _G[name]
+        local overlay = { mouse = false }
+        function overlay:SetCursor(value) self.cursor = value end
+        function overlay:IsMouseInputEnabled() return self.mouse end
+        function overlay:SetMouseInputEnabled(value) self.mouse = value end
+        function overlay:SetKeyboardInputEnabled(value) self.keyboard = value end
+        function overlay:MakePopup() self.popup = true end
+        _G[name] = { active = true, IsActive = function() return true end, overlay = overlay }
+        WSZC.SyncMinigameCursor()
+        all = all and overlay.popup and overlay.mouse and overlay.keyboard == false and overlay.cursor == "blank"
+        _G[name].active = false
+        _G[name].IsActive = function() return false end
+        WSZC.SyncMinigameCursor()
+        all = all and not overlay.mouse and overlay.cursor == "arrow"
+        _G[name] = old
+    end
+    return all
 end)()
 ''')
 
