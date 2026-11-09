@@ -291,7 +291,7 @@ hook.Add("Think", "WSZC_MinigameViewWatch", function()
 end)
 
 -- C:U draws boneDrawX/Y, but its server tests a separately simulated boneX/Y.
--- Once the RENDERED bone is inside the native socket tolerance, ask the server
+-- Once the RENDERED bone is close to the socket, ask the server
 -- to validate and complete this exact session immediately.  No click release,
 -- extra hit or arbitrary client-selected limb is required.  The receiver
 -- repeats the tolerance check and owns the actual state transition.

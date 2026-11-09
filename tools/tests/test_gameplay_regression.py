@@ -2280,7 +2280,7 @@ local function Injured(sessionId)
 end
 WSZC.CUSessions = { Dislocation = {} }
 local selfPatient = Injured(501)
-local selfOK = WSZC.HandleDislocationVisualComplete(selfPatient, 501, 421.82, 229.82)
+local selfOK = WSZC.HandleDislocationVisualComplete(selfPatient, 501, 451.82, 229.82)
 local selfCommitted = selfOK and selfPatient._limbs.arm_R.dislocated == false
     and selfPatient._limbs.arm_R.dislocationTimer == 0
     and selfPatient.organism.rarmdislocation == false
@@ -2289,11 +2289,17 @@ local selfCommitted = selfOK and selfPatient._limbs.arm_R.dislocated == false
 local rejected = Injured(502)
 local wrongId = WSZC.HandleDislocationVisualComplete(rejected, 999, 421.82, 229.82)
 local far = WSZC.HandleDislocationVisualComplete(rejected, 502, 521.82, 229.82)
--- DislocationSuccessTimer=3 is a DISTANCE threshold, not a three-second hold:
--- distance*0.2 < 3 => 15 simulation units at the native boundary.
-local thresholdMatchesNative = WSZC.DislocationVisualAligned(436.81, 229.82) == true
-    and WSZC.DislocationVisualAligned(436.83, 229.82) == false
-local rejectionHeld = wrongId == false and far == false and thresholdMatchesNative
+-- A circular 40-unit radius accepts a near miss but never the 50-unit
+-- minimum start displacement; malformed inputs and outside positions fail.
+local thresholdForgiving = WSZC.DislocationVisualAligned(461.81, 229.82) == true
+    and WSZC.DislocationVisualAligned(461.83, 229.82) == false
+    and WSZC.DislocationVisualAligned(449.82, 257.82) == true
+    and WSZC.DislocationVisualAligned(450.82, 258.82) == false
+    and not WSZC.DislocationVisualAligned(471.82, 229.82)
+    and not WSZC.DislocationVisualAligned(nil, 229.82)
+    and not WSZC.DislocationVisualAligned(0/0, 229.82)
+    and not WSZC.DislocationVisualAligned(math.huge, 229.82)
+local rejectionHeld = wrongId == false and far == false and thresholdForgiving
     and rejected._limbs.arm_R.dislocated == true
     and rejected.organism.rarmdislocation == true and closed[rejected] == nil
 
@@ -2302,7 +2308,7 @@ WSZC.RemoteNativeSessions[remotePatient] = { Dislocation = { operator = medic } 
 WSZC.RemoteMedicalValidPair = function(operator, target)
     return operator == medic and target == remotePatient
 end
-local remoteOK = WSZC.HandleDislocationVisualComplete(medic, 503, 426.82, 229.82)
+local remoteOK = WSZC.HandleDislocationVisualComplete(medic, 503, 445.82, 253.82)
 local remoteCommitted = remoteOK and remotePatient._limbs.arm_R.dislocated == false
     and remotePatient.organism.rarmdislocation == false
     and closed[remotePatient] == 1 and closed[medic] == nil
@@ -2332,7 +2338,7 @@ WSZC.FindUpvalue = oldFindUpvalue
 WoundSystem.Health._WSZCBridgeRefs = nil
 return selfCommitted, rejectionHeld, remoteCommitted, lazyCommitted
 ''')
-    check("R90 rendered perfect socket commits native + ZCity reduction immediately", visual_reduction[0])
+    check("R90 approximate socket hit commits native + ZCity reduction immediately", visual_reduction[0])
     check("R91 wrong-session and non-aligned visual packets cannot heal", visual_reduction[1])
     check("R92 rendered remote reduction treats the patient and clears operator metadata", visual_reduction[2])
     check("R95 modern native-api path lazily discovers Sessions and accepts visual completion", visual_reduction[3])

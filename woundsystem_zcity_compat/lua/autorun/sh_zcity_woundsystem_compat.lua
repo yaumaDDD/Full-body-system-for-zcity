@@ -599,8 +599,8 @@ end
 -- Native C:U predicts bone motion on the client and then simulates it again on
 -- the server.  Those positions can diverge, so a socket that looks perfectly
 -- aligned can still be rejected by the server's copy.  This predicate uses the
--- SAME finish point/tolerance as native C:U, but is evaluated on the rendered
--- position and then revalidated by the server before committing the reduction.
+-- SAME finish point as native C:U, with a more forgiving socket tolerance.
+-- The rendered position is revalidated by the server before the reduction.
 function WSZC.DislocationVisualAligned(x, y)
     x, y = tonumber(x), tonumber(y)
     if not (x and y) or x ~= x or y ~= y
@@ -612,7 +612,9 @@ function WSZC.DislocationVisualAligned(x, y)
     local finishY = constants and tonumber(constants.DislocationFinishY) or 229.82
     local successTimer = constants and tonumber(constants.DislocationSuccessTimer) or 3
     local dx, dy = x - finishX, y - finishY
-    return math.sqrt(dx * dx + dy * dy) * 0.2 < math.max(successTimer, 0.001)
+    -- Native 3 corresponds to a 15-unit radius. Allow up to 40 units around
+    -- the socket, while honoring a larger native tolerance if configured.
+    return math.sqrt(dx * dx + dy * dy) * 0.2 < math.max(successTimer, 8)
 end
 
 ---------------------------------------------------------------------------

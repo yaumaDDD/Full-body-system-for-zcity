@@ -6387,7 +6387,7 @@ end
 
 -- Native C:U uses client-predicted rendering but a second server-side physics
 -- copy.  Accept the position the player actually sees only inside a live native
--- session and only when it satisfies the same socket tolerance.  The server
+-- session and only when it satisfies the shared forgiving socket tolerance. The server
 -- still owns the limb transition, happiness, update and session close.  Remote
 -- treatment resolves the patient through RemoteNativeSessions and revalidates
 -- the operator pair; no limb id or patient entity is trusted from the packet.

@@ -1264,7 +1264,7 @@ end)()
 end)()
 ''')
 
-    rt('R14b rendered dislocation alignment sends one immediate session packet', '''
+    rt('R14b approximate rendered dislocation alignment sends immediate session packet', '''
 (function()
     local oldGetGlobalBool = GetGlobalBool
     GetGlobalBool = function(key, fallback)
@@ -1274,14 +1274,14 @@ end)()
     netMessages = {}
     WoundSystemDislocationMinigame = {
         active = true, closeRequested = false, sessionId = 77,
-        boneDrawX = 421.82, boneDrawY = 229.82,
+        boneDrawX = 451.82, boneDrawY = 229.82,
         boneX = 600, boneY = 400, -- deliberately different server-prediction copy
     }
     hook._t["Think"]["WSZC_DislocationVisualCompletion"]()
     local sentAligned = #netMessages == 1
         and netMessages[1].name == "WSZC_DislocationVisualComplete"
         and netMessages[1].writes[1][2] == 77
-        and netMessages[1].writes[2][2] == 421.82
+        and netMessages[1].writes[2][2] == 451.82
         and netMessages[1].writes[3][2] == 229.82
     WoundSystemDislocationMinigame.boneDrawX = 700
     WoundSystemDislocationMinigame._WSZCNextVisualComplete = 0
