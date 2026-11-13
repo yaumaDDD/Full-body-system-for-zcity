@@ -775,7 +775,7 @@ end
 
 local function BuildMedicalSpawnerPanel(panel)
     panel:ClearControls()
-    AddHelp(panel, "Playtest spawner for exact C:U medical items. Everyone can request these items on servers running this addon.")
+    AddHelp(panel, "Playtest spawner for exact C:U medical items. Only server admins can spawn items.")
 
     local searchContainer = vgui.Create("DPanel")
     searchContainer:SetTall(26)

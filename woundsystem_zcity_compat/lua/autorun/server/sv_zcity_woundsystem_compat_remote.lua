@@ -99,11 +99,22 @@ local function ValidPair(operator, target)
     if not (IsValid(operator) and IsValid(target)) then return false end
     if operator == target or not operator:IsPlayer() or not target:IsPlayer() then return false end
     if not operator:Alive() or not target:Alive() then return false end
-    local ok, distance = pcall(function()
+    -- Trace to the actual patient body, including ZCity's fake ragdoll.  Do
+    -- not ignore walls, doors or other props; ignore only the two participants
+    -- and their own bodies so the patient itself does not obstruct the trace.
+    local ok, visible = pcall(function()
         local from = operator.EyePos and operator:EyePos() or operator:GetPos()
-        return from:Distance(Position(target))
+        local to = Position(target)
+        if from:Distance(to) > RANGE then return false end
+        if not (util and util.TraceLine) then return false end
+        local filter = { operator, target }
+        local operatorBody, targetBody = PatientEntity(operator), PatientEntity(target)
+        if IsValid(operatorBody) then filter[#filter + 1] = operatorBody end
+        if IsValid(targetBody) then filter[#filter + 1] = targetBody end
+        local trace = util.TraceLine({ start = from, endpos = to, filter = filter, mask = MASK_SOLID })
+        return type(trace) == "table" and not trace.Hit and not trace.StartSolid
     end)
-    return ok and distance <= RANGE
+    return ok and visible == true
 end
 
 local function NativeSession(target, kind)
@@ -665,7 +676,27 @@ function WSZC.NotifyRemotePatientUpdated(target, coalesce)
     end
 end
 
+-- External C:U takes precedence over the embedded copy and may still expose
+-- its playtest spawner to everyone. Guard the registered receiver as well;
+-- the embedded receiver has its own independent check at registration time.
+local spawnGuard, spawnOriginal
+function WSZC.InstallMedicalSpawnerGuard()
+    if not (net and net.Receivers) then return end
+    local key = net.Receivers.woundsystem_spawnmedicalitem and "woundsystem_spawnmedicalitem"
+        or "WoundSystem_SpawnMedicalItem"
+    local current = net.Receivers[key]
+    if type(current) ~= "function" or current == spawnGuard then return end
+    spawnOriginal = current
+    spawnGuard = function(len, ply)
+        if not IsValid(ply) or not ply.IsAdmin or not ply:IsAdmin() then return end
+        return spawnOriginal(len, ply)
+    end
+    net.Receivers[key] = spawnGuard
+end
+WSZC.InstallMedicalSpawnerGuard()
+
 timer.Create("WSZC_RemoteMedicalWatchdog", 0.25, 0, function()
+    WSZC.InstallMedicalSpawnerGuard()
     local now = CurTime()
     for operator, session in pairs(inspections) do
         if not ValidPair(operator, session.target) then

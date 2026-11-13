@@ -1069,6 +1069,23 @@ local function ProcessNativeBandageInput(ply, session, profile, perWrap, baseCos
     return true, (tonumber(swep.modeValues[idx]) or 0) <= 0.0005
 end
 
+-- Both connector and embedded C:U bandage receivers spend the same budget.
+-- Keeping it on the operator prevents bypass by switching protocols or sessions.
+function WSZC.FilterBandageDegrees(ply, degrees, startedAt)
+    degrees = tonumber(degrees)
+    if not degrees or degrees ~= degrees or degrees == math.huge or degrees == -math.huge then return nil end
+    degrees = math.Clamp(degrees, 0, 360)
+    if degrees <= 0 then return nil end
+    local now = CurTime()
+    local last = ply._WSZCBandageBudgetAt or startedAt or now
+    local elapsed = math.Clamp(now - last, 0, 1)
+    local budget = math.min(360, (ply._WSZCBandageBudget or 144) + elapsed * 720)
+    ply._WSZCBandageBudgetAt = now
+    degrees = math.min(degrees, budget)
+    ply._WSZCBandageBudget = budget - degrees
+    return degrees
+end
+
 local function ProcessBandageInput(_, ply)
     local session = ValidSession(ply)
     if not session or session.kind ~= "bandage" then return end
@@ -1091,10 +1108,14 @@ local function ProcessBandageInput(_, ply)
         return
     end
 
-    degrees = math.Clamp(tonumber(degrees) or 0, 0, 360)
-    if degrees <= 0 then return end
-
+    degrees = WSZC.FilterBandageDegrees(ply, degrees, session.startedAt)
+    if not degrees then return end
     session.lastAckSeq = inputSeq
+    if degrees <= 0.0001 then
+        SendBandageState(ply, session)
+        SendAck(ply, session, ACK_BANDAGE, inputSeq)
+        return
+    end
 
     if session.mode == "unwrap" then
         if not (WSZC.IsShrapnelBandaged

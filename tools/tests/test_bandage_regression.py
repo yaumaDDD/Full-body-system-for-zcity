@@ -256,7 +256,8 @@ math.Clamp = function(v, lo, hi) if v < lo then return lo end; if v > hi then re
 CreateConVar = function() return { GetBool = function() return true end } end
 GetConVar = function() return nil end
 FindMetaTable = function() return nil end
-CurTime = function() return 100 end
+BandageTestTime = 100
+CurTime = function() return BandageTestTime end
 include = function() end
 player = { GetAll = function() return {} end }
 game = { GetAmmoName = function() return "9mm" end }
@@ -276,7 +277,16 @@ hook = { Add = function() end, Remove = function() end }
 timer = { Simple = function() end, Create = function() end, Remove = function() end }
 receivers, sent, readQueue = {}, {}, {}
 net = {
-    Receive = function(name, fn) receivers[name] = fn end,
+    Receive = function(name, fn)
+        if name == "WSZC_BandageInput" then
+            receivers[name] = function(len, ply)
+                ply._WSZCBandageBudgetAt = ply._WSZCBandageBudgetAt or BandageTestTime
+                BandageTestTime = BandageTestTime + 0.5
+                return fn(len, ply)
+            end
+            BandageRawReceiver = fn
+        else receivers[name] = fn end
+    end,
     Start = function(name) outgoing = { name = name, writes = {} } end,
     WriteUInt = function(v) outgoing.writes[#outgoing.writes + 1] = { "uint", v } end,
     WriteFloat = function(v) outgoing.writes[#outgoing.writes + 1] = { "float", v } end,
@@ -300,6 +310,42 @@ WSZC.GetBandageBleeding = function(ply) return ply._bleed end
 WSZC.GetArterialBleeding = function(ply) return ply._arterial or 0 end
 ''')
     lua.execute(minigames_s)
+    security = lua.execute(r'''
+local ply = { IsPlayer = function() return true end, Alive = function() return true end }
+local target = { Alive = function() return true end }
+local oldCovered, oldRemove = WSZC.IsShrapnelBandaged, WSZC.RemoveBandageForShrapnel
+local covered = true
+WSZC.IsShrapnelBandaged = function() return covered end
+WSZC.RemoveBandageForShrapnel = function() covered = false; return true end
+local function session(id)
+    return { id = id, kind = "bandage", mode = "unwrap", limbId = "hand_R",
+        owner = ply, target = target, unwrapRequired = 360, unwrapProgress = 0,
+        startedAt = BandageTestTime, startAmount = 360, deferredUsed = 0 }
+end
+local first = session(700)
+WSZC.MinigameSessions[ply] = first
+for i = 1, 30 do
+    readQueue = { 700, 360 }; BandageRawReceiver(0, ply)
+end
+local floodBlocked = first.unwrapProgress == 144 and covered
+local second = session(701)
+WSZC.MinigameSessions[ply] = second
+readQueue = { 701, 360 }; BandageRawReceiver(0, ply)
+local reopenBlocked = second.unwrapProgress == 0 and covered
+BandageTestTime = BandageTestTime + 0.5
+readQueue = { 701, 0/0 }; BandageRawReceiver(0, ply)
+local nanBlocked = second.unwrapProgress == 0 and covered
+readQueue = { 701, 360 }; BandageRawReceiver(0, ply)
+local allowedAfterTime = second.unwrapProgress == 360 and not covered
+WSZC.MinigameSessions[ply] = nil
+WSZC.IsShrapnelBandaged, WSZC.RemoveBandageForShrapnel = oldCovered, oldRemove
+return floodBlocked, reopenBlocked, nanBlocked, allowedAfterTime
+''')
+    check("SEC01 packet flood is limited by real server time", security[0])
+    check("SEC02 reopening cannot reset the per-player bandage allowance", security[1])
+    check("SEC03 non-finite bandage progress is rejected", security[2])
+    check("SEC04 valid unwrap still completes after enough time", security[3])
+
     progress = lua.execute(r'''
 local ply = { _bleed = 40,
     IsPlayer = function() return true end, Alive = function() return true end }
@@ -1100,25 +1146,25 @@ end
 local noOscillationCredit = mg.totalDegreesWrapped == beforeReverse
 -- A delayed packet with >360 degrees must not be truncated by the server.
 ClientWire = {}; mg.unsentDegrees = 740; mg.lastSentAt = clock - 1
-clock = clock + 0.01; think()
+for _ = 1, 12 do clock = clock + 0.11; think() end
 local batches, sum, valid = 0, 0, true
 for _, packet in ipairs(ClientWire) do
     if packet.name == "WSZC_BandageInput" then
         local degrees = packet.writes[2][2]
         batches, sum = batches + 1, sum + degrees
-        if degrees > 360 then valid = false end
+        if degrees > 72 then valid = false end
     end
 end
 open("unwrap", 302)
 for _, angle in ipairs({ -30, -75, -130, -175, -220, -275, -315, -345, -365 }) do
     clock = clock + 0.02; place(angle); think()
 end
-return twoTurns, noOscillationCredit, valid and sum == 740 and batches == 3,
+return twoTurns, noOscillationCredit, valid and sum == 740 and batches == 11,
     mg.totalDegreesUnwrapped >= 360
 ''')
     check("R32 uneven fast circles and a skipped seam retain two full turns", uneven_turns[0])
     check("R33 rocking backwards and forwards cannot duplicate wrap credit", uneven_turns[1])
-    check("R34 delayed multi-turn packets are split rather than truncated", uneven_turns[2])
+    check("R34 delayed multi-turn packets are paced rather than truncated", uneven_turns[2])
     check("R35 reverse unwrap also survives fast uneven angles", uneven_turns[3])
 
     no_debug = server_lua.execute(r'''

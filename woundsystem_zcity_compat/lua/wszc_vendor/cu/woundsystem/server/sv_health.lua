@@ -4978,12 +4978,16 @@ net.Receive("WoundSystem_DislocationInput", function(_, ply)
     local inputSeq = ReadOptionalInputSeq()
 
     if sessionId ~= session.id then return end
+    for _, v in ipairs({ handX, handY, handVelX, handVelY, prevHandX, prevHandY, boneHitOffsetX, boneHitOffsetY, boneHitHalfW, boneHitHalfH }) do
+        if v ~= v or v == math.huge or v == -math.huge then return end
+    end
     if not IsValid(ply) or not ply:Alive() then
         CloseDislocationSession(ply, "dead")
         return
     end
 
     local now = CurTime()
+    if now - (session.lastInputAt or now) < 0.01 then return end
     local elapsed = math.Clamp(now - (session.lastInputAt or now), 0.001, 0.2)
     session.lastInputAt = now
     session.lastAckSeq = inputSeq
@@ -5216,7 +5220,10 @@ net.Receive("WoundSystem_BandageInput", function(_, ply)
         return
     end
 
-    degreesMoved = math.Clamp(tonumber(degreesMoved) or 0, 0, 360)
+    -- Share the connector budget; changing protocols or reopening cannot reset it.
+    if not (WSZC and WSZC.FilterBandageDegrees) then return end
+    degreesMoved = WSZC.FilterBandageDegrees(ply, degreesMoved, session.lastInputAt)
+    if not degreesMoved then return end
     if degreesMoved <= 0 then return end
     session.lastInputAt = CurTime()
     session.lastAckSeq = inputSeq
@@ -5910,6 +5917,7 @@ function WoundSystem.WorldItems.SpawnAtPlayer(ply, itemId, durability)
 end
 
 net.Receive("WoundSystem_SpawnMedicalItem", function(_, ply)
+    if not IsValid(ply) or not ply:IsAdmin() then return end
     if not WoundSystemHealthEnabled() then return end
     if not IsValid(ply) or not ply:Alive() then return end
 

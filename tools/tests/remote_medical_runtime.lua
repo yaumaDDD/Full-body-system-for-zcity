@@ -16,7 +16,11 @@ if MODE == "server" then
     CurTime = function() return now end
     math.Clamp = function(v, lo, hi) return math.max(lo, math.min(hi, v)) end
     NULL = {}
-    util = { AddNetworkString = function() end }
+    local traceBlocked = false
+    util = { AddNetworkString = function() end,
+        TraceLine = function(data)
+            return { Hit = traceBlocked, StartSolid = false }
+        end }
     hook = { Add = function() end }
     IsValid = function(v)
         return v ~= nil and v ~= false and v ~= NULL and (type(v) ~= "table" or v.valid ~= false)
@@ -291,6 +295,7 @@ if MODE == "server" then
         sent, applied, statuses, inputs, externalApplied, stopped = {}, {}, {}, {}, {}, {}
         simpleTimers, externalStarts, aedCallbacks, aedSawBorrowed = {}, 0, 0, false
         now = 100
+        op._WSZCBandageBudget, op._WSZCBandageBudgetAt = nil, nil
     end
 
     Test("M01 open sends patient snapshot; self/dead/range are rejected", function()
@@ -492,6 +497,44 @@ if MODE == "server" then
         Assert(WSZC.CUSessions.Shrapnel[patient] == nil)
     end)
 
+    Test("S01 walls block remote opening and interrupt active treatments", function()
+        Reset()
+        traceBlocked = true
+        Assert(not WSZC.RemoteMedicalValidPair(op, patient))
+        Open(patient)
+        Assert(WSZC.RemoteMedicalSessions[op] == nil)
+        traceBlocked = false
+        Open(patient)
+        Assert(WSZC.RemoteMedicalSessions[op] ~= nil)
+        traceBlocked = true
+        Action(patient, "WoundSystem_UseMedicalItem", { 1, "MORPHINE", "thorax" })
+        Equal(#applied, 0, "blocked action must not treat the patient")
+        namedTimers.WSZC_RemoteMedicalWatchdog()
+        Assert(WSZC.RemoteMedicalSessions[op] == nil)
+        traceBlocked = false
+    end)
+
+    Test("S02 spawner receiver permits only admins and rewraps replacements", function()
+        local calls = 0
+        net.Receivers.woundsystem_spawnmedicalitem = function() calls = calls + 1 end
+        WSZC.InstallMedicalSpawnerGuard()
+        op.IsAdmin = function() return false end
+        net.Receivers.woundsystem_spawnmedicalitem(0, op)
+        Equal(calls, 0)
+        op.IsAdmin = function() return true end
+        net.Receivers.woundsystem_spawnmedicalitem(0, op)
+        Equal(calls, 1)
+        net.Receivers.woundsystem_spawnmedicalitem = function() calls = calls + 10 end
+        WSZC.InstallMedicalSpawnerGuard()
+        op.IsAdmin = function() return false end
+        net.Receivers.woundsystem_spawnmedicalitem(0, op)
+        Equal(calls, 1)
+        op.IsAdmin = function() return true end
+        net.Receivers.woundsystem_spawnmedicalitem(0, op)
+        Equal(calls, 11)
+        op.IsAdmin = nil
+    end)
+
     Test("M16 server validates and keeps a remote session against the ragdoll position", function()
         Reset()
         local body = { valid = true, x = 20 }
@@ -535,6 +578,7 @@ if MODE == "server" then
         Equal(session.target, patient)
         Equal(session.spec.item, "BANDAGE")
         Equal(session.nativeBandage, nil)
+        now = now + 0.5
         incoming, incomingIndex = { session.id, 360, 1 }, 0
         net.Receivers.WSZC_BandageInput(0, op)
         Equal(#externalApplied, 1)
@@ -603,9 +647,11 @@ if MODE == "server" then
         local session = WSZC.MinigameSessions[op]
         Assert(session and session.target == patient and session.remote and not WSZC.MinigameSessions[patient])
         Equal(LastSend().recipient, op)
+        now = now + 0.25
         incoming, incomingIndex = { session.id, 180, 1 }, 0
         net.Receivers.WSZC_BandageInput(0, op)
         Assert(covered)
+        now = now + 0.25
         incoming, incomingIndex = { session.id, 180, 2 }, 0
         net.Receivers.WSZC_BandageInput(0, op)
         Assert(not covered and not WSZC.MinigameSessions[op])
@@ -628,6 +674,7 @@ if MODE == "server" then
         Action(patient, "WoundSystem_BandageStart", { "arm_R", 3 })
         local session = WSZC.MinigameSessions[op]
         Assert(session and session.target == patient and session.remote)
+        now = now + 0.5
         incoming, incomingIndex = { session.id, 360, 1 }, 0
         net.Receivers.WSZC_BandageInput(0, op)
         Assert(appliedTo and appliedTo.p == patient and appliedTo.limb == "arm_R")

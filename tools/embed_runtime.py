@@ -168,6 +168,39 @@ def collect() -> tuple[dict[str, bytes], list[tuple[str, str, str]]]:
                     b"WoundSystem._WSZCEmbedded = true\n\n"
                 ) + transformed
             if rel == "woundsystem/server/sv_health.lua":
+                # The playtest item spawner creates items from nothing.  Its
+                # network endpoint must be admin-only, not just its UI.
+                spawn = b'net.Receive("WoundSystem_SpawnMedicalItem", function(_, ply)\r\n'
+                assert transformed.count(spawn) == 1
+                transformed = transformed.replace(spawn, spawn + b'    if not IsValid(ply) or not ply:IsAdmin() then return end\n', 1)
+                # Native dislocation input is client-supplied too. Reject NaN /
+                # infinity before physics and prevent packets from advancing the
+                # simulated clock faster than real time on a zero-time flood.
+                start = transformed.index(b'net.Receive("WoundSystem_DislocationInput", function(_, ply)')
+                end = transformed.index(b'-- BANDAGE NETWORKING', start)
+                section = transformed[start:end]
+                check = b'    if sessionId ~= session.id then return end\r\n'
+                assert section.count(check) == 1
+                finite = (b'    for _, v in ipairs({ handX, handY, handVelX, handVelY, prevHandX, prevHandY, boneHitOffsetX, boneHitOffsetY, boneHitHalfW, boneHitHalfH }) do\n'
+                          b'        if v ~= v or v == math.huge or v == -math.huge then return end\n'
+                          b'    end\n')
+                section = section.replace(check, check + finite, 1)
+                tick = b'    local elapsed = math.Clamp(now - (session.lastInputAt or now), 0.001, 0.2)\r\n'
+                assert section.count(tick) == 1
+                section = section.replace(tick, b'    if now - (session.lastInputAt or now) < 0.01 then return end\n' + tick, 1)
+                transformed = transformed[:start] + section + transformed[end:]
+                start = transformed.index(b'net.Receive("WoundSystem_BandageInput", function(_, ply)')
+                end = transformed.index(b'-- SYRINGE NETWORKING', start)
+                section = transformed[start:end]
+                bandage = b'    degreesMoved = math.Clamp(tonumber(degreesMoved) or 0, 0, 360)\r\n'
+                assert section.count(bandage) == 1
+                section = section.replace(bandage, (
+                    b'    -- Share the connector budget; changing protocols or reopening cannot reset it.\n'
+                    b'    if not (WSZC and WSZC.FilterBandageDegrees) then return end\n'
+                    b'    degreesMoved = WSZC.FilterBandageDegrees(ply, degreesMoved, session.lastInputAt)\n'
+                    b'    if not degreesMoved then return end\n'
+                ), 1)
+                transformed = transformed[:start] + section + transformed[end:]
                 anchor = b"function WoundSystem.ApplyDismembermentVisuals(ent, limbsState)\r\n"
                 assert transformed.count(anchor) == 1
                 transformed = transformed.replace(anchor, anchor + (
@@ -176,6 +209,27 @@ def collect() -> tuple[dict[str, bytes], list[tuple[str, str, str]]]:
                     b"    if WSZC and WSZC.OrganismAuthority and WSZC.OrganismAuthority() then return end\n"
                 ), 1)
                 transformed += CU_NO_DEBUG_EXPORTS.replace("\n", "\r\n").encode("utf-8")
+            if rel == "woundsystem/client/minigames/cl_bandage.lua":
+                # Pace the native client too, so it does not discard a delayed
+                # burst that the server's shared anti-spam budget must reject.
+                start = transformed.index(b'hook.Add("Think", "WoundSystem_BandageInput"')
+                end = transformed.index(b'    -- Collision:', start)
+                section = transformed[start:end]
+                needle = b'        if MG.unsentDegrees > 0 then\r\n'
+                assert section.count(needle) == 1
+                section = section.replace(needle, needle + b'            local batch = math.min(MG.unsentDegrees, 72)\n', 1)
+                for before, after in (
+                    (b'net.WriteFloat(MG.unsentDegrees)\r\n', b'net.WriteFloat(batch)\n'),
+                    (b'(MG.unsentDegrees / 360) * GetDurabilityPerWrap()\r\n', b'(batch / 360) * GetDurabilityPerWrap()\n'),
+                    (b'MG.unsentDegrees = 0\r\n', b'MG.unsentDegrees = MG.unsentDegrees - batch\n'),
+                ):
+                    assert section.count(before) == 1
+                    section = section.replace(before, after, 1)
+                transformed = transformed[:start] + section + transformed[end:]
+            if rel == "woundsystem/client/cl_options.lua":
+                old = b"Playtest spawner for exact C:U medical items. Everyone can request these items on servers running this addon."
+                assert transformed.count(old) == 1
+                transformed = transformed.replace(old, b"Playtest spawner for exact C:U medical items. Only server admins can spawn items.", 1)
             if rel == "woundsystem/client/cl_dismemberment_visuals.lua":
                 anchor = b"local function ResetPlayerVisuals(ply)"
                 assert transformed.count(anchor) == 1

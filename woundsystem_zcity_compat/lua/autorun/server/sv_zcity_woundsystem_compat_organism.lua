@@ -6398,12 +6398,9 @@ function WSZC.CommitNativeDislocationReduction(ply, limbId)
     return true
 end
 
--- Native C:U uses client-predicted rendering but a second server-side physics
--- copy.  Accept the position the player actually sees only inside a live native
--- session and only when it satisfies the shared forgiving socket tolerance. The server
--- still owns the limb transition, happiness, update and session close.  Remote
--- treatment resolves the patient through RemoteNativeSessions and revalidates
--- the operator pair; no limb id or patient entity is trusted from the packet.
+-- The visual packet is only a request to check the server simulation.  Never
+-- use client coordinates to move the bone or authorize a reduction.  Remote
+-- treatment resolves the patient from the session and revalidates the pair.
 function WSZC.HandleDislocationVisualComplete(operator, sessionId, x, y)
     if not (WSZC.Ready and Authority() and IsValid(operator) and operator:Alive()) then return false end
     if not WSZC.DislocationVisualAligned or not WSZC.DislocationVisualAligned(x, y) then return false end
@@ -6445,8 +6442,11 @@ function WSZC.HandleDislocationVisualComplete(operator, sessionId, x, y)
     if not (map and map.dis and BoneAnchor(session.limbId, "dislocation")) then return false end
     if type(target.organism) ~= "table" or target.organism[map.dis] ~= true then return false end
 
+    -- Client rendering is predictive; only the independently simulated server
+    -- bone can authorize success, with the same forgiving socket tolerance.
+    if not WSZC.DislocationVisualAligned(session.boneX, session.boneY) then return false end
+
     local previousTimer = state.dislocationTimer
-    session.boneX, session.boneY = x, y
     session.boneVelX, session.boneVelY = 0, 0
     session.dislocationTimer = 0
     state.dislocated = false

@@ -1205,12 +1205,16 @@ local sid = session.id
 local q1 = { sid, 360 }
 net.ReadUInt = function() return q1[1] end
 net.ReadFloat = function() return q1[2] end
+Now = Now + 0.5
 net.Receivers["WSZC_BandageInput"](0, ply)
+Now = Now + 0.5
 net.Receivers["WSZC_BandageInput"](0, ply)
+Now = Now + 0.5
 net.Receivers["WSZC_BandageInput"](0, ply)
 local midOK = ply.organism.rarm == 1 and swep.modeValues[1] == 40
     and WSZC.MinigameSessions[ply] ~= nil
 -- 4th turn (1440 deg total): completes immobilization, sets 0.95 and spends 25.
+Now = Now + 0.5
 net.Receivers["WSZC_BandageInput"](0, ply)
 local swepDone = midOK and math.abs(ply.organism.rarm - 0.95) < 0.001
     and math.abs(swep.modeValues[1] - 15) < 0.001
@@ -1229,6 +1233,7 @@ if stStarted ~= true or not stSession or stSession.mode ~= "fracture" then retur
 local stId = stSession.id
 q1 = { stId, 360 }
 for _ = 1, 4 do
+    Now = Now + 0.5
     net.Receivers["WSZC_BandageInput"](0, doc)
 end
 local standaloneDone = math.abs(doc.organism.lleg - 0.95) < 0.001
@@ -1419,6 +1424,7 @@ if sess then
     net.ReadUInt = function() return sid end
     net.ReadFloat = function() return 360 end
     for _ = 1, 4 do
+        Now = Now + 0.5
         net.Receivers["WSZC_BandageInput"](0, medic)
     end
 end

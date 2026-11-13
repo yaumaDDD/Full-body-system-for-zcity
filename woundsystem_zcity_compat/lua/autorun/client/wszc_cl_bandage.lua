@@ -916,17 +916,15 @@ hook.Add("Think", "WSZC_BandageInput", function()
 
     if now - MG.lastSentAt > 0.1 then
         if MG.unsentDegrees > 0 then
-            -- The server caps each input at 360 degrees. Split delayed batches
-            -- instead of silently discarding all turns above that limit.
-            while MG.unsentDegrees > 0 do
-                local batch = math.min(MG.unsentDegrees, 360)
-                net.Start("WSZC_BandageInput")
-                net.WriteUInt(MG.sessionId, 24)
-                net.WriteFloat(batch)
-                net.WriteUInt(WoundSystem and WSZC.MinigameNextInputSeq and WSZC.MinigameNextInputSeq(MG) or 0, 24)
-                net.SendToServer()
-                MG.unsentDegrees = MG.unsentDegrees - batch
-            end
+            -- Pace queued input to the server's 720 degrees/sec budget.  Keep
+            -- delayed input queued rather than bursting it all in one tick.
+            local batch = math.min(MG.unsentDegrees, 72)
+            net.Start("WSZC_BandageInput")
+            net.WriteUInt(MG.sessionId, 24)
+            net.WriteFloat(batch)
+            net.WriteUInt(WoundSystem and WSZC.MinigameNextInputSeq and WSZC.MinigameNextInputSeq(MG) or 0, 24)
+            net.SendToServer()
+            MG.unsentDegrees = MG.unsentDegrees - batch
             -- ZCity consumption remains server-authoritative.
             MG.lastSentAt = now
         end

@@ -717,17 +717,18 @@ hook.Add("Think", "WoundSystem_BandageInput", function()
 
     if now - MG.lastSentAt > 0.1 then
         if MG.unsentDegrees > 0 then
+            local batch = math.min(MG.unsentDegrees, 72)
             net.Start("WoundSystem_BandageInput")
             net.WriteUInt(MG.sessionId, 24)
-            net.WriteFloat(MG.unsentDegrees)
+            net.WriteFloat(batch)
             net.WriteUInt(WoundSystem and WoundSystem.MinigameNextInputSeq and WoundSystem.MinigameNextInputSeq(MG) or 0, 24)
             net.SendToServer()
             local slot = MG.slotIdx and WoundSystemInventorySlots and WoundSystemInventorySlots[MG.slotIdx]
             if slot and slot.type == "tool" then
-                local predictedCost = (MG.unsentDegrees / 360) * GetDurabilityPerWrap()
+                local predictedCost = (batch / 360) * GetDurabilityPerWrap()
                 slot.durability = math.max(0, (slot.durability or 0) - predictedCost)
             end
-            MG.unsentDegrees = 0
+            MG.unsentDegrees = MG.unsentDegrees - batch
             MG.lastSentAt = now
         end
     end

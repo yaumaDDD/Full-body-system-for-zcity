@@ -2595,8 +2595,11 @@ local function Injured(sessionId)
 end
 WSZC.CUSessions = { Dislocation = {} }
 local selfPatient = Injured(501)
+local forged = WSZC.HandleDislocationVisualComplete(selfPatient, 501, 421.82, 229.82)
+local forgedBlocked = forged == false and selfPatient.organism.rarmdislocation == true
+WSZC.CUSessions.Dislocation[selfPatient].boneX, WSZC.CUSessions.Dislocation[selfPatient].boneY = 451.82, 229.82
 local selfOK = WSZC.HandleDislocationVisualComplete(selfPatient, 501, 451.82, 229.82)
-local selfCommitted = selfOK and selfPatient._limbs.arm_R.dislocated == false
+local selfCommitted = forgedBlocked and selfOK and selfPatient._limbs.arm_R.dislocated == false
     and selfPatient._limbs.arm_R.dislocationTimer == 0
     and selfPatient.organism.rarmdislocation == false
     and closed[selfPatient] == 1 and WSZC.CUSessions.Dislocation[selfPatient] == nil
@@ -2623,6 +2626,7 @@ WSZC.RemoteNativeSessions[remotePatient] = { Dislocation = { operator = medic } 
 WSZC.RemoteMedicalValidPair = function(operator, target)
     return operator == medic and target == remotePatient
 end
+WSZC.CUSessions.Dislocation[remotePatient].boneX, WSZC.CUSessions.Dislocation[remotePatient].boneY = 445.82, 253.82
 local remoteOK = WSZC.HandleDislocationVisualComplete(medic, 503, 445.82, 253.82)
 local remoteCommitted = remoteOK and remotePatient._limbs.arm_R.dislocated == false
     and remotePatient.organism.rarmdislocation == false
@@ -2644,6 +2648,7 @@ WSZC.FindUpvalue = function(wanted)
     if wanted == "CloseDislocationSession" then return nativeClose end
     return nil
 end
+nativeSessions.Dislocation[lazyPatient].boneX, nativeSessions.Dislocation[lazyPatient].boneY = 421.82, 229.82
 local lazyOK = WSZC.HandleDislocationVisualComplete(lazyPatient, 504, 421.82, 229.82)
 local lazyCommitted = lazyOK and WSZC.CUSessions == nativeSessions
     and WSZC.CUCloseDislocationSession == nativeClose

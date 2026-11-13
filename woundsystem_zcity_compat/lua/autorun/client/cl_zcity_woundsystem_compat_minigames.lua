@@ -291,10 +291,9 @@ hook.Add("Think", "WSZC_MinigameViewWatch", function()
 end)
 
 -- C:U draws boneDrawX/Y, but its server tests a separately simulated boneX/Y.
--- Once the RENDERED bone is close to the socket, ask the server
--- to validate and complete this exact session immediately.  No click release,
--- extra hit or arbitrary client-selected limb is required.  The receiver
--- repeats the tolerance check and owns the actual state transition.
+-- Once the rendered bone is close to the socket, ask the server to check its
+-- own independent bone simulation. The client position is never authoritative;
+-- prediction can temporarily differ from the server state.
 hook.Add("Think", "WSZC_DislocationVisualCompletion", function()
     local mg = WoundSystemDislocationMinigame
     if type(mg) ~= "table" or mg.active ~= true or mg.closeRequested == true then return end

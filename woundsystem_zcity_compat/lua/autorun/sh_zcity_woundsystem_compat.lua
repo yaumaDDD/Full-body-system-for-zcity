@@ -600,7 +600,7 @@ end
 -- the server.  Those positions can diverge, so a socket that looks perfectly
 -- aligned can still be rejected by the server's copy.  This predicate uses the
 -- SAME finish point as native C:U, with a more forgiving socket tolerance.
--- The rendered position is revalidated by the server before the reduction.
+-- The same tolerance is independently applied to the server-simulated position.
 function WSZC.DislocationVisualAligned(x, y)
     x, y = tonumber(x), tonumber(y)
     if not (x and y) or x ~= x or y ~= y

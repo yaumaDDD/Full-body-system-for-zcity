@@ -504,8 +504,8 @@ check('S52 namespaced protocol carries an explicit patient and exact schemas',
       and 'operator == target' in remote_server_s
       and 'not operator:Alive() or not target:Alive()' in remote_server_s
       and 'local function PatientEntity(ply)' in remote_server_s
-      and 'from:Distance(Position(target))' in remote_server_s
-      and 'distance <= RANGE' in remote_server_s)
+      and 'from:Distance(to)' in remote_server_s and 'util.TraceLine' in remote_server_s
+      and 'from:Distance(to) > RANGE' in remote_server_s)
 check('S53 native sessions belong to patient; traffic and slots belong to operator',
       'receiver(0, target)' in remote_server_s
       and 'targetInventory[slotIdx] = operatorSlot' in remote_server_s
